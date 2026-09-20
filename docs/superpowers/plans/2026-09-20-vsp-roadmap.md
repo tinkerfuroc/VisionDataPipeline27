@@ -8,12 +8,46 @@ proves (most importantly: Plan 1 Task 6 is the first time SAM3 inference runs on
 
 | # | Plan | Delivers | Needs GPU | Status |
 |---|---|---|---|---|
-| 1 | `2026-09-20-vsp-plan1-backend-core.md` | uv project, settings, `vsp doctor`, store, ingest, weights tooling, `Engine` protocol, `FakeEngine`, `Sam3Engine` verified on GPU | Task 6 only | **Written, ready to execute** |
+| 1 | `2026-09-20-vsp-plan1-backend-core.md` | uv project, settings, `vsp doctor`, store, ingest, weights tooling, `Engine` protocol, `FakeEngine`, `Sam3Engine` verified on GPU | Task 6 only | **Done** (branch `plan1-backend-core`, 71 tests, 10 on GPU) |
 | 2 | Labeling, jobs, HTTP API | Everything the GUI calls, fully testable with `FakeEngine` and `TestClient` | No | Outline below |
 | 3 | Web GUI | React SPA: Clips page, Label page, served by `vsp serve` | For manual QA | Outline below |
 | 4 | Export | `ExportPlan` + YOLO-seg, YOLO-det, COCO, mask PNG exporters, Export dialog | No | Outline below |
 
 Plans 3 and 4 are independent of each other once Plan 2 is done and can run in either order.
+
+## Carried forward from Plan 1 (executed 2026-09-20, branch `plan1-backend-core`)
+
+Measured on the RTX 3080 Ti (driver 535, torch 2.14.0+cu126, transformers 5.17.0): model load 3 s;
+click → mask 65 ms with a warm vision cache (≈ 850 ms for the first prompt on a frame); click IoU 0.99,
+box IoU 0.98, box + positive + negative click IoU 0.92; forward and backward tracking 19/19 frames at
+IoU ≥ 0.98; **peak VRAM 2.47 GiB for a 24-frame chunk at 640×480** — `propagate.chunk_size` has a lot of
+headroom; re-measure at the real footage resolution before raising it.
+
+Facts Plan 2 must design around:
+
+- `Sam3Engine.propagate()` is a generator that holds the (non-reentrant) GPU lock from the first `next()`
+  until it is exhausted or closed. Always wrap it in `contextlib.closing`; cancel via `cancel_cb`; never
+  call `release()` / `predict_*` from the thread that is consuming it. Validation is lazy (first `next()`).
+- `frame_key` for the vision cache must be clip-scoped: `(clip_id, frame_idx)`.
+- All three engine paths return `None` / drop masks under 64 px or over 45 % of the frame
+  (`Sam3Engine.MIN_MASK_AREA_PX`, `MAX_MASK_AREA_FRAC`); `FakeEngine` mirrors this, so test masks must be
+  ≥ 64 px. The UI needs a "no usable mask" message for prompts that land outside those bounds.
+- `tracker_model.config.multimask_max_pt_num` is raised from the checkpoint's 1 to 32 at load, because box
+  corners count as points and the default disabled best-of-3 mask selection for any box prompt. Verified
+  for a box + 2 clicks only — **multi-click refinement (5+ clicks) is untested**; add a GPU test for it
+  when `labeling/prompts.py` is written.
+- Box-only prompts are slightly looser than click prompts; the UI should encourage a refining click.
+- `Sam3Engine.load()` raises `EngineNotLoaded` for every failure and keeps the reason in `load_error` —
+  this is what `/api/health` should report.
+- Relative config paths resolve against the repository root (`vsp.config.REPO_ROOT`), so `vsp serve` may be
+  started from any directory. `resolve_allowed()` exists in `vsp.ingest` but nothing calls it yet — the
+  frame-directory import route must.
+- The installed ruff's default rules include import sorting, pyupgrade and simplify; write plan code with
+  sorted imports and `collections.abc`.
+
+Deferred cosmetic minors (none blocking): `device.py` error message names the `sam3.device` key and has a
+redundant `tuple()`; `cli.py` has an unreachable `return 2`; `convert_checkpoint` has no unit test (thin glue
+over an external script).
 
 ## Plan 2 outline — labeling, jobs, HTTP API (spec §4 API table, §5.2–§5.4, §9)
 
