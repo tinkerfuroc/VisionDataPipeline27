@@ -57,6 +57,21 @@ def _doctor(settings: Settings, config_path: Path | None) -> int:
     return 0 if ok else 1
 
 
+def _serve(settings: Settings, host: str | None, port: int | None) -> int:
+    import uvicorn
+
+    from .api.app import create_app
+
+    host = host or settings.server.host
+    port = port or settings.server.port
+    if host not in ("127.0.0.1", "localhost", "::1"):
+        print(f"WARNING: binding {host} exposes an unauthenticated labeling server to the network")
+    print(f"data_root: {settings.project.data_root}")
+    print(f"model_dir: {settings.sam3.model_dir}")
+    uvicorn.run(create_app(settings), host=host, port=port, log_level="info")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="vsp")
     parser.add_argument("--config", default=None, help="path to a YAML config (default: configs/default.yaml)")
@@ -74,6 +89,9 @@ def main(argv: list[str] | None = None) -> int:
         "--official-files-from", required=True,
         help="directory holding the official tokenizer/processor files (the facebook/sam3 repo files)",
     )
+    p_serve = sub.add_parser("serve", help="run the HTTP API (and the web UI when web/dist exists)")
+    p_serve.add_argument("--host", default=None, help="bind address (default: server.host from the config)")
+    p_serve.add_argument("--port", type=int, default=None, help="port (default: server.port from the config)")
     args = parser.parse_args(argv)
     settings, config_path = _load_settings(args.config)
     if args.cmd == "doctor":
@@ -85,5 +103,7 @@ def main(argv: list[str] | None = None) -> int:
             Path(args.checkpoint), Path(args.converter), Path(args.out), Path(args.official_files_from)
         )
         return _report(problems, args.out)
+    if args.cmd == "serve":
+        return _serve(settings, args.host, args.port)
     parser.error(f"unknown command {args.cmd}")
     return 2
