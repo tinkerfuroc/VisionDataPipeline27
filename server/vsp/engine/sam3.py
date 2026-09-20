@@ -70,9 +70,12 @@ class Sam3Engine:
             try:
                 self._load_locked()
                 self.load_error = None
-            except Exception as e:
+            except EngineNotLoaded as e:
                 self.load_error = str(e)
                 raise
+            except Exception as e:
+                self.load_error = f"{type(e).__name__}: {e}"
+                raise EngineNotLoaded(self.load_error) from e
 
     def _load_locked(self) -> None:
         device = pick_device(self.requested_device, cuda_capabilities())
@@ -130,6 +133,11 @@ class Sam3Engine:
         return synced, len(params)
 
     def release(self) -> None:
+        """Free the model and vision cache.
+
+        Blocks while a `propagate()` generator is open (it holds `self._lock`); never call this
+        from inside a loop that is consuming one, or it deadlocks.
+        """
         with self._lock:
             self._model = None
             self._processor = None
@@ -147,7 +155,12 @@ class Sam3Engine:
 
     # ------------------------------------------------------------ vision cache
     def _vision_locked(self, image_bgr: np.ndarray, frame_key: tuple | None):
-        """Returns (pixel_values [1,3,1008,1008], detector vision embeds). Caller holds the lock."""
+        """Returns (pixel_values [1,3,1008,1008], detector vision embeds). Caller holds the lock.
+
+        `frame_key` must be unique per image across the WHOLE process (this cache is shared by
+        every caller of this engine instance): use a clip-scoped key such as `(clip_id, frame_idx)`.
+        A bare frame index would collide across clips and return another clip's cached features.
+        """
         if frame_key is not None and frame_key in self._cache:
             self._cache.move_to_end(frame_key)
             return self._cache[frame_key]
@@ -265,6 +278,22 @@ class Sam3Engine:
         seed_mask: np.ndarray,
         cancel_cb: Callable[[], bool] | None = None,
     ) -> Iterator[tuple[int, np.ndarray | None]]:
+        """Track `seed_mask` (given for `frames[0]`) forward through `frames`.
+
+        This is a generator: argument validation and all GPU work happen lazily, starting on the
+        first `next()` call, not when `propagate()` is called.
+
+        The GPU lock (`self._lock`) is acquired on that first `next()` and held until the
+        generator is exhausted or closed. Callers MUST either exhaust it or call `.close()`
+        (e.g. wrap consumption in `contextlib.closing`) -- an abandoned, half-consumed generator
+        keeps the lock held. While it is open: calling `predict_text`, `predict_prompt`,
+        `release`, or another `propagate` from the SAME thread deadlocks (the lock is not
+        reentrant); calling any of them from another thread blocks until this generator finishes
+        or is closed.
+
+        To cancel early, pass `cancel_cb`: once it returns True the generator returns (ending
+        iteration) and releases the lock, instead of raising.
+        """
         self._require_loaded()
         if not frames:
             return
