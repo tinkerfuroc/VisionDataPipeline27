@@ -1,0 +1,14 @@
+/data/
+/vision_train/
+/.template/
+/.superpowers/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+web/node_modules/
+web/dist/
+*.pt
+*.safetensors
