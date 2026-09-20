@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from contextlib import closing
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Literal
 
 import numpy as np
@@ -26,6 +26,7 @@ class PropagateResult:
     lost_at: int | None = None
     cancelled: bool = False
     oom_retries: int = 0
+    lost_by_direction: dict[str, int] = field(default_factory=dict)
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -42,10 +43,10 @@ def plan_indices(clip: Clip, obj: LabelObject, from_frame: int, direction: Liter
     return list(range(from_frame - 1, stop, -1))
 
 
-def _record_range(store: ProjectStore, clip_id: str, indices: list[int]) -> None:
+def _record_range(store: ProjectStore, clip_id: str, object_id: int, indices: list[int]) -> None:
     with store.lock(clip_id):
         clip = store.read_clip(clip_id)
-        obj = clip.objects[0]
+        obj = next(o for o in clip.objects if o.id == object_id)
         obj.propagated_ranges = add_range(obj.propagated_ranges, min(indices), max(indices))
         store.write_clip(clip)
 
@@ -58,6 +59,7 @@ def _run_direction(
     from_frame: int,
     seed: np.ndarray,
     indices: list[int],
+    direction: str,
     *,
     chunk_size: int,
     min_chunk_size: int,
@@ -66,23 +68,34 @@ def _run_direction(
     result: PropagateResult,
     emit: Emit,
     cancel: Callable[[], bool],
-) -> None:
-    deleted = set(clip.deleted_frames)
+) -> int:
+    """Run one direction's chunk loop.
+
+    Returns the (possibly OOM-backed-off) chunk size actually used, so that a following
+    direction in a "both" run starts from it instead of re-attempting a size that just OOM'd.
+    """
     anchor_idx, anchor_mask = from_frame, seed
     pending = list(indices)
     size = max(min_chunk_size, chunk_size)
     empties, first_empty = 0, None
 
-    while pending and not result.cancelled and result.lost_at is None:
+    while pending:
+        # Deletes/restores stay allowed during a run: re-read every chunk so a frame restored
+        # mid-run gets its mask written starting from the next chunk.
+        deleted = set(store.read_clip(clip.id).deleted_frames)
         chunk = pending[:size]
         frames = [load_frame(store, clip, anchor_idx)] + [load_frame(store, clip, i) for i in chunk]
         done_in_chunk: list[int] = []
-        oom = False
+        oom_error: ChunkOOMError | None = None
+        direction_lost_frame: int | None = None
         try:
             with closing(engine.propagate(frames, anchor_mask, cancel_cb=cancel)) as masks:
                 for offset, mask in masks:
                     if offset == 0:
                         continue  # the anchor's own output is discarded
+                    expected = len(done_in_chunk) + 1
+                    if offset != expected or offset > len(chunk):
+                        raise PropagationFailed(f"engine yielded offset {offset}, expected {expected}")
                     idx = chunk[offset - 1]
                     done_in_chunk.append(idx)
                     result.processed += 1
@@ -103,26 +116,48 @@ def _run_direction(
                         "done": result.processed, "total": total,
                     })
                     if empties >= lost_after:
-                        result.lost_at = first_empty
+                        direction_lost_frame = first_empty
                         break  # leaving the `with` closes the generator and frees the GPU lock
         except ChunkOOMError as e:
-            oom = True
-            if size <= min_chunk_size:
-                raise PropagationFailed(
-                    f"CUDA out of memory even at chunk size {size}; lower propagate.min_chunk_size "
-                    "or free GPU memory (check nvidia-smi)"
-                ) from e
-            size = max(min_chunk_size, size // 2)
-            result.oom_retries += 1
-            emit({"type": "log", "message": f"out of memory; retrying with chunk size {size}"})
+            oom_error = e
+        finally:
+            # Frames landed in this chunk must be recorded on EVERY exit -- normal end, lost,
+            # cancel, OOM, or any other exception escaping the loop -- before it propagates.
+            if done_in_chunk:
+                _record_range(store, clip.id, object_id, done_in_chunk)
+                pending = pending[len(done_in_chunk):]
+        del frames
 
-        if done_in_chunk:
-            _record_range(store, clip.id, done_in_chunk)
-            pending = pending[len(done_in_chunk):]
-        if cancel():
-            result.cancelled = True
-        elif not done_in_chunk and not oom:
+        if oom_error is not None:
+            result.oom_retries += 1
+            if size <= min_chunk_size:
+                if not done_in_chunk:
+                    raise PropagationFailed(
+                        f"CUDA out of memory even at chunk size {size}; lower propagate.min_chunk_size "
+                        "or free GPU memory (check nvidia-smi)"
+                    ) from oom_error
+                # Progress was made at the floor: keep the size, retry the remaining pending frames.
+            else:
+                size = max(min_chunk_size, size // 2)
+            emit({"type": "log", "message": f"out of memory; retrying with chunk size {size}"})
+            continue
+
+        if direction_lost_frame is not None:
+            result.lost_by_direction[direction] = direction_lost_frame
+            break
+
+        # Cancellation is latched from whether the engine actually stopped short of the chunk
+        # while cancel() is true -- not from re-polling cancel() after a chunk that completed.
+        # A cancel that arrives after a complete chunk with frames still pending is caught by
+        # the next chunk instead (the engine yields nothing there -> stopped short).
+        stopped_short = len(done_in_chunk) < len(chunk)
+        if stopped_short:
+            if cancel():
+                result.cancelled = True
+                break
             raise PropagationFailed("the engine returned no frames for a non-empty chunk")
+
+    return size
 
 
 def run_propagation(
@@ -138,6 +173,14 @@ def run_propagation(
     emit: Emit | None = None,
     cancel: Callable[[], bool] | None = None,
 ) -> PropagateResult:
+    """Propagate the clip's single labeled object from `from_frame` in `direction`.
+
+    `emit` and `cancel` are both called while the engine's `propagate()` generator is open, i.e.
+    while the GPU lock is held. Both must return quickly: no blocking I/O, no blocking on a slow
+    consumer, no raising, and no calling back into the engine -- a slow or misbehaving callback
+    stalls the GPU lock for every other caller. (The jobs layer's `Job.emit` is a plain in-memory
+    list append, which satisfies this.)
+    """
     emit = emit or (lambda event: None)
     cancel = cancel or (lambda: False)
     clip = store.read_clip(clip_id)
@@ -153,13 +196,17 @@ def run_propagation(
     result = PropagateResult()
     total = sum(len(p) for p in plans)
     emit({"type": "progress", "done": 0, "total": total})
-    for indices in plans:
+    size = chunk_size
+    for d, indices in zip(directions, plans):
         if result.cancelled:
             break
-        result.lost_at = None  # a lost forward pass must not suppress the backward pass
-        _run_direction(
-            store, engine, clip, obj.id, from_frame, seed, indices,
-            chunk_size=chunk_size, min_chunk_size=min_chunk_size, lost_after=lost_after,
+        size = _run_direction(
+            store, engine, clip, obj.id, from_frame, seed, indices, d,
+            chunk_size=size, min_chunk_size=min_chunk_size, lost_after=lost_after,
             total=total, result=result, emit=emit, cancel=cancel,
         )
+    for d in directions:
+        if d in result.lost_by_direction:
+            result.lost_at = result.lost_by_direction[d]
+            break
     return result

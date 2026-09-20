@@ -2,7 +2,9 @@ import numpy as np
 import pytest
 from conftest import is_white
 from vsp.engine.fake import FakeEngine
+from vsp.engine.types import ChunkOOMError
 from vsp.labeling.errors import BadRequest, PropagationFailed
+from vsp.labeling.frames import restore_frame
 from vsp.labeling.prompts import OBJECT_ID, PromptSpec, accept
 from vsp.labeling.propagate import plan_indices, run_propagation
 
@@ -145,3 +147,240 @@ def test_cancel_keeps_landed_masks(store, make_clip):
     assert res.cancelled and res.processed == 3
     assert store.mask_indices(clip.id, OBJECT_ID) == [0, 1, 2, 3]
     assert store.read_clip(clip.id).objects[0].propagated_ranges == [(1, 3)]
+
+
+# ---------------------------------------------------------------- fix round 1: stub engines
+
+
+class OomAfter(FakeEngine):
+    """Delegates to FakeEngine.propagate but raises ChunkOOMError after yielding `k` real frames
+    (offsets 0..k), on each of its first `n_failures` calls; afterwards behaves normally."""
+
+    def __init__(self, k, n_failures=1, **kw):
+        super().__init__(**kw)
+        self.k = k
+        self.n_failures = n_failures
+        self.calls = 0
+
+    def propagate(self, frames, seed_mask, cancel_cb=None):
+        self.calls += 1
+        if self.calls <= self.n_failures:
+            gen = super().propagate(frames, seed_mask, cancel_cb)
+            for _ in range(self.k + 1):
+                yield next(gen)
+            gen.close()
+            raise ChunkOOMError(f"fake OOM after {self.k} real frames")
+        yield from super().propagate(frames, seed_mask, cancel_cb)
+
+
+class OomProgressThenStarve(FakeEngine):
+    """First call OOMs after landing one real frame (progress). Every later call OOMs before
+    yielding any frame at all (no progress)."""
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.calls = 0
+
+    def propagate(self, frames, seed_mask, cancel_cb=None):
+        self.calls += 1
+        self.propagate_calls.append(len(frames))
+        if self.calls == 1:
+            yield 0, seed_mask.copy()
+            shifted = np.zeros_like(seed_mask)
+            shifted[:, self.dx:] = seed_mask[:, :-self.dx]
+            yield 1, shifted
+        raise ChunkOOMError("fake OOM")
+
+
+class OnlySeed(FakeEngine):
+    """Yields only the anchor's own offset-0 output, then stops -- no real frame ever lands."""
+
+    def propagate(self, frames, seed_mask, cancel_cb=None):
+        self.propagate_calls.append(len(frames))
+        yield 0, seed_mask.copy()
+
+
+class Skips(FakeEngine):
+    """Yields offsets 0, 1, 3 -- skipping 2 -- to exercise offset validation."""
+
+    def propagate(self, frames, seed_mask, cancel_cb=None):
+        self.propagate_calls.append(len(frames))
+        for offset in (0, 1, 3):
+            if offset >= len(frames):
+                return
+            if offset == 0:
+                yield 0, seed_mask.copy()
+                continue
+            shifted = np.zeros_like(seed_mask)
+            s = offset * self.dx
+            if s < seed_mask.shape[1]:
+                shifted[:, s:] = seed_mask[:, :-s]
+            yield offset, shifted
+
+
+# ---------------------------------------------------------------- fix round 1: new tests
+
+
+def test_mid_chunk_oom_resumes_at_the_first_unprocessed_frame(store, make_clip):
+    eng = OomAfter(3)
+    clip = _seeded(store, make_clip, eng, n_frames=13)
+    res = run_propagation(store, eng, clip.id, 0, "forward", **KW)
+    assert res.processed == 12 and res.oom_retries == 1
+    assert store.mask_indices(clip.id, OBJECT_ID) == list(range(13))
+    for k in (1, 3, 4, 8, 12):
+        assert _x0(store, clip.id, k) == 20 + 2 * k
+
+
+def test_mid_chunk_oom_records_the_landed_frames(store, make_clip):
+    eng = OomAfter(3)
+    clip = _seeded(store, make_clip, eng, n_frames=13)
+    run_propagation(store, eng, clip.id, 0, "forward", **KW)
+    assert store.read_clip(clip.id).objects[0].propagated_ranges == [(1, 12)]
+
+    # OOMs on every call, at the floor, but always after landing >= 1 frame: not fatal.
+    eng2 = OomAfter(1, n_failures=100)
+    clip2 = _seeded(store, make_clip, eng2, n_frames=8)
+    res2 = run_propagation(store, eng2, clip2.id, 0, "forward", chunk_size=4, min_chunk_size=4, lost_after=3)
+    assert res2.processed == 7
+    assert store.mask_indices(clip2.id, OBJECT_ID) == list(range(8))
+
+
+def test_oom_at_the_floor_without_progress_keeps_what_landed(store, make_clip):
+    eng = OomProgressThenStarve()
+    clip = _seeded(store, make_clip, eng, n_frames=13)
+    with pytest.raises(PropagationFailed, match="chunk size 4"):
+        run_propagation(store, eng, clip.id, 0, "forward", chunk_size=4, min_chunk_size=4, lost_after=3)
+    assert store.mask_indices(clip.id, OBJECT_ID) == [0, 1]
+    assert store.read_clip(clip.id).objects[0].propagated_ranges == [(1, 1)]
+
+
+def test_both_reports_a_lost_forward_pass(store, make_clip):
+    eng = FakeEngine(is_empty=is_white)
+    clip = _seeded(store, make_clip, eng, n_frames=20, keyframes=(10,), white=range(13, 20))
+    res = run_propagation(store, eng, clip.id, 10, "both", **KW)
+    assert res.lost_at == 13
+    assert res.lost_by_direction == {"forward": 13}
+    for i in range(10):
+        assert store.read_mask(clip.id, OBJECT_ID, i) is not None
+
+
+def test_both_when_both_directions_lose(store, make_clip):
+    eng = FakeEngine(is_empty=is_white)
+    clip = _seeded(store, make_clip, eng, n_frames=20, keyframes=(10,), white=(0, 1, 2, 13, 14, 15, 16, 17, 18, 19))
+    res = run_propagation(store, eng, clip.id, 10, "both", **KW)
+    assert res.lost_by_direction == {"forward": 13, "backward": 2}
+    assert res.lost_at == 13  # forward wins when both lose
+
+
+def test_engine_returning_only_the_seed_raises_propagation_failed(store, make_clip):
+    eng = OnlySeed()
+    clip = _seeded(store, make_clip, eng, n_frames=10)
+    with pytest.raises(PropagationFailed, match="returned no frames"):
+        run_propagation(store, eng, clip.id, 0, "forward", **KW)
+
+
+def test_cancel_before_the_first_frame_of_a_chunk(store, make_clip):
+    eng = FakeEngine()
+    clip = _seeded(store, make_clip, eng)
+    res = run_propagation(store, eng, clip.id, 0, "forward", cancel=lambda: True, **KW)
+    assert res.cancelled and res.processed == 0
+    assert store.mask_indices(clip.id, OBJECT_ID) == [0]
+
+
+def test_cancel_after_the_last_frame_is_not_reported_as_cancelled(store, make_clip):
+    eng = FakeEngine()
+    clip = _seeded(store, make_clip, eng, n_frames=5)  # forward pending: 1..4, one chunk of 4
+    seen = []
+    res = run_propagation(
+        store, eng, clip.id, 0, "forward",
+        emit=lambda e: seen.append(e) if e["type"] == "frame" else None,
+        cancel=lambda: len(seen) >= 4, **KW,
+    )
+    assert res.cancelled is False
+    assert res.processed == 4
+
+
+def test_nothing_to_propagate_returns_an_empty_result(store, make_clip):
+    eng = FakeEngine()
+    clip = _seeded(store, make_clip, eng, n_frames=10, keyframes=(0,))
+    events = []
+    res = run_propagation(store, eng, clip.id, 0, "backward", emit=events.append, **KW)
+    assert res.processed == 0 and eng.propagate_calls == []
+    assert events == [{"type": "progress", "done": 0, "total": 0}]
+
+    eng2 = FakeEngine()
+    clip2 = _seeded(store, make_clip, eng2, n_frames=10, keyframes=(9,))
+    res2 = run_propagation(store, eng2, clip2.id, 9, "forward", **KW)
+    assert res2.processed == 0 and eng2.propagate_calls == []
+
+    eng3 = FakeEngine()
+    clip3 = _seeded(store, make_clip, eng3, n_frames=10, keyframes=(4, 5))
+    res3 = run_propagation(store, eng3, clip3.id, 4, "forward", **KW)
+    assert res3.processed == 0 and eng3.propagate_calls == []
+
+    eng4 = FakeEngine()
+    clip4 = _seeded(store, make_clip, eng4, n_frames=1, keyframes=(0,))
+    res4 = run_propagation(store, eng4, clip4.id, 0, "both", **KW)
+    assert res4.processed == 0 and eng4.propagate_calls == []
+
+
+def test_missing_seed_mask_is_a_bad_request(store, make_clip):
+    eng = FakeEngine()
+    clip = _seeded(store, make_clip, eng)
+    store.delete_mask(clip.id, OBJECT_ID, 0)
+    with pytest.raises(BadRequest, match="has no mask"):
+        run_propagation(store, eng, clip.id, 0, "forward", **KW)
+
+
+def test_propagate_result_as_dict(store, make_clip):
+    eng = FakeEngine()
+    clip = _seeded(store, make_clip, eng)
+    res = run_propagation(store, eng, clip.id, 0, "forward", **KW)
+    assert set(res.as_dict().keys()) == {
+        "processed", "written", "cleared", "lost_at", "cancelled", "oom_retries", "lost_by_direction",
+    }
+
+
+def test_out_of_order_engine_offsets_are_rejected(store, make_clip):
+    eng = Skips()
+    clip = _seeded(store, make_clip, eng, n_frames=10)
+    with pytest.raises(PropagationFailed, match="expected 2"):
+        run_propagation(store, eng, clip.id, 0, "forward", **KW)
+    assert store.read_mask(clip.id, OBJECT_ID, 1) is not None
+    assert store.read_mask(clip.id, OBJECT_ID, 3) is None
+
+
+def test_restoring_a_frame_mid_run_gets_its_mask_from_the_next_chunk(store, make_clip):
+    eng = FakeEngine()
+    clip = _seeded(store, make_clip, eng, n_frames=13)
+    c = store.read_clip(clip.id)
+    c.deleted_frames = [10]
+    store.write_clip(c)
+
+    def on_event(e):
+        if e["type"] == "frame" and e["frame"] == 2:
+            restore_frame(store, clip.id, 10)
+
+    res = run_propagation(
+        store, eng, clip.id, 0, "forward", emit=on_event, chunk_size=4, min_chunk_size=4, lost_after=99
+    )
+    assert res.processed == 12
+    assert store.read_mask(clip.id, OBJECT_ID, 10) is not None
+
+
+def test_backed_off_chunk_size_carries_into_the_backward_pass(store, make_clip):
+    eng = FakeEngine(oom_if_more_than=5)
+    clip = _seeded(store, make_clip, eng, n_frames=30, keyframes=(15,))
+    res = run_propagation(store, eng, clip.id, 15, "both", **KW)
+    assert res.oom_retries == 1
+    assert all(n <= 5 for n in eng.propagate_calls[1:])
+
+
+def test_propagated_ranges_after_a_lost_stop_cover_the_processed_frames(store, make_clip):
+    eng = FakeEngine(is_empty=is_white)
+    clip = _seeded(store, make_clip, eng, n_frames=30, white=range(6, 30))
+    stale = np.zeros((60, 120), dtype=bool)
+    stale[0:20, 0:20] = True
+    store.write_mask(clip.id, OBJECT_ID, 7, stale)
+    run_propagation(store, eng, clip.id, 0, "forward", **KW)
+    assert store.read_clip(clip.id).objects[0].propagated_ranges == [(1, 8)]
