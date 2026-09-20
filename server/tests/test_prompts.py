@@ -128,3 +128,23 @@ def test_padded_box_is_clamped():
     m = np.zeros((60, 120), dtype=bool)
     m[0:10, 100:120] = True
     assert padded_box(m, 10, 120, 60) == (90, 0, 120, 20)
+
+
+def test_accept_rechecks_deleted_inside_the_lock(store, make_clip, monkeypatch):
+    """A delete racing between accept's first (unlocked) read and its locked re-read must not leave a
+    frame that is both deleted and a keyframe."""
+    _, clip = make_clip(n_frames=6)
+    eng = FakeEngine()
+    real_lock = store.lock
+
+    def sneaky_lock(clip_id):
+        c = store.read_clip(clip_id)
+        c.deleted_frames = [0]
+        store.write_clip(c)
+        return real_lock(clip_id)
+
+    monkeypatch.setattr(store, "lock", sneaky_lock)
+    with pytest.raises(BadRequest, match="deleted"):
+        accept(store, eng, clip.id, 0, CLICK, class_id=0)
+    assert store.read_clip(clip.id).objects == []
+    assert store.mask_indices(clip.id, OBJECT_ID) == []

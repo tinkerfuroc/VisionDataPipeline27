@@ -1,5 +1,6 @@
 import base64
 import io
+import threading
 import time
 
 import numpy as np
@@ -120,6 +121,58 @@ def test_gpu_is_exclusive_and_jobs_can_be_cancelled_and_streamed(tmp_path):
         assert landed == snap["result"]["written"]  # cancel keeps what landed
         ok = client.post(f"/api/clips/{cid}/prompt", json={"frame": 0, "prompt": CLICK})
         assert ok.status_code == 200  # GPU is free again
+
+
+def test_an_in_flight_prompt_blocks_propagate_atomically(tmp_path):
+    """The GPU exclusivity check must be atomic with the engine call: a propagate that arrives while a
+    prompt/accept/clear-range call is mid-flight must not slip in ahead of it (or behind it, silently)."""
+
+    class GatedEngine(FakeEngine):
+        def __init__(self):
+            super().__init__()
+            self.entered = threading.Event()
+            self.release = threading.Event()
+            self.release.set()  # open by default so the setup accept below does not block
+
+        def predict_prompt(self, *args, **kwargs):
+            self.entered.set()
+            if not self.release.wait(5):
+                raise TimeoutError("gate was never released")
+            return super().predict_prompt(*args, **kwargs)
+
+    eng = GatedEngine()
+    with _client(tmp_path, eng) as client:
+        cid = _clip(client, tmp_path)
+        setup = client.post(f"/api/clips/{cid}/accept", json={"frame": 0, "prompt": CLICK, "class_id": 0})
+        assert setup.status_code == 200
+
+        eng.entered.clear()
+        eng.release.clear()  # close the gate
+        results: dict[str, object] = {}
+
+        def _prompt(key):
+            results[key] = client.post(f"/api/clips/{cid}/prompt", json={"frame": 0, "prompt": CLICK})
+
+        t1 = threading.Thread(target=_prompt, args=("a",))
+        t1.start()
+        assert eng.entered.wait(5)  # t1 is inside predict_prompt, holding the GPU lease
+
+        blocked = client.post(f"/api/clips/{cid}/propagate", json={"from_frame": 0, "direction": "forward"})
+        assert blocked.status_code == 409 and blocked.json()["job_id"] == "interactive"
+
+        t2 = threading.Thread(target=_prompt, args=("b",))
+        t2.start()  # a second interactive call queues on the gate; it must not bounce with 409
+
+        eng.release.set()
+        t1.join(5)
+        t2.join(5)
+        assert not t1.is_alive() and not t2.is_alive(), "helper thread(s) did not finish -- TestClient may not " \
+            "support concurrent requests from threads in this Starlette version"
+        assert results["a"].status_code == 200 and results["b"].status_code == 200
+
+        again = client.post(f"/api/clips/{cid}/propagate", json={"from_frame": 0, "direction": "forward"})
+        assert again.status_code == 202  # the GPU is free again once every lease has been released
+        assert wait_job(client, again.json()["job_id"])["status"] == "done"
 
 
 def test_engine_not_loaded_is_503_but_browsing_still_works(tmp_path):

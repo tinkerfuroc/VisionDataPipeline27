@@ -104,6 +104,8 @@ def accept(
 
     with store.lock(clip_id):
         clip = store.read_clip(clip_id)
+        if frame in clip.deleted_frames:  # re-check: a delete may have raced the unlocked read above
+            raise BadRequest(f"frame {frame} is deleted; restore it before labeling")
         if clip.objects:
             obj = clip.objects[0]
         else:

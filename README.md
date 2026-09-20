@@ -31,4 +31,6 @@ repository root, not the current working directory, so `vsp` can be run from any
 
 `/api/health` shows `engine.loaded` and, if loading failed, the reason. Interactive API docs: `/docs`.
 Importing, browsing and frame cleanup work without a GPU; prompting and propagation return 503 until the
-engine is loaded, and 409 (with the running `job_id`) while a propagation job holds the GPU.
+engine is loaded, and 409 (with the running `job_id`) while a propagation job holds the GPU. A propagate
+request also returns 409 with `job_id: "interactive"` if a prompt/accept/clear-range call is in flight;
+retry.

@@ -13,6 +13,7 @@ def _check(clip: Clip, idx: int) -> None:
 
 
 def _set_deleted(store: ProjectStore, clip_id: str, indices: range, deleted: bool) -> Clip:
+    store.clip_dir(clip_id)  # raises NotFound before the lock table grows an entry for a bogus id
     with store.lock(clip_id):
         clip = store.read_clip(clip_id)
         for idx in (indices.start, indices.stop - 1):
@@ -39,6 +40,7 @@ def prune_from(store: ProjectStore, clip_id: str, from_idx: int) -> Clip:
 
 
 def clear_range(store: ProjectStore, clip_id: str, start: int, end: int) -> Clip:
+    store.clip_dir(clip_id)  # raises NotFound before the lock table grows an entry for a bogus id
     with store.lock(clip_id):
         clip = store.read_clip(clip_id)
         _check(clip, start)

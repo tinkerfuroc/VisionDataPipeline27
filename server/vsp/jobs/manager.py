@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import contextlib
+import logging
 import threading
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 
+log = logging.getLogger(__name__)
+
 TERMINAL = frozenset({"done", "error", "cancelled"})
+INTERACTIVE = "interactive"  # synthetic job_id reported in the 409 body while an interactive lease is held
 
 
 class JobBusy(Exception):
@@ -64,6 +69,7 @@ class Job:
 class JobManager:
     def __init__(self) -> None:
         self._jobs: dict[str, Job] = {}
+        self._leases: dict[str, int] = {}
         self._lock = threading.Lock()
 
     def start(self, kind: str, fn: Callable[[Job], dict | None], *, exclusive: str | None = None) -> Job:
@@ -72,18 +78,40 @@ class JobManager:
                 for other in self._jobs.values():
                     if other.exclusive == exclusive and other.status not in TERMINAL:
                         raise JobBusy(other.id)
+                if self._leases.get(exclusive, 0) > 0:
+                    raise JobBusy(INTERACTIVE)
             job = Job(kind, exclusive)
             self._jobs[job.id] = job
         job._thread = threading.Thread(target=self._run, args=(job, fn), name=f"job-{kind}-{job.id}", daemon=True)
         job._thread.start()
         return job
 
+    @contextlib.contextmanager
+    def lease(self, exclusive: str) -> Iterator[None]:
+        """An interactive hold on `exclusive` that excludes jobs but not other leases on the same key.
+
+        Used by prompt/accept/clear-range so a `POST /propagate` cannot start (and later overwrite a
+        keyframe, or clear ranges out from under it) while one of those calls is mid-flight; two
+        overlapping interactive calls queue on the engine's own lock instead of bouncing with 409.
+        """
+        with self._lock:
+            for other in self._jobs.values():
+                if other.exclusive == exclusive and other.status not in TERMINAL:
+                    raise JobBusy(other.id)
+            self._leases[exclusive] = self._leases.get(exclusive, 0) + 1
+        try:
+            yield
+        finally:
+            with self._lock:
+                self._leases[exclusive] -= 1
+
     @staticmethod
     def _run(job: Job, fn: Callable[[Job], dict | None]) -> None:
         job.status = "running"
         try:
             result = fn(job) or {}
-        except Exception as e:  # noqa: BLE001 - a job must never take the server down
+        except Exception as e:  # a job must never take the server down
+            log.exception("job %s (%s) failed", job.id, job.kind)
             job.error = f"{type(e).__name__}: {e}"
             job.emit({"type": "error", "message": job.error})
             job.status = "error"

@@ -12,7 +12,7 @@ from ..labeling import frames as frame_ops
 from ..labeling.errors import BadRequest
 from ..labeling.prompts import PromptSpec, accept, preview
 from ..labeling.propagate import plan_indices, run_propagation
-from .deps import GPU, State, require_engine, require_gpu_idle
+from .deps import GPU, State, gpu_lease, require_engine
 from .views import candidate_view, clip_detail
 
 router = APIRouter(prefix="/api/clips/{clip_id}", tags=["labeling"])
@@ -46,19 +46,20 @@ class RangeBody(BaseModel):
 def prompt_preview(clip_id: str, body: PromptBody, state: State) -> dict:
     clip = state.store.read_clip(clip_id)
     engine = require_engine(state)
-    require_gpu_idle(state)
-    return {"candidates": [candidate_view(d) for d in preview(state.store, engine, clip, body.frame, body.prompt)]}
+    with gpu_lease(state):
+        detections = preview(state.store, engine, clip, body.frame, body.prompt)
+    return {"candidates": [candidate_view(d) for d in detections]}
 
 
 @router.post("/accept")
 def prompt_accept(clip_id: str, body: AcceptBody, state: State) -> dict:
     state.store.read_clip(clip_id)
     engine = require_engine(state)
-    require_gpu_idle(state)
-    clip = accept(
-        state.store, engine, clip_id, body.frame, body.prompt, class_id=body.class_id, candidate=body.candidate
-    )
-    return clip_detail(state, clip)
+    with gpu_lease(state):
+        clip = accept(
+            state.store, engine, clip_id, body.frame, body.prompt, class_id=body.class_id, candidate=body.candidate
+        )
+        return clip_detail(state, clip)
 
 
 @router.post("/propagate", status_code=202)
@@ -101,5 +102,5 @@ def prune(clip_id: str, body: PruneBody, state: State) -> dict:
 @router.post("/clear-range")
 def clear_range(clip_id: str, body: RangeBody, state: State) -> dict:
     state.store.read_clip(clip_id)
-    require_gpu_idle(state)  # it deletes masks and trims ranges a running propagation is writing
-    return clip_detail(state, frame_ops.clear_range(state.store, clip_id, body.start, body.end))
+    with gpu_lease(state):  # it deletes masks and trims ranges a running propagation is writing
+        return clip_detail(state, frame_ops.clear_range(state.store, clip_id, body.start, body.end))

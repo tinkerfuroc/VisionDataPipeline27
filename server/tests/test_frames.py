@@ -4,6 +4,7 @@ from vsp.labeling.errors import BadRequest
 from vsp.labeling.frames import clear_range, delete_frame, prune_from, restore_frame
 from vsp.labeling.prompts import OBJECT_ID, PromptSpec, accept
 from vsp.labeling.propagate import run_propagation
+from vsp.store import NotFound
 
 CLICK = PromptSpec(type="clicks", points=[(30, 30, 1)])
 
@@ -57,3 +58,9 @@ def test_clear_range_spares_keyframes_and_trims_ranges(store, make_clip):
 def test_clear_range_without_an_object_is_a_no_op(store, make_clip):
     _, clip = make_clip(n_frames=6)
     assert clear_range(store, clip.id, 0, 5).objects == []
+
+
+def test_unknown_clip_does_not_grow_the_lock_table(store):
+    with pytest.raises(NotFound):
+        delete_frame(store, "nope", 0)
+    assert "nope" not in store._locks

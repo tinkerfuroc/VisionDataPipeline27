@@ -9,7 +9,7 @@ from fastapi import Depends, Request
 
 from ..config import Settings
 from ..engine.types import EngineNotLoaded
-from ..jobs import JobBusy, JobManager
+from ..jobs import JobManager
 from ..store import ProjectStore
 
 GPU = "gpu"  # exclusive key: one GPU job at a time
@@ -37,8 +37,9 @@ def require_engine(state: AppState):
     return state.engine
 
 
-def require_gpu_idle(state: AppState) -> None:
-    """Fail fast with 409 instead of blocking a worker thread on the engine lock."""
-    running = state.jobs.running(GPU)
-    if running is not None:
-        raise JobBusy(running)
+def gpu_lease(state: AppState):
+    """An interactive hold on the GPU: excludes `POST /propagate` from starting for as long as the
+    `with` body runs, atomically with the engine call inside it. Fails fast with 409 (`job_id`) if a
+    propagation job already holds the GPU, instead of blocking a worker thread on the engine lock.
+    """
+    return state.jobs.lease(GPU)
