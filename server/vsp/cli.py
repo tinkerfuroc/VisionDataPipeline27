@@ -3,15 +3,26 @@
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 
 from .config import DEFAULT_CONFIG_PATH, Settings
 from .engine.device import cuda_capabilities, pick_device
+from .weights import convert_checkpoint, verify_checkpoint
 
 
 def _load_settings(config: str | None) -> Settings:
     if config:
         return Settings.load(config)
     return Settings.load(DEFAULT_CONFIG_PATH if DEFAULT_CONFIG_PATH.is_file() else None)
+
+
+def _report(problems: list[str], target: str) -> int:
+    if not problems:
+        print(f"OK: {target}")
+        return 0
+    for p in problems:
+        print(f"PROBLEM: {p}")
+    return 1
 
 
 def _doctor(settings: Settings) -> int:
@@ -44,9 +55,28 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", default=None, help="path to a YAML config (default: configs/default.yaml)")
     sub = parser.add_subparsers(dest="cmd", required=True)
     sub.add_parser("doctor", help="check the torch build, GPU selection and bfloat16 support")
+    sub.add_parser("verify-weights", help="check that sam3.model_dir is a complete converted checkpoint")
+    p_conv = sub.add_parser("convert-weights", help="convert Meta's public sam3.pt to HF format")
+    p_conv.add_argument("--checkpoint", required=True, help="path to sam3.pt")
+    p_conv.add_argument(
+        "--converter", required=True,
+        help="path to convert_sam3_video_to_hf.py downloaded from the transformers GitHub repo",
+    )
+    p_conv.add_argument("--out", required=True, help="output directory (HF format)")
+    p_conv.add_argument(
+        "--official-files-from", required=True,
+        help="directory holding the official tokenizer/processor files (the facebook/sam3 repo files)",
+    )
     args = parser.parse_args(argv)
     settings = _load_settings(args.config)
     if args.cmd == "doctor":
         return _doctor(settings)
+    if args.cmd == "verify-weights":
+        return _report(verify_checkpoint(settings.sam3.model_dir), str(settings.sam3.model_dir))
+    if args.cmd == "convert-weights":
+        problems = convert_checkpoint(
+            Path(args.checkpoint), Path(args.converter), Path(args.out), Path(args.official_files_from)
+        )
+        return _report(problems, args.out)
     parser.error(f"unknown command {args.cmd}")
     return 2
