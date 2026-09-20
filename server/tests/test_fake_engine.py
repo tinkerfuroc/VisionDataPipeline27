@@ -75,3 +75,33 @@ def test_predict_text_returns_ranked_candidates():
     assert [d.score for d in dets] == sorted((d.score for d in dets), reverse=True)
     assert all(d.phrase == "connector" for d in dets)
     assert not (dets[0].mask & dets[1].mask).any()  # distinct objects
+
+
+def test_predict_prompt_rejects_a_speck_box():
+    eng = FakeEngine()
+    img = _frames(1)[0]
+    assert eng.predict_prompt(img, box=(10, 20, 15, 25)) is None  # 5x5 = 25 px < 64
+
+
+def test_predict_prompt_rejects_a_frame_covering_box():
+    eng = FakeEngine()
+    img = _frames(1)[0]  # 60x120
+    assert eng.predict_prompt(img, box=(0, 0, 120, 60)) is None
+
+
+def test_propagate_yields_none_once_the_shifted_mask_shrinks_below_min_area():
+    # seed is a 20x20 (400 px) block at columns [10,30); with dx=27 the visible sliver at
+    # offset 4 (shift 108) is only 2 columns wide (40 px), well under min_area_px=64, but
+    # still nonzero -- so this exercises the degenerate-mask filter, not the "shifted off
+    # the frame entirely" all-zero case that was already handled.
+    eng = FakeEngine(dx=27)
+    out = dict(eng.propagate(_frames(5), _seed()))
+    assert out[0] is not None and out[1] is not None and out[2] is not None and out[3] is not None
+    assert out[4] is None
+
+
+def test_fake_engine_knobs_accept_the_speck_box():
+    eng = FakeEngine(min_area_px=1, max_area_frac=1.0)
+    img = _frames(1)[0]
+    det = eng.predict_prompt(img, box=(10, 20, 15, 25))
+    assert det is not None and det.bbox == (10, 20, 15, 25)

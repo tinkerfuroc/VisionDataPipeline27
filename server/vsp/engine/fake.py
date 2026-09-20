@@ -6,7 +6,7 @@ from collections.abc import Callable, Iterator, Sequence
 
 import numpy as np
 
-from .masks import bbox_of
+from .masks import bbox_of, is_degenerate_mask
 from .types import ChunkOOMError, Detection, Point
 
 
@@ -17,12 +17,19 @@ class FakeEngine:
         n_text_candidates: int = 2,
         oom_if_more_than: int | None = None,
         is_empty: Callable[[np.ndarray], bool] | None = None,
+        max_area_frac: float = 0.45,
+        min_area_px: int = 64,
     ) -> None:
         self.dx = dx
         self.n_text_candidates = n_text_candidates
         self.oom_if_more_than = oom_if_more_than
         self.is_empty = is_empty
+        self.max_area_frac = max_area_frac
+        self.min_area_px = min_area_px
         self.propagate_calls: list[int] = []
+
+    def _is_degenerate(self, mask: np.ndarray) -> bool:
+        return is_degenerate_mask(mask, max_area_frac=self.max_area_frac, min_area_px=self.min_area_px)
 
     def is_loaded(self) -> bool:
         return True
@@ -34,6 +41,8 @@ class FakeEngine:
             mask = np.zeros((h, w), dtype=bool)
             x0 = 5 + i * 30
             mask[5:25, x0:x0 + 20] = True
+            if self._is_degenerate(mask):
+                continue
             dets.append(Detection(mask=mask, bbox=bbox_of(mask), score=0.9 - 0.1 * i, phrase=phrase))
         return dets
 
@@ -59,7 +68,7 @@ class FakeEngine:
         for x, y, lbl in points:
             if lbl == 0:
                 mask[max(0, y - 2):y + 3, max(0, x - 2):x + 3] = False
-        if not mask.any():
+        if not mask.any() or self._is_degenerate(mask):
             return None
         return Detection(mask=mask, bbox=bbox_of(mask), score=0.95)
 
@@ -84,4 +93,4 @@ class FakeEngine:
                 shifted = seed_mask.copy()
             elif s < seed_mask.shape[1]:
                 shifted[:, s:] = seed_mask[:, :-s]
-            yield offset, (shifted if shifted.any() else None)
+            yield offset, (None if self._is_degenerate(shifted) else shifted)
