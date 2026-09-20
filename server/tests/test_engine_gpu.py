@@ -189,3 +189,30 @@ def test_peak_vram_fits_the_12gb_card(engine, video):
     peak = torch.cuda.max_memory_allocated(engine.device) / 2**30
     print(f"\n[vram] peak during 24-frame propagate: {peak:.2f} GiB")
     assert peak < 11.0
+
+
+def test_many_click_refinement_with_a_box_stays_accurate(engine, video):
+    """Plan 1 verified box + 2 clicks only; the labeling layer sends a box-from-mask plus every click."""
+    frames, truth = video
+    cx, cy = 120, 200
+    box = (cx - R - 10, cy - R - 10, cx + R + 10, cy + R + 10)
+    points = [
+        (cx, cy, 1), (cx - 20, cy, 1), (cx + 20, cy - 10, 1),
+        (cx - R - 25, cy, 0), (cx + R + 25, cy, 0), (cx, cy + R + 25, 0),
+    ]
+    det = engine.predict_prompt(frames[0], box=box, points=points, frame_key=("t", 0))
+    assert det is not None
+    assert _iou(det.mask, truth[0]) > 0.85
+
+
+def test_many_clicks_without_a_box_stay_accurate(engine, video):
+    """The fresh-prompt path: several positive and negative clicks, no box at all."""
+    frames, truth = video
+    cx, cy = 120, 200
+    points = [
+        (cx, cy, 1), (cx - 20, cy, 1), (cx + 20, cy - 10, 1),
+        (cx - R - 25, cy, 0), (cx + R + 25, cy, 0), (cx, cy + R + 25, 0),
+    ]
+    det = engine.predict_prompt(frames[0], points=points, frame_key=("t", 0))
+    assert det is not None
+    assert _iou(det.mask, truth[0]) > 0.85

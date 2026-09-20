@@ -20,6 +20,6 @@ repository root, not the current working directory, so `vsp` can be run from any
 
 - Date: 2026-09-20
 - GPU: NVIDIA GeForce RTX 3080 Ti, driver 535.183.01, torch 2.14.0+cu126, transformers 5.17.0
-- GPU smoke tests: 10 passed
+- GPU smoke tests: 12 passed
 - Peak VRAM, 24-frame propagate at 640x480: 2.47 GiB
 - Text prompt "red circle" on the synthetic scene: 1 detection(s)
