@@ -1,0 +1,67 @@
+"""Typed settings loaded from configs/default.yaml. Unknown keys are errors."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Literal
+
+import yaml
+from pydantic import BaseModel, ConfigDict, Field
+
+DEFAULT_CONFIG_PATH = Path("configs/default.yaml")
+
+
+class _Cfg(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class ServerCfg(_Cfg):
+    host: str = "127.0.0.1"
+    port: int = 28000
+
+
+class ProjectCfg(_Cfg):
+    data_root: Path = Path("./data")
+
+
+class IngestCfg(_Cfg):
+    allowed_roots: list[str] = Field(default_factory=lambda: ["~"])
+    default_stride: int = 1
+    jpeg_quality: int = 95
+    thumb_width: int = 160
+
+
+class Sam3Cfg(_Cfg):
+    model_dir: Path = Path("./vision_train/sam3_checkpoint_hf")
+    device: str = "auto"
+    dtype: Literal["bfloat16", "float16", "float32"] = "bfloat16"
+    text_threshold: float = 0.45
+    box_threshold: float = 0.4
+    score_mode: Literal["native", "per_query"] = "native"
+
+
+class PropagateCfg(_Cfg):
+    chunk_size: int = 24
+    min_chunk_size: int = 4
+    lost_after: int = 15
+
+
+class ExportCfg(_Cfg):
+    val_fraction: float = 0.2
+    min_area_px: int = 64
+
+
+class Settings(_Cfg):
+    server: ServerCfg = Field(default_factory=ServerCfg)
+    project: ProjectCfg = Field(default_factory=ProjectCfg)
+    ingest: IngestCfg = Field(default_factory=IngestCfg)
+    sam3: Sam3Cfg = Field(default_factory=Sam3Cfg)
+    propagate: PropagateCfg = Field(default_factory=PropagateCfg)
+    export: ExportCfg = Field(default_factory=ExportCfg)
+
+    @classmethod
+    def load(cls, path: str | Path | None = None) -> Settings:
+        if path is None:
+            return cls()
+        data = yaml.safe_load(Path(path).read_text()) or {}
+        return cls.model_validate(data)

@@ -1,0 +1,12 @@
+server:    {host: 127.0.0.1, port: 28000}
+project:   {data_root: ./data}
+ingest:    {allowed_roots: ["~"], default_stride: 1, jpeg_quality: 95, thumb_width: 160}
+sam3:
+  model_dir: ./vision_train/sam3_checkpoint_hf
+  device: auto          # first CUDA device with compute capability >= 8.0; or "cuda:N"
+  dtype: bfloat16
+  text_threshold: 0.45
+  box_threshold: 0.4
+  score_mode: native    # "per_query" drops the presence multiplier for verbose prompts
+propagate: {chunk_size: 24, min_chunk_size: 4, lost_after: 15}
+export:    {val_fraction: 0.2, min_area_px: 64}

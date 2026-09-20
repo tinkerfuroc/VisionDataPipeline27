@@ -1,0 +1,51 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "vsp"
+version = "0.1.0"
+description = "SAM3 video labeling pipeline with an interactive web GUI."
+requires-python = ">=3.11,<3.12"
+license = { text = "MIT" }
+dependencies = [
+    "pydantic>=2.5",
+    "pyyaml>=6.0",
+    "numpy>=1.26",
+    "opencv-python-headless>=4.10,<6",
+    "pillow>=10",
+    "safetensors>=0.4",
+    "torch==2.14.0+cu126",
+    "torchvision==0.29.0+cu126",
+    "transformers==5.17.0",
+]
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[project.scripts]
+vsp = "vsp.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["server/vsp"]
+
+[tool.uv]
+# torch "+cu126" wheels do not exist for macOS; restrict the lock to this platform.
+environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
+
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu126" }
+torchvision = { index = "pytorch-cu126" }
+
+[tool.pytest.ini_options]
+testpaths = ["server/tests"]
+markers = ["gpu: needs CUDA and the converted SAM3 checkpoint"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
