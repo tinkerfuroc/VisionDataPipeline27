@@ -9,7 +9,7 @@ proves (most importantly: Plan 1 Task 6 is the first time SAM3 inference runs on
 | # | Plan | Delivers | Needs GPU | Status |
 |---|---|---|---|---|
 | 1 | `2026-09-20-vsp-plan1-backend-core.md` | uv project, settings, `vsp doctor`, store, ingest, weights tooling, `Engine` protocol, `FakeEngine`, `Sam3Engine` verified on GPU | Task 6 only | **Done** (branch `plan1-backend-core`, 71 tests, 10 on GPU) |
-| 2 | `2026-09-20-vsp-plan2-labeling-api.md` — labeling, jobs, HTTP API | Everything the GUI calls, fully testable with `FakeEngine` and `TestClient` | One added GPU test | **Written, ready to execute** |
+| 2 | `2026-09-20-vsp-plan2-labeling-api.md` — labeling, jobs, HTTP API | Everything the GUI calls, fully testable with `FakeEngine` and `TestClient` | Two added GPU tests | **Done** (branch `plan2-labeling-api`, 167 tests, 12 on GPU) |
 | 3 | Web GUI | React SPA: Clips page, Label page, served by `vsp serve` | For manual QA | Outline below |
 | 4 | Export | `ExportPlan` + YOLO-seg, YOLO-det, COCO, mask PNG exporters, Export dialog | No | Outline below |
 
@@ -49,6 +49,57 @@ Deferred cosmetic minors (none blocking): `device.py` error message names the `s
 redundant `tuple()`; `cli.py` has an unreachable `return 2`; `convert_checkpoint` has no unit test (thin glue
 over an external script).
 
+## Carried forward from Plan 2 (executed 2026-09-20, branch `plan2-labeling-api`)
+
+Verified end to end with the real engine over HTTP: click prompt → mask of 6476 px for a true disc of ≈ 6362 px,
+forward propagation 19/19 frames. Multi-click refinement measured on the 3080 Ti: IoU 0.95 with a box + 6 clicks,
+0.99 with 6 clicks and no box (`multimask_max_pt_num = 32` holds up).
+
+API behaviours the GUI (Plan 3) must design around:
+
+- **GPU exclusivity.** `POST /prompt`, `/accept`, `/clear-range` and `DELETE /api/clips/{c}` hold an *interactive
+  lease*: they return 409 `{"detail", "job_id": "<running job>"}` while a propagate job runs, and queue behind each
+  other on the engine lock (overlapping previews never 409). `POST /propagate` returns 409 `{"job_id": "interactive"}`
+  for the few milliseconds an interactive call is in flight — **`rest.ts` must retry this**, not show it.
+  `delete` / `restore` / `prune` and all reads stay allowed during a job; prune does **not** stop a running propagation.
+- **Error bodies.** Mapped errors are `{"detail": "<string>"}` (404, 409, 400, 503 engine not loaded, 500 propagation
+  failed). FastAPI validation errors are 422 with `detail` as a *list* — handle both shapes. At 503 import, browsing
+  and frame cleanup keep working.
+- **Prompts.** The server normalises inverted boxes, clamps boxes to the frame and rejects boxes under 2 px and points
+  outside the frame with 400 — the canvas should still clamp clicks to `[0, width) × [0, height)`.
+  "No usable mask" (under 64 px or over 45 % of the frame) is a 400 with an explanatory `detail`.
+  A `clicks` prompt on an already-masked frame becomes a correction automatically (`payload.box_from_mask` is recorded).
+- **Health.** `loaded: true` | `loaded: false, error: null` (still loading in the background — normal for the first
+  seconds) | `loaded: false, error: "<reason>"` (show the banner).
+- **Jobs.** 202 `{"job_id"}` from propagate and both imports. `WS /ws/jobs/{id}` replays from `seq` 0, streams, closes;
+  unknown id → close code 4404. Events: `progress {done, total}` (**`total` is absent for imports**), `frame {frame,
+  has_mask, done, total}`, `log {message}`, then exactly one of `done` / `cancelled` (result spread in) / `error
+  {message}`. The terminal event is appended before `status` flips. A job is `cancelled` only if its work actually
+  stopped early; a cancelled import removes its partial clip. There is **no HTTP events endpoint** — a polling fallback
+  sees status/result only (`Job.events_since` exists; adding `GET /api/jobs/{j}/events?since=N` is trivial if wanted).
+  Stop takes effect at the next frame boundary inside a chunk; a WebSocket client that disconnects while no events are
+  pending is only noticed at the next event.
+- **Propagation result.** `{processed, written, cleared, lost_at, cancelled, oom_retries, lost_by_direction}`;
+  `lost_at` is the forward loss when both directions lose. Seek the timeline there.
+- **Clip detail.** `{clip, states, classes}`; `states[i]` ∈ `empty | masked | keyframe | deleted`. **Drive the timeline
+  from `states`, never from `propagated_ranges`** — a range means "visited by propagation", including frames where the
+  object was absent. Frame-op responses return the same shape; while a job is live prefer the WS `frame` events.
+- **Classes** are created with `POST /api/projects/{p}/classes {name}` → 201 (not `PATCH /projects/{p}` as spec §4
+  sketched); "type a new class name" in the UI is two calls. `class_id` is required on the first accept for a clip.
+- **Files.** Frames and thumbs are immutable JPEGs (cacheable); masks are PNG with `Cache-Control: no-cache` and 404
+  when the object is absent in that frame.
+- **SPA.** `create_app` mounts `web/dist` at `/` when the directory exists; no server change needed once Plan 3 builds.
+
+Deferred minors (none blocking): `_record_range` uses `next()` without a default; `store.clip_dir` globs per call
+(µs against a ms-scale GPU step); `_effective_box` is computed twice per accept; `JobManager` never evicts finished jobs
+or their events; `Job.status` is written without the manager lock (GIL-dependent); lease starvation is possible under an
+unbroken stream of interactive calls; no upload size limit; the upload-write cleanup and the WebSocket close
+suppression have no test; `PromptSpec.box` accepts floats (truncated to int when clamped); a text prompt carrying a stray
+`box` is validated in `accept` but not in `preview`; `delete_clip` takes the GPU lease but not the clip lock, so it can
+still interleave with delete/restore/prune on the same clip; `ProjectStore.lock`'s parameter is named `clip_id` although
+`add_class` passes a project id; propagate's synchronous validation is best-effort (a keyframe
+removed between the route and the job thread surfaces as a job error).
+
 ## Plan 2 outline — labeling, jobs, HTTP API (spec §4 API table, §5.2–§5.4, §9)
 
 Adds dependencies: `fastapi`, `uvicorn[standard]`, `python-multipart`; dev: `httpx`, `pytest-asyncio`.
@@ -78,7 +129,7 @@ Adds dependencies: `fastapi`, `uvicorn[standard]`, `python-multipart`; dev: `htt
 
 ## Plan 3 outline — web GUI (spec §7)
 
-Prerequisite: Node 20+ installed user-level with nvm (not yet on this machine). Stack: React + Vite +
+Prerequisite: Node 22 is installed user-level with nvm (source `~/.nvm/nvm.sh` explicitly in non-interactive shells). Stack: React + Vite +
 Tailwind, ported `rest.ts` and canvas-overlay code from the template (its `web/` directory is complete,
 unlike its `server/`).
 

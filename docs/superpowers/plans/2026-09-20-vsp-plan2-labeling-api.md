@@ -2467,3 +2467,15 @@ EOF
 - `uv run vsp serve` starts, `/api/health` reaches `engine.loaded: true` on this machine, and `/docs` lists every route in the spec's API table except export (Plan 4).
 - A full flow works over HTTP with the real engine: import frames → click prompt → accept → propagate both → correct mid-clip → propagate → clear range. (The automated version of this runs against `FakeEngine`; doing it once by hand against the real engine is Plan 3's manual QA, where there is a GUI to do it with.)
 - `git ls-files | grep -c vision_train` prints `0`.
+
+---
+
+## As executed (2026-09-20)
+
+All seven tasks landed on `plan2-labeling-api`. The per-task `passed` totals above were written before execution and
+are superseded: review-driven fix rounds added tests, so the branch ends at **167 passed** (12 on GPU), not 130.
+Changes made during execution that go beyond this plan's text — the hardened propagation runner (mid-chunk OOM
+bookkeeping, offset validation, `lost_by_direction`, per-chunk `deleted_frames` refresh, cancel latch), interactive GPU
+leases in `JobManager` (replacing `require_gpu_idle`), the lease on `DELETE /api/clips/{c}`, server-side box/point
+validation, cancellable imports with honest `cancelled` status, `add_class` under a project lock and
+`Cache-Control: no-cache` on masks — are summarised for Plan 3 in the roadmap's "Carried forward from Plan 2" section.
