@@ -8,7 +8,14 @@ from typing import Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
 
-DEFAULT_CONFIG_PATH = Path("configs/default.yaml")
+REPO_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_CONFIG_PATH = REPO_ROOT / "configs" / "default.yaml"
+
+
+def _resolve_repo_path(value: str | Path) -> Path:
+    """Relative paths in config are relative to REPO_ROOT, not the process CWD."""
+    p = Path(value).expanduser()
+    return p if p.is_absolute() else REPO_ROOT / p
 
 
 class _Cfg(BaseModel):
@@ -62,6 +69,10 @@ class Settings(_Cfg):
     @classmethod
     def load(cls, path: str | Path | None = None) -> Settings:
         if path is None:
-            return cls()
-        data = yaml.safe_load(Path(path).read_text()) or {}
-        return cls.model_validate(data)
+            settings = cls()
+        else:
+            data = yaml.safe_load(Path(path).read_text()) or {}
+            settings = cls.model_validate(data)
+        settings.project.data_root = _resolve_repo_path(settings.project.data_root)
+        settings.sam3.model_dir = _resolve_repo_path(settings.sam3.model_dir)
+        return settings

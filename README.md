@@ -13,10 +13,13 @@ Design: `docs/superpowers/specs/2026-09-20-vision-sampler-design.md`.
 Python, torch (`2.14.0+cu126`) and transformers (`5.17.0`) are pinned in `pyproject.toml`.
 Do not install torch from PyPI: its default build needs an NVIDIA driver >= 580.
 
+Relative paths in the config (`project.data_root`, `sam3.model_dir`) are resolved against the
+repository root, not the current working directory, so `vsp` can be run from any directory.
+
 ## Verified on this machine
 
 - Date: 2026-09-20
 - GPU: NVIDIA GeForce RTX 3080 Ti, driver 535.183.01, torch 2.14.0+cu126, transformers 5.17.0
-- GPU smoke tests: 9 passed
+- GPU smoke tests: 10 passed
 - Peak VRAM, 24-frame propagate at 640x480: 2.47 GiB
 - Text prompt "red circle" on the synthetic scene: 1 detection(s)

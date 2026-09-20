@@ -471,11 +471,13 @@ Run with `uv run pytest` from `server/`.
 server:    {host: 127.0.0.1, port: 28000}
 project:   {data_root: ./data}
 ingest:    {allowed_roots: ["~"], default_stride: 1, jpeg_quality: 95, thumb_width: 160}
-sam3:      {model_dir: ./sam3_checkpoint_hf, device: auto, dtype: bfloat16,
+sam3:      {model_dir: ./vision_train/sam3_checkpoint_hf, device: auto, dtype: bfloat16,
             text_threshold: 0.45, box_threshold: 0.4, score_mode: native}
 propagate: {chunk_size: 24, min_chunk_size: 4, lost_after: 15}
 export:    {val_fraction: 0.2, min_area_px: 64}
 ```
+
+Relative paths are resolved against the repository root, not the working directory.
 
 `sam3.device: auto` selects the first CUDA device with compute capability
 ≥ 8.0 (native bfloat16), which on this machine is the RTX 3080 Ti regardless

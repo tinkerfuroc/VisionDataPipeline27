@@ -10,10 +10,14 @@ from .engine.device import cuda_capabilities, pick_device
 from .weights import convert_checkpoint, verify_checkpoint
 
 
-def _load_settings(config: str | None) -> Settings:
+def _load_settings(config: str | None) -> tuple[Settings, Path | None]:
+    """Returns the loaded settings and the absolute config path used (None for built-in defaults)."""
     if config:
-        return Settings.load(config)
-    return Settings.load(DEFAULT_CONFIG_PATH if DEFAULT_CONFIG_PATH.is_file() else None)
+        path = Path(config).resolve()
+        return Settings.load(config), path
+    if DEFAULT_CONFIG_PATH.is_file():
+        return Settings.load(DEFAULT_CONFIG_PATH), DEFAULT_CONFIG_PATH
+    return Settings.load(None), None
 
 
 def _report(problems: list[str], target: str) -> int:
@@ -25,9 +29,12 @@ def _report(problems: list[str], target: str) -> int:
     return 1
 
 
-def _doctor(settings: Settings) -> int:
+def _doctor(settings: Settings, config_path: Path | None) -> int:
     import torch
 
+    print(f"config:    {config_path if config_path is not None else '(built-in defaults)'}")
+    print(f"data_root: {settings.project.data_root}")
+    print(f"model_dir: {settings.sam3.model_dir}")
     print(f"torch {torch.__version__} (CUDA build {torch.version.cuda})")
     caps = cuda_capabilities()
     for i, cap in enumerate(caps):
@@ -68,9 +75,9 @@ def main(argv: list[str] | None = None) -> int:
         help="directory holding the official tokenizer/processor files (the facebook/sam3 repo files)",
     )
     args = parser.parse_args(argv)
-    settings = _load_settings(args.config)
+    settings, config_path = _load_settings(args.config)
     if args.cmd == "doctor":
-        return _doctor(settings)
+        return _doctor(settings, config_path)
     if args.cmd == "verify-weights":
         return _report(verify_checkpoint(settings.sam3.model_dir), str(settings.sam3.model_dir))
     if args.cmd == "convert-weights":
