@@ -1,0 +1,113 @@
+"""Thread-backed background jobs with an append-only event list (spec: start / poll / cancel / stream)."""
+
+from __future__ import annotations
+
+import threading
+import uuid
+from collections.abc import Callable
+from datetime import UTC, datetime
+
+TERMINAL = frozenset({"done", "error", "cancelled"})
+
+
+class JobBusy(Exception):
+    def __init__(self, job_id: str) -> None:
+        super().__init__(f"job {job_id} is still running")
+        self.job_id = job_id
+
+
+class JobNotFound(KeyError):
+    pass
+
+
+class Job:
+    def __init__(self, kind: str, exclusive: str | None) -> None:
+        self.id = uuid.uuid4().hex[:12]
+        self.kind = kind
+        self.exclusive = exclusive
+        self.status = "pending"
+        self.result: dict | None = None
+        self.error: str | None = None
+        self.created_at = datetime.now(UTC).isoformat(timespec="seconds")
+        self._events: list[dict] = []
+        self._lock = threading.Lock()
+        self._cancel = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def emit(self, event: dict) -> None:
+        with self._lock:
+            self._events.append({**event, "seq": len(self._events)})
+
+    def events_since(self, n: int) -> list[dict]:
+        with self._lock:
+            return list(self._events[n:])
+
+    def request_cancel(self) -> None:
+        self._cancel.set()
+
+    def cancel_requested(self) -> bool:
+        return self._cancel.is_set()
+
+    def join(self, timeout: float | None = None) -> None:
+        if self._thread is not None:
+            self._thread.join(timeout)
+
+    def snapshot(self) -> dict:
+        with self._lock:
+            n_events = len(self._events)
+        return {
+            "id": self.id, "kind": self.kind, "status": self.status, "result": self.result,
+            "error": self.error, "created_at": self.created_at, "n_events": n_events,
+        }
+
+
+class JobManager:
+    def __init__(self) -> None:
+        self._jobs: dict[str, Job] = {}
+        self._lock = threading.Lock()
+
+    def start(self, kind: str, fn: Callable[[Job], dict | None], *, exclusive: str | None = None) -> Job:
+        with self._lock:
+            if exclusive is not None:
+                for other in self._jobs.values():
+                    if other.exclusive == exclusive and other.status not in TERMINAL:
+                        raise JobBusy(other.id)
+            job = Job(kind, exclusive)
+            self._jobs[job.id] = job
+        job._thread = threading.Thread(target=self._run, args=(job, fn), name=f"job-{kind}-{job.id}", daemon=True)
+        job._thread.start()
+        return job
+
+    @staticmethod
+    def _run(job: Job, fn: Callable[[Job], dict | None]) -> None:
+        job.status = "running"
+        try:
+            result = fn(job) or {}
+        except Exception as e:  # noqa: BLE001 - a job must never take the server down
+            job.error = f"{type(e).__name__}: {e}"
+            job.emit({"type": "error", "message": job.error})
+            job.status = "error"
+            return
+        job.result = result
+        final = "cancelled" if job.cancel_requested() else "done"
+        job.emit({"type": final, **result})  # event first, status second: streamers rely on this order
+        job.status = final
+
+    def get(self, job_id: str) -> Job:
+        with self._lock:
+            job = self._jobs.get(job_id)
+        if job is None:
+            raise JobNotFound(job_id)
+        return job
+
+    def cancel(self, job_id: str) -> Job:
+        job = self.get(job_id)
+        job.request_cancel()
+        return job
+
+    def running(self, exclusive: str) -> str | None:
+        with self._lock:
+            for job in self._jobs.values():
+                if job.exclusive == exclusive and job.status not in TERMINAL:
+                    return job.id
+        return None
