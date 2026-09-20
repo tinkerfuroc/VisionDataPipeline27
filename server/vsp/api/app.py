@@ -18,7 +18,7 @@ from ..ingest import IngestError
 from ..jobs import JobBusy, JobManager, JobNotFound
 from ..labeling.errors import BadRequest, Conflict, PropagationFailed
 from ..store import NotFound, ProjectStore, StoreError
-from . import clips, jobs, projects
+from . import clips, jobs, labeling, projects
 from .deps import AppState, State
 
 log = logging.getLogger(__name__)
@@ -88,6 +88,7 @@ def create_app(settings: Settings, *, engine=None, load_engine: bool = True) -> 
 
     app.include_router(projects.router)
     app.include_router(clips.router)
+    app.include_router(labeling.router)
     app.include_router(jobs.router)
 
     dist = REPO_ROOT / "web" / "dist"  # built by Plan 3; absent until then

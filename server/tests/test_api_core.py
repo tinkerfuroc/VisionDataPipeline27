@@ -1,12 +1,4 @@
 import time
-import warnings
-
-# The pinned starlette/httpx combo emits two import-time deprecation warnings when
-# fastapi.testclient itself is imported below (not from our code); pyproject.toml/uv.lock
-# cannot change outside Task 1, so the filters are installed here, before that import, instead
-# of via the global filterwarnings ini option.
-warnings.filterwarnings("ignore", message=r"Using `httpx` with `starlette\.testclient`.*")
-warnings.filterwarnings("ignore", message=r"The anyio\.abc\.BlockingPortal alias is deprecated.*")
 
 import cv2
 import numpy as np

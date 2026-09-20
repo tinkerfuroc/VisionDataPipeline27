@@ -23,3 +23,12 @@ repository root, not the current working directory, so `vsp` can be run from any
 - GPU smoke tests: 12 passed
 - Peak VRAM, 24-frame propagate at 640x480: 2.47 GiB
 - Text prompt "red circle" on the synthetic scene: 1 detection(s)
+
+## Run the server
+
+    HF_HUB_OFFLINE=1 uv run vsp serve        # http://127.0.0.1:28000 ; the model loads in the background
+    curl -s --noproxy '*' http://127.0.0.1:28000/api/health
+
+`/api/health` shows `engine.loaded` and, if loading failed, the reason. Interactive API docs: `/docs`.
+Importing, browsing and frame cleanup work without a GPU; prompting and propagation return 503 until the
+engine is loaded, and 409 (with the running `job_id`) while a propagation job holds the GPU.

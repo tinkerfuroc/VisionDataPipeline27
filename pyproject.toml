@@ -50,6 +50,8 @@ testpaths = ["server/tests"]
 markers = ["gpu: needs CUDA and the converted SAM3 checkpoint"]
 filterwarnings = [
     "ignore:`torch\\.jit\\.script` is deprecated\\. Please switch to `torch\\.compile` or `torch\\.export`\\.:FutureWarning",
+    "ignore:Using `httpx` with `starlette\\.testclient` is deprecated; install `httpx2` instead\\.:starlette.exceptions.StarletteDeprecationWarning",
+    "ignore:The anyio\\.abc\\.BlockingPortal alias is deprecated, use anyio\\.from_thread\\.BlockingPortal instead\\.:DeprecationWarning",
 ]
 
 [tool.ruff]
