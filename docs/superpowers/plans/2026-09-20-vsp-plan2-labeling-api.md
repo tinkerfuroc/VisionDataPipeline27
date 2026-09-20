@@ -2151,7 +2151,8 @@ EOF
   - `POST /api/clips/{c}/prompt` body `{"frame": int, "prompt": PromptSpec}` → `{"candidates": [candidate_view…]}`; 503 if the engine is not loaded; 409 (`job_id`) while a GPU job runs.
   - `POST /api/clips/{c}/accept` body `{"frame", "prompt", "class_id": int | null, "candidate": int = 0}`; same 503/409 rules.
   - `POST /api/clips/{c}/propagate` body `{"from_frame": int, "direction": "forward"|"backward"|"both"}` → 202 `{"job_id"}`; validates synchronously (a non-keyframe is a 400, not a failed job); exclusive key `GPU`.
-  - `POST /api/clips/{c}/frames/{i}/delete`, `POST /api/clips/{c}/frames/{i}/restore`, `POST /api/clips/{c}/prune` body `{"from": int}`, `POST /api/clips/{c}/clear-range` body `{"start": int, "end": int}`.
+  - `POST /api/clips/{c}/frames/{i}/delete`, `POST /api/clips/{c}/frames/{i}/restore`, `POST /api/clips/{c}/prune` body `{"from": int}`, `POST /api/clips/{c}/clear-range` body `{"start": int, "end": int}`. Delete/restore/prune are allowed while a GPU job runs (the runner refreshes `deleted_frames` per chunk); **clear-range returns 409 with `job_id` while a GPU job runs**, because it deletes masks and trims `propagated_ranges` that the runner is writing (ruling from the Task 3 review).
+  - Propagate job result also carries `lost_by_direction` (added in the Task 3 fix round).
   - Propagate job result: `PropagateResult.as_dict()`; events as defined in Task 3.
 
 - [ ] **Step 1: Write the failing tests**
@@ -2258,7 +2259,9 @@ def test_gpu_is_exclusive_and_jobs_can_be_cancelled_and_streamed(tmp_path):
         assert busy.status_code == 409 and busy.json()["job_id"] == job_id
         assert client.post(f"/api/clips/{cid}/prompt", json={"frame": 0, "prompt": CLICK}).status_code == 409
         assert client.post(f"/api/clips/{cid}/accept", json={"frame": 1, "prompt": CLICK}).status_code == 409
-        assert client.post(f"/api/clips/{cid}/frames/30/delete").status_code == 200  # cleanup is not GPU work
+        assert client.post(f"/api/clips/{cid}/frames/30/delete").status_code == 200  # flagging a frame is safe mid-run
+        blocked = client.post(f"/api/clips/{cid}/clear-range", json={"start": 1, "end": 3})
+        assert blocked.status_code == 409 and blocked.json()["job_id"] == job_id  # it mutates what the runner writes
 
         events = []
         with client.websocket_connect(f"/ws/jobs/{job_id}") as ws:
@@ -2415,6 +2418,8 @@ def prune(clip_id: str, body: PruneBody, state: State) -> dict:
 
 @router.post("/clear-range")
 def clear_range(clip_id: str, body: RangeBody, state: State) -> dict:
+    state.store.read_clip(clip_id)
+    require_gpu_idle(state)  # it deletes masks and trims ranges a running propagation is writing
     return clip_detail(state, frame_ops.clear_range(state.store, clip_id, body.start, body.end))
 ```
 
