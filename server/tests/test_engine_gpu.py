@@ -83,6 +83,18 @@ def test_negative_click_is_accepted_together_with_box(engine, video):
     assert det is not None and _iou(det.mask, truth[0]) > 0.85
 
 
+def test_prompt_masks_pass_through_the_degenerate_filter(engine, video, monkeypatch):
+    frames, _ = video
+    # The disc is ~6362 px of 307200 (2.1 %). Force each bound in turn so the real mask becomes "degenerate".
+    monkeypatch.setattr(engine, "MAX_MASK_AREA_FRAC", 0.001)
+    assert engine.predict_prompt(frames[0], points=[(120, 200, 1)], frame_key=("t", 0)) is None
+    monkeypatch.setattr(engine, "MAX_MASK_AREA_FRAC", 0.45)
+    monkeypatch.setattr(engine, "MIN_MASK_AREA_PX", 10**6)
+    assert engine.predict_prompt(frames[0], points=[(120, 200, 1)], frame_key=("t", 0)) is None
+    monkeypatch.undo()
+    assert engine.predict_prompt(frames[0], points=[(120, 200, 1)], frame_key=("t", 0)) is not None
+
+
 def test_text_prompt_runs_and_returns_ranked_detections(engine, video):
     frames, _ = video
     dets = engine.predict_text(frames[0], "red circle", frame_key=("t", 0))

@@ -254,7 +254,7 @@ class Sam3Engine:
             out = self._model.tracker_model(inference_session=session, frame_idx=0)
             mask = self._binarize(out.pred_masks, h, w)
             score = float(out.object_score_logits.float().sigmoid().flatten()[0])
-        if not mask.any():
+        if is_degenerate_mask(mask, max_area_frac=self.MAX_MASK_AREA_FRAC, min_area_px=self.MIN_MASK_AREA_PX):
             return None
         return Detection(mask=mask, bbox=bbox_of(mask), score=score)
 
