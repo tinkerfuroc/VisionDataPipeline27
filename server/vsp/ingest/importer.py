@@ -13,6 +13,10 @@ from .source import FrameSource, IngestError
 _JPEG_SUFFIXES = {".jpg", ".jpeg"}
 
 
+class ImportCancelled(IngestError):
+    """The import was cancelled cooperatively via the `cancel` callback."""
+
+
 def import_clip(
     store: ProjectStore,
     project_id: str,
@@ -22,6 +26,7 @@ def import_clip(
     jpeg_quality: int = 95,
     thumb_width: int = 160,
     progress: Callable[[int], None] | None = None,
+    cancel: Callable[[], bool] | None = None,
 ) -> Clip:
     if stride < 1:
         raise IngestError("stride must be >= 1")
@@ -31,6 +36,8 @@ def import_clip(
         kept = 0
         names: dict[int, str] = {}
         for src_idx, fr in enumerate(source.frames()):
+            if cancel is not None and cancel():
+                raise ImportCancelled("import cancelled")
             if src_idx % stride:
                 continue
             h, w = fr.image.shape[:2]

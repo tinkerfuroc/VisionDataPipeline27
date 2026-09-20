@@ -3,6 +3,7 @@ import numpy as np
 import pytest
 from vsp.ingest import (
     FrameDirSource,
+    ImportCancelled,
     IngestError,
     VideoFileSource,
     import_clip,
@@ -144,6 +145,20 @@ def test_invalid_stride(store, tmp_path):
     p = store.create_project("p")
     with pytest.raises(IngestError, match="stride"):
         import_clip(store, p.id, FrameDirSource(src), stride=0)
+
+
+def test_cancel_mid_import_raises_import_cancelled_and_removes_the_partial_clip(store, tmp_path):
+    src = tmp_path / "frames"
+    src.mkdir()
+    for i in range(6):
+        _write(src / f"{i}.png", i * 10)
+    p = store.create_project("p")
+    seen = []
+    with pytest.raises(ImportCancelled):
+        import_clip(store, p.id, FrameDirSource(src), progress=seen.append, cancel=lambda: len(seen) >= 3)
+    assert seen == [1, 2, 3]  # 3 frames were written before the 4th iteration's cancel check fired
+    assert list((store.projects_dir / p.id / "clips").iterdir()) == []
+    assert store.list_clips(p.id) == []
 
 
 def test_thumbnail_write_failure_raises_and_cleans_up(store, tmp_path, monkeypatch):

@@ -2,6 +2,7 @@ import numpy as np
 import pytest
 from pydantic import ValidationError
 from vsp.engine.fake import FakeEngine
+from vsp.engine.masks import bbox_of
 from vsp.labeling.errors import BadRequest, Conflict
 from vsp.labeling.prompts import OBJECT_ID, PromptSpec, accept, create_object, padded_box, preview
 
@@ -128,6 +129,61 @@ def test_padded_box_is_clamped():
     m = np.zeros((60, 120), dtype=bool)
     m[0:10, 100:120] = True
     assert padded_box(m, 10, 120, 60) == (90, 0, 120, 20)
+
+
+def test_box_is_normalised_regardless_of_drag_direction():
+    assert PromptSpec(type="box", box=(80, 30, 40, 10)).box == (40.0, 10.0, 80.0, 30.0)
+    assert PromptSpec(type="box", box=(40, 10, 80, 30)).box == (40.0, 10.0, 80.0, 30.0)
+
+
+def test_box_with_non_finite_coordinates_is_a_bad_request():
+    with pytest.raises(BadRequest):
+        PromptSpec(type="box", box=(float("nan"), 0, 10, 10))
+    with pytest.raises(BadRequest):
+        PromptSpec(type="box", box=(0, 0, float("inf"), 10))
+
+
+def test_inverted_box_gives_the_same_mask_and_payload_stores_the_normalised_box(store, make_clip):
+    _, clip = make_clip()
+    eng = FakeEngine()
+    normal = PromptSpec(type="box", box=(40, 10, 80, 30))
+    inverted = PromptSpec(type="box", box=(80, 30, 40, 10))
+    normal_mask = preview(store, eng, clip, 0, normal)[0].mask
+    inverted_mask = preview(store, eng, clip, 0, inverted)[0].mask
+    assert np.array_equal(normal_mask, inverted_mask)
+    out = accept(store, eng, clip.id, 0, inverted, class_id=0)
+    assert out.objects[0].keyframes[0].prompt.payload["box"] == [40, 10, 80, 30]
+
+
+def test_box_partly_outside_the_frame_is_clamped_and_works(store, make_clip):
+    _, clip = make_clip()
+    eng = FakeEngine()
+    prompt = PromptSpec(type="box", box=(100, 10, 140, 30))
+    dets = preview(store, eng, clip, 0, prompt)
+    assert len(dets) == 1
+    assert bbox_of(dets[0].mask) == (100, 10, 120, 30)  # clamped to frame width 120
+
+
+def test_box_fully_outside_the_frame_is_a_bad_request(store, make_clip):
+    _, clip = make_clip()
+    prompt = PromptSpec(type="box", box=(130, 10, 150, 30))
+    with pytest.raises(BadRequest, match="empty or outside"):
+        preview(store, FakeEngine(), clip, 0, prompt)
+
+
+def test_zero_area_box_is_a_bad_request(store, make_clip):
+    _, clip = make_clip()
+    prompt = PromptSpec(type="box", box=(10, 10, 10, 10))
+    with pytest.raises(BadRequest, match="empty or outside"):
+        preview(store, FakeEngine(), clip, 0, prompt)
+
+
+def test_point_outside_the_frame_is_a_bad_request(store, make_clip):
+    _, clip = make_clip()
+    with pytest.raises(BadRequest, match="outside the frame"):
+        preview(store, FakeEngine(), clip, 0, PromptSpec(type="clicks", points=[(-1, 5, 1)]))
+    with pytest.raises(BadRequest, match="outside the frame"):
+        preview(store, FakeEngine(), clip, 0, PromptSpec(type="clicks", points=[(120, 5, 1)]))  # x == width
 
 
 def test_accept_rechecks_deleted_inside_the_lock(store, make_clip, monkeypatch):

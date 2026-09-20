@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 
 from fastapi import APIRouter, WebSocket
+from starlette.websockets import WebSocketDisconnect
 
 from ..jobs import TERMINAL, JobNotFound
 from .deps import State
@@ -38,4 +40,5 @@ async def stream_job(websocket: WebSocket, job_id: str) -> None:
         if terminal:
             break
         await asyncio.sleep(_POLL_SECONDS)
-    await websocket.close()
+    with contextlib.suppress(RuntimeError, WebSocketDisconnect):  # the client may already be gone
+        await websocket.close()

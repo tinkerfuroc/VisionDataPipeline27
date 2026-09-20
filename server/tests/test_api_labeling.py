@@ -157,13 +157,14 @@ def test_an_in_flight_prompt_blocks_propagate_atomically(tmp_path):
         t1.start()
         assert eng.entered.wait(5)  # t1 is inside predict_prompt, holding the GPU lease
 
-        blocked = client.post(f"/api/clips/{cid}/propagate", json={"from_frame": 0, "direction": "forward"})
-        assert blocked.status_code == 409 and blocked.json()["job_id"] == "interactive"
+        try:
+            blocked = client.post(f"/api/clips/{cid}/propagate", json={"from_frame": 0, "direction": "forward"})
+            assert blocked.status_code == 409 and blocked.json()["job_id"] == "interactive"
 
-        t2 = threading.Thread(target=_prompt, args=("b",))
-        t2.start()  # a second interactive call queues on the gate; it must not bounce with 409
-
-        eng.release.set()
+            t2 = threading.Thread(target=_prompt, args=("b",))
+            t2.start()  # a second interactive call queues on the gate; it must not bounce with 409
+        finally:
+            eng.release.set()  # a failing assertion above must not leave the helper thread(s) blocked
         t1.join(5)
         t2.join(5)
         assert not t1.is_alive() and not t2.is_alive(), "helper thread(s) did not finish -- TestClient may not " \
@@ -173,6 +174,46 @@ def test_an_in_flight_prompt_blocks_propagate_atomically(tmp_path):
         again = client.post(f"/api/clips/{cid}/propagate", json={"from_frame": 0, "direction": "forward"})
         assert again.status_code == 202  # the GPU is free again once every lease has been released
         assert wait_job(client, again.json()["job_id"])["status"] == "done"
+
+
+def test_mask_response_is_not_cached_but_frames_are(tmp_path):
+    with _client(tmp_path, FakeEngine()) as client:
+        cid = _clip(client, tmp_path)
+        client.post(f"/api/clips/{cid}/accept", json={"frame": 0, "prompt": CLICK, "class_id": 0})
+
+        mask_resp = client.get(f"/api/clips/{cid}/masks/0")
+        assert mask_resp.status_code == 200 and mask_resp.headers.get("cache-control") == "no-cache"
+
+        frame_resp = client.get(f"/api/clips/{cid}/frames/0")
+        assert frame_resp.status_code == 200 and "cache-control" not in frame_resp.headers
+
+
+def test_prompt_normalises_inverted_box_and_rejects_out_of_frame_point(tmp_path):
+    with _client(tmp_path, FakeEngine()) as client:
+        cid = _clip(client, tmp_path)
+        inverted = {"type": "box", "box": [80, 30, 40, 10]}
+        ok = client.post(f"/api/clips/{cid}/prompt", json={"frame": 0, "prompt": inverted})
+        assert ok.status_code == 200 and len(ok.json()["candidates"]) == 1
+
+        bad_point = {"type": "clicks", "points": [[-1, 5, 1]]}
+        bad = client.post(f"/api/clips/{cid}/prompt", json={"frame": 0, "prompt": bad_point})
+        assert bad.status_code == 400 and isinstance(bad.json()["detail"], str)
+
+
+def test_delete_clip_is_blocked_while_a_gpu_job_runs(tmp_path):
+    with _client(tmp_path, SlowEngine()) as client:
+        cid = _clip(client, tmp_path, n=40)
+        client.post(f"/api/clips/{cid}/accept", json={"frame": 0, "prompt": CLICK, "class_id": 0})
+        job_id = client.post(f"/api/clips/{cid}/propagate", json={"from_frame": 0, "direction": "forward"}).json()["job_id"]
+
+        busy = client.delete(f"/api/clips/{cid}")
+        assert busy.status_code == 409 and busy.json()["job_id"] == job_id
+        assert client.get(f"/api/clips/{cid}").status_code == 200
+
+        wait_job(client, job_id)
+        ok = client.delete(f"/api/clips/{cid}")
+        assert ok.status_code == 204
+        assert client.get(f"/api/clips/{cid}").status_code == 404
 
 
 def test_engine_not_loaded_is_503_but_browsing_still_works(tmp_path):

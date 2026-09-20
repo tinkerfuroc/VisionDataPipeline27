@@ -1,14 +1,17 @@
+import threading
 import time
 
 import cv2
 import numpy as np
 import pytest
+import vsp.api.clips as clips_mod
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 from vsp.api.app import create_app
 from vsp.config import Settings
 from vsp.engine.fake import FakeEngine
 from vsp.engine.types import EngineNotLoaded
+from vsp.ingest import FrameDirSource
 
 
 def _settings(tmp_path):
@@ -148,8 +151,46 @@ def test_a_bad_upload_becomes_a_job_error(client):
     assert snap["status"] == "error" and "cannot open" in snap["error"]
 
 
+def test_import_job_cancelled_mid_way_ends_cancelled_with_no_clip(client, tmp_path, monkeypatch):
+    """Deterministic, no sleeps: a gated FrameDirSource pauses after the 2nd frame so the test can
+    issue the cancel before the importer's next cancel-check, then release the gate."""
+    entered = threading.Event()
+    release = threading.Event()
+    real_source_cls = FrameDirSource
+
+    class GatedSource:
+        type = "frame_dir"
+
+        def __init__(self, path, fps=30.0):
+            self._inner = real_source_cls(path, fps=fps)
+            self.name = self._inner.name
+            self.fps = self._inner.fps
+
+        def frames(self):
+            for i, fr in enumerate(self._inner.frames()):
+                yield fr
+                if i == 1:  # after 2 frames have been written
+                    entered.set()
+                    assert release.wait(5)
+
+    monkeypatch.setattr(clips_mod, "FrameDirSource", GatedSource)
+
+    pid = _project(client)
+    r = client.post(f"/api/projects/{pid}/clips/import-frames", json={"path": str(_frames_dir(tmp_path, n=30))})
+    job_id = r.json()["job_id"]
+    assert entered.wait(5)
+    assert client.delete(f"/api/jobs/{job_id}").status_code == 200
+    release.set()
+
+    snap = wait_job(client, job_id)
+    assert snap["status"] == "cancelled"
+    assert "clip_id" not in snap["result"]
+    assert client.get(f"/api/projects/{pid}/clips").json() == []
+
+
 def test_job_endpoints_and_websocket_replay(client, tmp_path):
-    assert client.get("/api/jobs/nope").status_code == 404
+    missing = client.get("/api/jobs/nope")
+    assert missing.status_code == 404 and missing.json()["detail"] == "job nope not found"
     pid = _project(client)
     r = client.post(f"/api/projects/{pid}/clips/import-frames", json={"path": str(_frames_dir(tmp_path))})
     job_id = r.json()["job_id"]

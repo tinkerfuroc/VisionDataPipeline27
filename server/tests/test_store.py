@@ -1,4 +1,5 @@
 import os
+import threading
 
 import numpy as np
 import pytest
@@ -48,6 +49,29 @@ def test_duplicate_class_name_rejected(store):
     store.add_class(p.id, "connector")
     with pytest.raises(StoreError, match="already exists"):
         store.add_class(p.id, "connector")
+
+
+def test_add_class_is_atomic_under_concurrent_writers(store):
+    p = store.create_project("p")
+    names = [f"c{i}" for i in range(8)]
+    barrier = threading.Barrier(len(names))
+    results: list[object] = [None] * len(names)
+
+    def worker(i: int) -> None:
+        barrier.wait(5)
+        results[i] = store.add_class(p.id, names[i])
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(len(names))]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(5)
+
+    assert all(results)  # every worker returned a ClassDef; a raised exception would leave a None
+    classes = store.read_project(p.id).classes
+    assert len(classes) == 8
+    assert len({c.id for c in classes}) == 8
+    assert sorted(c.name for c in classes) == sorted(names)
 
 
 def test_clip_roundtrip_preserves_int_keys(store):

@@ -200,6 +200,18 @@ class OnlySeed(FakeEngine):
         yield 0, seed_mask.copy()
 
 
+class StopsAfterTwo(FakeEngine):
+    """Yields the anchor plus exactly 2 real frames of a longer chunk, then stops without OOM or
+    cancellation -- exercises the "stopped short with partial progress" PropagationFailed message."""
+
+    def propagate(self, frames, seed_mask, cancel_cb=None):
+        self.propagate_calls.append(len(frames))
+        gen = super().propagate(frames, seed_mask, cancel_cb)
+        for _ in range(3):  # offset 0 (anchor, discarded) + 2 real frames
+            yield next(gen)
+        gen.close()
+
+
 class Skips(FakeEngine):
     """Yields offsets 0, 1, 3 -- skipping 2 -- to exercise offset validation."""
 
@@ -277,6 +289,14 @@ def test_engine_returning_only_the_seed_raises_propagation_failed(store, make_cl
     clip = _seeded(store, make_clip, eng, n_frames=10)
     with pytest.raises(PropagationFailed, match="returned no frames"):
         run_propagation(store, eng, clip.id, 0, "forward", **KW)
+
+
+def test_engine_stopping_mid_chunk_without_cancel_names_frames_landed(store, make_clip):
+    eng = StopsAfterTwo()
+    clip = _seeded(store, make_clip, eng, n_frames=13)
+    with pytest.raises(PropagationFailed, match="stopped after 2 of 8 frames without being cancelled"):
+        run_propagation(store, eng, clip.id, 0, "forward", **KW)
+    assert store.mask_indices(clip.id, OBJECT_ID) == [0, 1, 2]
 
 
 def test_cancel_before_the_first_frame_of_a_chunk(store, make_clip):

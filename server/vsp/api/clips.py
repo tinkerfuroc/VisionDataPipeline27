@@ -10,11 +10,18 @@ from fastapi import APIRouter, File, Form, Response, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
-from ..ingest import FrameDirSource, IngestError, VideoFileSource, import_clip, resolve_allowed
+from ..ingest import (
+    FrameDirSource,
+    ImportCancelled,
+    IngestError,
+    VideoFileSource,
+    import_clip,
+    resolve_allowed,
+)
 from ..jobs import Job
 from ..labeling.prompts import OBJECT_ID
 from ..store import NotFound
-from .deps import AppState, State
+from .deps import AppState, State, gpu_lease
 from .views import clip_detail
 
 router = APIRouter(tags=["clips"])
@@ -34,8 +41,11 @@ def _start_import(state: AppState, project_id: str, source, stride: int, cleanup
             clip = import_clip(
                 state.store, project_id, source, stride=stride, jpeg_quality=cfg.jpeg_quality,
                 thumb_width=cfg.thumb_width, progress=lambda n: job.emit({"type": "progress", "done": n}),
+                cancel=job.cancel_requested,
             )
             return {"clip_id": clip.id, "frame_count": clip.frame_count}
+        except ImportCancelled:
+            return {"cancelled": True}
         finally:
             if cleanup is not None:
                 cleanup.unlink(missing_ok=True)
@@ -62,8 +72,12 @@ def import_video(
     tmp_dir = state.settings.project.data_root / "tmp"
     tmp_dir.mkdir(parents=True, exist_ok=True)
     tmp = tmp_dir / f"{uuid.uuid4().hex}_{name}"
-    with tmp.open("wb") as out:
-        shutil.copyfileobj(file.file, out)
+    try:
+        with tmp.open("wb") as out:
+            shutil.copyfileobj(file.file, out)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
     try:
         source = VideoFileSource(tmp, name=name)
@@ -86,14 +100,15 @@ def get_clip(clip_id: str, state: State) -> dict:
 
 @router.delete("/api/clips/{clip_id}", status_code=204)
 def delete_clip(clip_id: str, state: State) -> Response:
-    state.store.delete_clip(clip_id)
+    with gpu_lease(state):  # coarse across clips, deliberately: don't race a running GPU job's writes
+        state.store.delete_clip(clip_id)
     return Response(status_code=204)
 
 
-def _image(path: Path, media_type: str) -> FileResponse:
+def _image(path: Path, media_type: str, *, headers: dict[str, str] | None = None) -> FileResponse:
     if not path.is_file():
         raise NotFound(f"{path.name} not found")
-    return FileResponse(path, media_type=media_type)
+    return FileResponse(path, media_type=media_type, headers=headers)
 
 
 @router.get("/api/clips/{clip_id}/frames/{idx}")
@@ -108,4 +123,5 @@ def get_thumb(clip_id: str, idx: int, state: State) -> FileResponse:
 
 @router.get("/api/clips/{clip_id}/masks/{idx}")
 def get_mask(clip_id: str, idx: int, state: State) -> FileResponse:
-    return _image(state.store.mask_path(clip_id, OBJECT_ID, idx), "image/png")
+    # masks are overwritten in place by re-propagation, unlike immutable frames/thumbs
+    return _image(state.store.mask_path(clip_id, OBJECT_ID, idx), "image/png", headers={"Cache-Control": "no-cache"})

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Literal
 
 import cv2
@@ -21,7 +22,7 @@ class PromptSpec(BaseModel):
     type: Literal["text", "clicks", "box"]
     phrase: str | None = None
     points: list[tuple[int, int, int]] = Field(default_factory=list)  # (x, y, label); 1 = positive, 0 = negative
-    box: tuple[int, int, int, int] | None = None  # x1, y1, x2, y2
+    box: tuple[float, float, float, float] | None = None  # x1, y1, x2, y2
 
     @model_validator(mode="after")
     def _check(self) -> PromptSpec:
@@ -33,6 +34,12 @@ class PromptSpec(BaseModel):
             raise ValueError("a box prompt needs a box")
         if any(label not in (0, 1) for _, _, label in self.points):
             raise ValueError("point labels must be 0 (negative) or 1 (positive)")
+        if self.box is not None:
+            x1, y1, x2, y2 = self.box
+            if not all(math.isfinite(v) for v in (x1, y1, x2, y2)):
+                raise BadRequest("box coordinates must be finite numbers")
+            # a drag from bottom-right to top-left is an ordinary gesture, not a malformed box
+            self.box = (min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2))
         return self
 
 
@@ -59,16 +66,34 @@ def create_object(clip: Clip, class_id: int) -> LabelObject:
     return obj
 
 
+def _validate_points(points: list[tuple[int, int, int]], width: int, height: int) -> None:
+    for x, y, _ in points:
+        if not (0 <= x < width and 0 <= y < height):
+            raise BadRequest(f"point ({x}, {y}) is outside the frame")
+
+
+def _clamp_box(box: tuple[float, float, float, float], width: int, height: int) -> tuple[int, int, int, int]:
+    x1, y1, x2, y2 = box
+    cx1, cy1 = max(0.0, x1), max(0.0, y1)
+    cx2, cy2 = min(float(width), x2), min(float(height), y2)
+    if cx2 - cx1 < 2 or cy2 - cy1 < 2:
+        raise BadRequest("the box is empty or outside the frame")
+    return int(cx1), int(cy1), int(cx2), int(cy2)
+
+
 def _effective_box(
     store: ProjectStore, clip: Clip, frame: int, prompt: PromptSpec
 ) -> tuple[tuple[int, int, int, int] | None, tuple[int, int, int, int] | None]:
     """(box to send to the engine, box derived from the existing mask or None)."""
+    _validate_points(prompt.points, clip.width, clip.height)
     if prompt.type == "clicks" and prompt.box is None and clip.objects:
         existing = store.read_mask(clip.id, clip.objects[0].id, frame)
         if existing is not None:
             derived = padded_box(existing, BOX_FROM_MASK_PAD, clip.width, clip.height)
             return derived, derived
-    return prompt.box, None
+    if prompt.box is not None:
+        return _clamp_box(prompt.box, clip.width, clip.height), None
+    return None, None
 
 
 def preview(store: ProjectStore, engine: Engine, clip: Clip, frame: int, prompt: PromptSpec) -> list[Detection]:
@@ -94,7 +119,7 @@ def accept(
     clip = store.read_clip(clip_id)
     if frame in clip.deleted_frames:
         raise BadRequest(f"frame {frame} is deleted; restore it before labeling")
-    _, derived = _effective_box(store, clip, frame, prompt)
+    box, derived = _effective_box(store, clip, frame, prompt)
     detections = preview(store, engine, clip, frame, prompt)
     if not detections:
         raise BadRequest("the prompt produced no usable mask (nothing found, or the mask is too small or too large)")
@@ -125,6 +150,8 @@ def accept(
         payload["candidate"] = candidate
         if derived is not None:
             payload["box_from_mask"] = list(derived)
+        elif box is not None:
+            payload["box"] = list(box)  # the normalised/clamped box, not the raw client input
         keyframe = Keyframe(frame_idx=frame, prompt=Prompt(type=prompt.type, payload=payload), created_at=now_iso())
         obj.keyframes = sorted(
             [k for k in obj.keyframes if k.frame_idx != frame] + [keyframe], key=lambda k: k.frame_idx

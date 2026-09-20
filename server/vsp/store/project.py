@@ -92,17 +92,19 @@ class ProjectStore:
         return sorted(found, key=lambda p: p.created_at)
 
     def add_class(self, project_id: str, name: str) -> ClassDef:
-        project = self.read_project(project_id)
+        self.read_project(project_id)  # raises NotFound before the lock table grows an entry for a bogus id
         name = name.strip()
         if not name:
             raise StoreError("class name must not be empty")
-        if any(c.name == name for c in project.classes):
-            raise StoreError(f"class {name!r} already exists")
-        new_id = max((c.id for c in project.classes), default=-1) + 1
-        cls = ClassDef(id=new_id, name=name, color=_PALETTE[new_id % len(_PALETTE)])
-        project.classes.append(cls)
-        self.write_project(project)
-        return cls
+        with self.lock(project_id):
+            project = self.read_project(project_id)
+            if any(c.name == name for c in project.classes):
+                raise StoreError(f"class {name!r} already exists")
+            new_id = max((c.id for c in project.classes), default=-1) + 1
+            cls = ClassDef(id=new_id, name=name, color=_PALETTE[new_id % len(_PALETTE)])
+            project.classes.append(cls)
+            self.write_project(project)
+            return cls
 
     # --------------------------------------------------------------- clips
     def new_clip_dir(self, project_id: str) -> tuple[str, Path]:

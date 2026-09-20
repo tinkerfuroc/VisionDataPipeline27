@@ -155,6 +155,10 @@ def _run_direction(
             if cancel():
                 result.cancelled = True
                 break
+            if done_in_chunk:
+                raise PropagationFailed(
+                    f"the engine stopped after {len(done_in_chunk)} of {len(chunk)} frames without being cancelled"
+                )
             raise PropagationFailed("the engine returned no frames for a non-empty chunk")
 
     return size

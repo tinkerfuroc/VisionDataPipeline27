@@ -33,4 +33,5 @@ repository root, not the current working directory, so `vsp` can be run from any
 Importing, browsing and frame cleanup work without a GPU; prompting and propagation return 503 until the
 engine is loaded, and 409 (with the running `job_id`) while a propagation job holds the GPU. A propagate
 request also returns 409 with `job_id: "interactive"` if a prompt/accept/clear-range call is in flight;
-retry.
+retry. Deleting a clip also returns 409 (with the running `job_id`) while a GPU job runs, so a delete can
+never race a propagation's writes. Cancelling an import job removes the partial clip it had started.

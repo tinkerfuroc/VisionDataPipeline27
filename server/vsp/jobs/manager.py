@@ -117,7 +117,9 @@ class JobManager:
             job.status = "error"
             return
         job.result = result
-        final = "cancelled" if job.cancel_requested() else "done"
+        # A job is "cancelled" only when its work function REPORTS it stopped early -- never merely
+        # because a cancel was requested. Work that ignores the request and finishes ends "done".
+        final = "cancelled" if result.get("cancelled") else "done"
         job.emit({"type": final, **result})  # event first, status second: streamers rely on this order
         job.status = final
 
@@ -125,7 +127,7 @@ class JobManager:
         with self._lock:
             job = self._jobs.get(job_id)
         if job is None:
-            raise JobNotFound(job_id)
+            raise JobNotFound(f"job {job_id} not found")
         return job
 
     def cancel(self, job_id: str) -> Job:

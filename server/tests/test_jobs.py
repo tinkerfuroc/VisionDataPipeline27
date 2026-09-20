@@ -44,16 +44,40 @@ def test_cancel_is_cooperative():
         started.set()
         while not job.cancel_requested():
             threading.Event().wait(0.01)
-        return {"processed": 3}
+        return {"processed": 3, "cancelled": True}
 
     job = jobs.start("propagate", work, exclusive="gpu")
     assert started.wait(5)
     assert jobs.running("gpu") == job.id
     jobs.cancel(job.id)
     job.join(5)
-    assert job.status == "cancelled" and job.result == {"processed": 3}
+    assert job.status == "cancelled" and job.result == {"processed": 3, "cancelled": True}
     assert job.events_since(0)[-1]["type"] == "cancelled"
     assert jobs.running("gpu") is None
+
+
+def test_status_reflects_what_the_work_function_reports_not_just_a_cancel_request():
+    """A job is 'cancelled' only when its fn's result says it stopped early -- never merely because
+    request_cancel() was called. A fn that ignores the request and finishes must end 'done'."""
+    jobs = JobManager()
+    started = threading.Event()
+
+    def ignores_cancel(job):
+        started.set()
+        while not job.cancel_requested():
+            threading.Event().wait(0.01)
+        return {"x": 1}  # finished the real work; cancellation was requested but not honoured
+
+    job = jobs.start("x", ignores_cancel)
+    assert started.wait(5)
+    jobs.cancel(job.id)
+    job.join(5)
+    assert job.status == "done"
+    assert job.events_since(0)[-1]["type"] == "done"
+
+    honours_cancel = jobs.start("x", lambda job: {"cancelled": True})
+    honours_cancel.join(5)
+    assert honours_cancel.status == "cancelled"
 
 
 def test_exclusive_key_allows_one_job_at_a_time():
