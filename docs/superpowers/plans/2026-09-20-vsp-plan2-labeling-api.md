@@ -23,7 +23,7 @@
 - Single object per clip (v1): the object id is always `1`; the rule is enforced in `labeling/prompts.py` and nowhere else.
 - Keyframes are never overwritten by propagation. Propagation ranges stop at the neighbouring keyframe (exclusive) or the clip boundary.
 - Deleted frames are fed to the tracker (temporal continuity) but their masks are not written.
-- Every test in this plan runs without a GPU (uses `FakeEngine`), except the one GPU test added in Task 2. GPU tests need `HF_HUB_OFFLINE=1`.
+- Every test in this plan runs without a GPU (uses `FakeEngine`), except the two GPU tests added in Task 2. GPU tests need `HF_HUB_OFFLINE=1`.
 - The installed ruff's default rules include import sorting, pyupgrade and simplify: write sorted imports, `collections.abc` for `Callable`/`Iterator`, and FastAPI parameters in `Annotated[...]` form (no function calls in argument defaults). Purely cosmetic lint-driven edits to this plan's listings are allowed and must be listed in the report.
 - The server binds `127.0.0.1` by default.
 - Commit after every task with the message given. Use a heredoc so the message is multi-line, ending with your environment's `Co-Authored-By:` line and `Claude-Session: https://claude.ai/code/session_01YKeRXoSnVkKqPgN7Pd7bSL`.
@@ -492,6 +492,19 @@ def test_many_click_refinement_with_a_box_stays_accurate(engine, video):
     det = engine.predict_prompt(frames[0], box=box, points=points, frame_key=("t", 0))
     assert det is not None
     assert _iou(det.mask, truth[0]) > 0.85
+
+
+def test_many_clicks_without_a_box_stay_accurate(engine, video):
+    """The fresh-prompt path: several positive and negative clicks, no box at all (added at the user's request)."""
+    frames, truth = video
+    cx, cy = 120, 200
+    points = [
+        (cx, cy, 1), (cx - 20, cy, 1), (cx + 20, cy - 10, 1),
+        (cx - R - 25, cy, 0), (cx + R + 25, cy, 0), (cx, cy + R + 25, 0),
+    ]
+    det = engine.predict_prompt(frames[0], points=points, frame_key=("t", 0))
+    assert det is not None
+    assert _iou(det.mask, truth[0]) > 0.85
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -643,12 +656,12 @@ Run: `uv run pytest server/tests/test_prompts.py -q`
 Expected: `13 passed`
 
 Run: `HF_HUB_OFFLINE=1 uv run pytest server/tests/test_engine_gpu.py -q -k many_click`
-Expected: `1 passed`. **If this fails**, that is a real finding about `multimask_max_pt_num` with many clicks: do not change the threshold, do not touch `sam3.py`; report BLOCKED with the measured IoU (print it) and the IoU for the same box with only the three positive clicks.
+Expected: `2 passed`. **If this fails**, that is a real finding about `multimask_max_pt_num` with many clicks: do not change the threshold, do not touch `sam3.py`; report BLOCKED with the measured IoU (print it) and the IoU for the same box with only the three positive clicks.
 
 - [ ] **Step 5: Whole suite, lint, commit**
 
 Run: `uv run ruff check server && HF_HUB_OFFLINE=1 uv run pytest -q`
-Expected: clean; `93 passed`.
+Expected: clean; `94 passed`.
 
 ```bash
 git add server/vsp/labeling/prompts.py server/tests/test_prompts.py server/tests/test_engine_gpu.py
@@ -1019,7 +1032,7 @@ Expected: `11 passed`. If `test_lost_object…` or `test_anchor_skips…` fails 
 - [ ] **Step 5: Whole suite, lint, commit**
 
 Run: `uv run ruff check server && HF_HUB_OFFLINE=1 uv run pytest -q`
-Expected: clean; `104 passed`.
+Expected: clean; `105 passed`.
 
 ```bash
 git add server/vsp/labeling/propagate.py server/tests/test_propagate.py
@@ -1182,7 +1195,7 @@ def clear_range(store: ProjectStore, clip_id: str, start: int, end: int) -> Clip
 - [ ] **Step 4: Run tests, whole suite, lint, commit**
 
 Run: `uv run pytest server/tests/test_frames.py -q` → `5 passed`
-Run: `uv run ruff check server && HF_HUB_OFFLINE=1 uv run pytest -q` → clean; `109 passed`.
+Run: `uv run ruff check server && HF_HUB_OFFLINE=1 uv run pytest -q` → clean; `110 passed`.
 
 ```bash
 git add server/vsp/labeling/frames.py server/tests/test_frames.py
@@ -1438,7 +1451,7 @@ __all__ = ["TERMINAL", "Job", "JobBusy", "JobManager", "JobNotFound"]
 - [ ] **Step 4: Run tests, whole suite, lint, commit**
 
 Run: `uv run pytest server/tests/test_jobs.py -q` → `6 passed`
-Run: `uv run ruff check server && HF_HUB_OFFLINE=1 uv run pytest -q` → clean; `115 passed`.
+Run: `uv run ruff check server && HF_HUB_OFFLINE=1 uv run pytest -q` → clean; `116 passed`.
 
 ```bash
 git add server/vsp/jobs server/tests/test_jobs.py
@@ -2110,7 +2123,7 @@ Record the output in your report. If `loaded` never becomes true, include the `e
 
 - [ ] **Step 9: Whole suite, lint, commit**
 
-Run: `uv run ruff check server && HF_HUB_OFFLINE=1 uv run pytest -q` → clean; `123 passed`.
+Run: `uv run ruff check server && HF_HUB_OFFLINE=1 uv run pytest -q` → clean; `124 passed`.
 
 ```bash
 git add server/vsp/api server/vsp/cli.py server/tests/test_api_core.py
@@ -2429,7 +2442,7 @@ engine is loaded, and 409 (with the running `job_id`) while a propagation job ho
 
 - [ ] **Step 6: Whole suite, lint, commit**
 
-Run: `uv run ruff check server && HF_HUB_OFFLINE=1 uv run pytest -q` → clean; `129 passed`, GPU tests not skipped, no warnings.
+Run: `uv run ruff check server && HF_HUB_OFFLINE=1 uv run pytest -q` → clean; `130 passed`, GPU tests not skipped, no warnings.
 
 ```bash
 git add server/vsp/api/labeling.py server/vsp/api/app.py server/tests/test_api_labeling.py README.md
@@ -2445,7 +2458,7 @@ EOF
 
 ## Done criteria for Plan 2
 
-- `uv run ruff check server` clean; `HF_HUB_OFFLINE=1 uv run pytest -q` → 129 passed, none skipped, no warnings.
+- `uv run ruff check server` clean; `HF_HUB_OFFLINE=1 uv run pytest -q` → 130 passed, none skipped, no warnings.
 - `uv run vsp serve` starts, `/api/health` reaches `engine.loaded: true` on this machine, and `/docs` lists every route in the spec's API table except export (Plan 4).
 - A full flow works over HTTP with the real engine: import frames → click prompt → accept → propagate both → correct mid-clip → propagate → clear range. (The automated version of this runs against `FakeEngine`; doing it once by hand against the real engine is Plan 3's manual QA, where there is a GUI to do it with.)
 - `git ls-files | grep -c vision_train` prints `0`.
