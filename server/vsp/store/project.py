@@ -48,6 +48,16 @@ def atomic_write_bytes(path: Path, data: bytes) -> None:
         tmp.unlink(missing_ok=True)
 
 
+def encode_mask_png(mask: np.ndarray) -> bytes:
+    """1-bit PNG bytes for a boolean mask. An empty mask is an error: absent file = not present."""
+    mask = np.asarray(mask, dtype=bool)
+    if not mask.any():
+        raise StoreError("refusing to write an empty mask; an absent file means 'not present'")
+    buf = io.BytesIO()
+    Image.fromarray(mask.astype(np.uint8) * 255).convert("1", dither=Image.Dither.NONE).save(buf, format="PNG")
+    return buf.getvalue()
+
+
 class ProjectStore:
     def __init__(self, data_root: Path) -> None:
         self.root = Path(data_root)
@@ -144,12 +154,7 @@ class ProjectStore:
 
     # --------------------------------------------------------------- masks
     def write_mask(self, clip_id: str, object_id: int, idx: int, mask: np.ndarray) -> None:
-        mask = np.asarray(mask, dtype=bool)
-        if not mask.any():
-            raise StoreError("refusing to write an empty mask; an absent file means 'not present'")
-        buf = io.BytesIO()
-        Image.fromarray(mask.astype(np.uint8) * 255).convert("1", dither=Image.Dither.NONE).save(buf, format="PNG")
-        atomic_write_bytes(self.mask_path(clip_id, object_id, idx), buf.getvalue())
+        atomic_write_bytes(self.mask_path(clip_id, object_id, idx), encode_mask_png(mask))
 
     def read_mask(self, clip_id: str, object_id: int, idx: int) -> np.ndarray | None:
         path = self.mask_path(clip_id, object_id, idx)

@@ -1,5 +1,5 @@
 from .models import ClassDef, Clip, ClipSource, Keyframe, LabelObject, Project, Prompt
-from .project import NotFound, ProjectStore, StoreError, atomic_write_bytes, now_iso
+from .project import NotFound, ProjectStore, StoreError, atomic_write_bytes, encode_mask_png, now_iso
 
 __all__ = [
     "ClassDef",
@@ -13,5 +13,6 @@ __all__ = [
     "Prompt",
     "StoreError",
     "atomic_write_bytes",
+    "encode_mask_png",
     "now_iso",
 ]

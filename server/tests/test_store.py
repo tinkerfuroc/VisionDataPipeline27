@@ -12,6 +12,7 @@ from vsp.store import (
     Prompt,
     StoreError,
     atomic_write_bytes,
+    encode_mask_png,
 )
 
 
@@ -142,3 +143,16 @@ def test_delete_clip(store):
     store.delete_clip(clip.id)
     with pytest.raises(NotFound):
         store.read_clip(clip.id)
+
+
+def test_encode_mask_png_matches_what_write_mask_stores(store):
+    p = store.create_project("p")
+    clip = _clip(store, p.id)
+    mask = np.zeros((48, 64), dtype=bool)
+    mask[5:15, 8:20] = True
+    data = encode_mask_png(mask)
+    assert data[:8] == b"\x89PNG\r\n\x1a\n"
+    store.write_mask(clip.id, 1, 0, mask)
+    assert store.mask_path(clip.id, 1, 0).read_bytes() == data
+    with pytest.raises(StoreError, match="empty mask"):
+        encode_mask_png(np.zeros((4, 4), dtype=bool))
