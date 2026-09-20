@@ -3,11 +3,15 @@
 The scene is synthetic (a bright disc moving over a noise background) so ground truth is exact.
 """
 
+import contextlib
 from pathlib import Path
 
+import cv2
 import numpy as np
 import pytest
 from vsp.engine.device import cuda_capabilities, pick_device
+from vsp.ingest import FrameDirSource, import_clip
+from vsp.store import Keyframe, LabelObject, ProjectStore, Prompt, now_iso
 from vsp.weights import verify_checkpoint
 
 MODEL_DIR = Path(__file__).resolve().parents[2] / "vision_train" / "sam3_checkpoint_hf"
@@ -118,6 +122,62 @@ def test_forward_propagation_tracks_the_disc(engine, video):
 def test_backward_propagation_is_just_a_reversed_list(engine, video):
     frames, truth = video
     assert _track(engine, frames[::-1], truth[::-1]) >= 18
+
+
+def test_end_to_end_store_ingest_engine_store(engine, video, tmp_path):
+    """store -> ingest -> real engine -> store, run together for the first time."""
+    frames, truth = video
+    src = tmp_path / "src"
+    src.mkdir()
+    for i, fr in enumerate(frames):
+        assert cv2.imwrite(str(src / f"frame_{i}.png"), fr)
+
+    store = ProjectStore(tmp_path / "data")
+    project = store.create_project("e2e")
+    cls = store.add_class(project.id, "disc")
+    clip = import_clip(store, project.id, FrameDirSource(src))
+    assert clip.frame_count == 20
+
+    img0 = cv2.imread(str(store.frame_path(clip.id, 0)))  # JPEG re-encode of the synthetic frame
+    det = engine.predict_prompt(img0, points=[(120, 200, 1)], frame_key=(clip.id, 0))
+    assert det is not None
+    click_iou = _iou(det.mask, truth[0])
+    assert click_iou > 0.85
+    store.write_mask(clip.id, 1, 0, det.mask)
+
+    disk_frames = [cv2.imread(str(store.frame_path(clip.id, i))) for i in range(clip.frame_count)]
+    with contextlib.closing(engine.propagate(disk_frames, store.read_mask(clip.id, 1, 0))) as gen:
+        for offset, mask in gen:
+            if offset >= 1 and mask is not None:
+                store.write_mask(clip.id, 1, offset, mask)
+
+    n_masks = len(store.mask_indices(clip.id, 1))
+    assert n_masks >= 19
+    mask19 = store.read_mask(clip.id, 1, 19)
+    assert mask19 is not None
+    frame19_iou = _iou(mask19, truth[19])
+    assert frame19_iou > 0.7
+    print(f"\n[e2e] click IoU (JPEG re-encoded frame0): {click_iou:.3f}")
+    print(f"[e2e] masks stored for object 1: {n_masks}")
+    print(f"[e2e] frame19 IoU: {frame19_iou:.3f}")
+
+    obj = LabelObject(
+        id=1,
+        class_id=cls.id,
+        keyframes=[
+            Keyframe(
+                frame_idx=0,
+                prompt=Prompt(type="clicks", payload={"points": [[120, 200, 1]]}),
+                created_at=now_iso(),
+            )
+        ],
+    )
+    clip.objects.append(obj)
+    store.write_clip(clip)
+    reread = store.read_clip(clip.id)
+    states = store.frame_states(reread)
+    assert states[0] == "keyframe"
+    assert states.count("masked") >= 18
 
 
 def test_peak_vram_fits_the_12gb_card(engine, video):

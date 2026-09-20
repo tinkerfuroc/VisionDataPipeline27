@@ -46,7 +46,9 @@ def import_clip(
                 raise IngestError(f"failed to write {dst.name}")
             th = max(1, round(h * thumb_width / w))
             thumb = cv2.resize(fr.image, (thumb_width, th), interpolation=cv2.INTER_AREA)
-            cv2.imwrite(str(cdir / "thumbs" / f"{kept:06d}.jpg"), thumb, [cv2.IMWRITE_JPEG_QUALITY, 80])
+            thumb_name = f"{kept:06d}.jpg"
+            if not cv2.imwrite(str(cdir / "thumbs" / thumb_name), thumb, [cv2.IMWRITE_JPEG_QUALITY, 80]):
+                raise IngestError(f"failed to write thumbnail {thumb_name}")
             if fr.original_name:
                 names[kept] = fr.original_name
             kept += 1

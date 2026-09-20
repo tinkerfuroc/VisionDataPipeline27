@@ -45,6 +45,9 @@ torchvision = { index = "pytorch-cu126" }
 [tool.pytest.ini_options]
 testpaths = ["server/tests"]
 markers = ["gpu: needs CUDA and the converted SAM3 checkpoint"]
+filterwarnings = [
+    "ignore:`torch\\.jit\\.script` is deprecated\\. Please switch to `torch\\.compile` or `torch\\.export`\\.:FutureWarning",
+]
 
 [tool.ruff]
 line-length = 110

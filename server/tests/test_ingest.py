@@ -144,3 +144,24 @@ def test_invalid_stride(store, tmp_path):
     p = store.create_project("p")
     with pytest.raises(IngestError, match="stride"):
         import_clip(store, p.id, FrameDirSource(src), stride=0)
+
+
+def test_thumbnail_write_failure_raises_and_cleans_up(store, tmp_path, monkeypatch):
+    import vsp.ingest.importer as importer_mod
+
+    src = tmp_path / "frames"
+    src.mkdir()
+    _write(src / "0.png", 10)
+    p = store.create_project("p")
+
+    real_imwrite = cv2.imwrite
+
+    def fake_imwrite(path, *a, **kw):
+        if "thumbs" in path:
+            return False
+        return real_imwrite(path, *a, **kw)
+
+    monkeypatch.setattr(importer_mod.cv2, "imwrite", fake_imwrite)
+    with pytest.raises(IngestError, match="thumbnail"):
+        import_clip(store, p.id, FrameDirSource(src))
+    assert list((store.projects_dir / p.id / "clips").iterdir()) == []
