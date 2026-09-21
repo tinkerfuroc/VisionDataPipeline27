@@ -100,3 +100,9 @@ middle-drag pan · right click = negative point.
     are hollow, deleted frames are hatched and keyframes carry an amber diamond. Hover it for a thumbnail with the
     frame number and state. Zoom into the frame, then press Fit in the tool rail. Tab through the page: every control
     shows a focus ring.
+13. Export (the "Export dataset" button on the Clips page): with two or more clips, move a clip between Training and
+    Validation by hand and export all four formats; with one clip selected, check the note says the tail of the clip
+    becomes the validation set. Cancel an export midway and confirm its folder under `data/exports/` is gone. Open
+    `export.json`, then load the result in the tool you train with: `yolo_seg/data.yaml` or `yolo_det/data.yaml` in
+    Ultralytics, `coco/annotations/instances_train.json` with pycocotools, and look at a few `masks/masks/` PNGs
+    (pixel value = `mask_value` from the manifest's class map).

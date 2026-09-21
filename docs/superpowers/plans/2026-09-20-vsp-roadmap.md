@@ -183,3 +183,15 @@ respect when it adds the Export dialog:
 - Prefer direct manipulation with a button that names exactly what it will do (the mark-then-clear range is the model).
 - The mask overlay is outlined (`tintMask` with a size); exported mask PNGs are unaffected, it is display only.
 - `scripts/seed_demo.py` builds a colourful tracking scene for judging overlays.
+
+## Plan 4 — export (done, 2026-09-21, branch `plan4-exporters`)
+
+Plan and "As executed" notes: `docs/superpowers/plans/2026-09-21-vsp-plan4-export.md`. All four plans of the original
+design are now built. Verified against the real server: a two-clip, four-format export of the demo project (per-clip
+split, stride 2, one deleted frame) has no file stem in both splits, only the validation clip in `val`, hardlinked
+format images (the store's frames stay unlinked), a parseable `data.yaml`, indexed mask PNGs, and YOLO-seg / COCO
+masks that rasterise back to the mask PNG at IoU 1.0 (COCO through pycocotools).
+
+Still deferred: `clip_id`/scope on `Job.snapshot()`; listing past exports in the GUI (the job result and `export.json`
+carry the path); a propagation started while an export runs is tolerated (mask writes are atomic) rather than refused;
+progress events are one per frame per pass, unthrottled; holes in masks are not represented in polygon formats.

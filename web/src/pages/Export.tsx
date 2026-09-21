@@ -32,7 +32,7 @@ export function Export() {
   const [loadError, setLoadError] = useState<string | null>(null);
 
   const [includedIds, setIncludedIds] = useState<Set<string>>(new Set());
-  const [valIds, setValIds] = useState<Set<string>>(new Set());
+  const [pickedVal, setPickedVal] = useState<Set<string>>(new Set()); // only meaningful once `touched`
   const [touched, setTouched] = useState(false);
   const [formatIds, setFormatIds] = useState<Set<ExportFormat>>(new Set(ALL_FORMAT_IDS));
   const [valSharePercent, setValSharePercent] = useState(20);
@@ -42,6 +42,13 @@ export function Export() {
   const [jobId, setJobId] = useState<string | null>(null);
   const [startError, setStartError] = useState<string | null>(null);
   const startingRef = useRef(false);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true; // StrictMode runs effects twice; set it again on the second mount
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
   const [starting, setStarting] = useState(false);
 
   const fail = useCallback((e: unknown) => setLoadError(message(e)), []);
@@ -80,11 +87,12 @@ export function Export() {
 
   // The default validation clips follow the newest-first rule while the user has not hand-picked a role;
   // once they have, only the checkbox that includes/excludes a clip still changes what is actually sent.
-  useEffect(() => {
-    if (touched) return;
+  // Derived during render, not set from an effect: an effect would leave one render with no validation clip at all.
+  const defaultVal = useMemo(() => {
     const included = clips.filter((c) => includedIds.has(c.id)).map((c) => c.id);
-    setValIds(new Set(defaultValClips(clips, included, valSharePercent / 100)));
-  }, [touched, clips, includedIds, valSharePercent]);
+    return new Set(defaultValClips(clips, included, valSharePercent / 100));
+  }, [clips, includedIds, valSharePercent]);
+  const valIds = touched ? pickedVal : defaultVal;
 
   const orderedIncluded = useMemo(() => clips.filter((c) => includedIds.has(c.id)).map((c) => c.id), [clips, includedIds]);
   const orderedVal = useMemo(
@@ -111,13 +119,11 @@ export function Export() {
     });
   };
   const toggleRole = (id: string) => {
+    const next = new Set(valIds); // the first hand-picked role starts from the defaults that were on screen
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    setPickedVal(next);
     setTouched(true);
-    setValIds((s) => {
-      const next = new Set(s);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
   };
   const toggleFormat = (id: ExportFormat) => {
     setFormatIds((s) => {
@@ -140,11 +146,13 @@ export function Export() {
     api.startExport(projectId, { clips: orderedIncluded, formats: orderedFormats, options }).then(
       (r) => {
         startingRef.current = false;
+        if (!mounted.current) return; // left the page while the request was in flight
         setStarting(false);
         setJobId(r.job_id);
       },
       (e: unknown) => {
         startingRef.current = false;
+        if (!mounted.current) return;
         setStarting(false);
         if (e instanceof ApiError && e.status === 409) {
           setStartError("A propagation is running. Wait for it to finish, then export.");
@@ -239,6 +247,12 @@ export function Export() {
                 ? "Whole clips go to training or validation, so neighbouring frames never end up on both sides. Choose the validation clips on the left."
                 : `With one clip, the last ${valSharePercent}% of its frames become the validation set.`}
             </p>
+            {mode === "per_clip" && orderedVal.length === 0 && (
+              <p className="note text-ink">
+                No clip is marked for validation, so this dataset will have no validation set. Mark one on the left if you
+                want one.
+              </p>
+            )}
             <label className="flex items-center justify-between gap-2 text-sm text-dim">
               Validation share (%)
               <input
@@ -300,7 +314,9 @@ export function Export() {
             {job.status === "done" && result !== null && (
               <div className="flex flex-col gap-1.5">
                 <h3 className="heading">Dataset written</h3>
-                <input aria-label="Dataset folder" readOnly className="field" value={result.path} onFocus={(e) => e.target.select()} />
+                {/* a textarea, so a long path wraps instead of being cut off; focus selects it for copying */}
+                <textarea aria-label="Dataset folder" readOnly rows={3} className="field resize-none break-all font-cond"
+                  value={result.path} onFocus={(e) => e.target.select()} />
                 <p className="note text-ink">
                   {result.counts.train.images} training images
                   {result.counts.train.empty > 0 ? `, ${result.counts.train.empty} without a mask` : ""}

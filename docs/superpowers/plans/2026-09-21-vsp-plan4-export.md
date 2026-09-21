@@ -1283,3 +1283,28 @@ git commit -m "feat(web): Export page - clip and role selection, formats, split,
 - [ ] Open the Export page in headless Firefox (recipe in the design-pass brief, including the `getBoundingClientRect()` flush) and check the screenshot: right-hand sidebar, roles on the cards, no hue in the chrome.
 - [ ] README manual QA checklist: add an item for exporting (per-clip with a hand-picked validation clip; one clip contiguous; cancel midway and confirm the folder is gone; load the YOLO `data.yaml` / COCO JSON in the training tool of choice).
 - [ ] Roadmap: mark Plan 4 done, append "As executed" notes to this plan.
+
+---
+
+## As executed (2026-09-21)
+
+Tasks 1-2 by Haiku, 3-4 by Sonnet, each reviewed by Sonnet; fixes by the controller. What changed against the text above:
+
+- **Task 1 (review):** `_stems` let an original file stem take ANOTHER frame's 6-digit index form (frames 3 "000007.png"
+  and 7 shared a stem); all index forms are now reserved first. `val_clip_ids` sent with the contiguous split was
+  silently ignored; it is a BadRequest now.
+- **Task 2:** the implementer lowered the pycocotools assertion to 0.9494. Root cause: OpenCV contour vertices sit on
+  pixel CENTRES while pycocotools (and normalised YOLO boxes, and `mask_bbox`) use continuous coordinates, so polygons
+  lost half a pixel per side (IoU 0.93 on a 36 px disc) and YOLO-seg disagreed with YOLO-det/COCO by half a pixel.
+  `mask_to_polygons` now traces the mask enlarged `EDGE_SCALE = 2` times and returns continuous coordinates for EVERY
+  format; `polygons_to_mask` floors (as Ultralytics' loader truncates). Round trips are exact. Also from the review:
+  class names in `data.yaml` are JSON-quoted (":" and "#" broke the file), and more than 255 classes is a BadRequest
+  for the mask PNG format.
+- **Task 3:** the plan's API test treated `_project()` as returning a dict (it returns the id); helpers were copied
+  into `test_api_export.py` because importing the `client` fixture trips ruff F811; the README had no API table, so the
+  route is described in prose. Review fixes: the export directory is created up front with `exist_ok=False` outside the
+  cleanup `try` (an id collision could otherwise delete another export); `DELETE /api/clips/{id}` answers 409 while an
+  export runs (`JobManager.active(kind)`); API tests for 409-during-propagation, failed-export cleanup, and
+  delete-during-export.
+- **Task 4:** the plan's sample `done` event nested the result under `result`; the real event is flat
+  (`JobManager._run` spreads the result onto the event) and the page follows the real shape.

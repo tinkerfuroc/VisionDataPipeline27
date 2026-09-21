@@ -175,7 +175,52 @@ describe("Export page", () => {
     );
     expect(await screen.findByDisplayValue("/data/exports/e1")).toBeTruthy();
     expect(screen.getByText(/32 training images/)).toBeTruthy();
-    expect(screen.getByText(/8 validation images/)).toBeTruthy();
+    expect(screen.getByText("32 training images, 2 without a mask")).toBeTruthy();
+    expect(screen.getByText("8 validation images")).toBeTruthy();
+    expect(screen.queryByText(/hardlinks/)).toBeNull();
+  });
+
+  it("warns when no clip is left for validation, without blocking the export", async () => {
+    m.startExport.mockResolvedValue({ job_id: "j1" });
+    renderPage();
+    await screen.findByText("a.mp4");
+    expect(screen.queryByText(/no validation set/)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Use b.mp4 for training" }));
+    expect(screen.getByText(/no validation set/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Export 3 clips" }));
+    await waitFor(() => expect(m.startExport).toHaveBeenCalled());
+    expect(m.startExport.mock.calls[0][1].options.val_clips).toEqual([]);
+  });
+
+  it("says when images had to be copied, and when an export was cancelled", async () => {
+    m.startExport.mockResolvedValue({ job_id: "j1" });
+    renderPage();
+    await screen.findByText("a.mp4");
+    fireEvent.click(screen.getByRole("button", { name: "Export 3 clips" }));
+    await waitFor(() => expect(FakeSocket.last?.url).toMatch(/j1$/));
+    act(() =>
+      FakeSocket.last!.onmessage!({
+        data: JSON.stringify({
+          type: "done", seq: 0, export_id: "e1", path: "/data/exports/e1", formats: ["coco"],
+          counts: { train: { images: 4, annotated: 4, empty: 0 }, val: { images: 1, annotated: 1, empty: 0 } }, linked: false,
+        }),
+      }),
+    );
+    expect(await screen.findByText(/does not support hardlinks/)).toBeTruthy();
+
+    m.startExport.mockResolvedValue({ job_id: "j2" });
+    fireEvent.click(screen.getByRole("button", { name: "Export 3 clips" }));
+    await waitFor(() => expect(FakeSocket.last?.url).toMatch(/j2$/));
+    expect(screen.queryByText(/does not support hardlinks/)).toBeNull(); // the previous result does not linger
+    act(() => FakeSocket.last!.onmessage!({ data: JSON.stringify({ type: "cancelled", seq: 0, cancelled: true }) }));
+    expect(await screen.findByText("Export cancelled. Nothing was written.")).toBeTruthy();
+  });
+
+  it("says so when the project does not exist", async () => {
+    m.listProjects.mockResolvedValue([]);
+    renderPage();
+    expect((await screen.findByRole("alert")).textContent).toContain("This project no longer exists.");
+    expect(screen.getByRole("link", { name: /back to clips/i })).toBeTruthy();
   });
 
   it("reports a refused start", async () => {
