@@ -4678,3 +4678,16 @@ git commit -m "feat(web): propagation with live progress, frame cleanup, keyboar
 - `git status --short` is empty; `git ls-files | grep -c -E "vision_train|node_modules|web/dist"` prints `0`.
 - Best-effort visual check (Firefox 111 is installed; it has no "wait for network idle", so a blank or "Loading…" capture is not a failure): with the server running and seeded, `firefox --headless --window-size 1500,950 --screenshot /tmp/vsp-label.png 'http://127.0.0.1:28000/#/clips/<id>'`.
 - The user runs the README's manual QA checklist on real footage — this is where click-mask quality on real components is judged.
+
+---
+
+## As executed (2026-09-20/21)
+
+All seven tasks landed on `plan3-web-gui`; the branch ends at **134 web tests** (the plan text says 110/122 — review-driven
+fix rounds added the rest) with the Python suite unchanged at 167. Changes beyond this plan's text, all from reviews:
+`useJob` ignores a superseded socket and resets during render on a new job id; the Clips page guards against stale clip
+lists and double submits; `useClip` reloads are generation-guarded and a failed refresh keeps the loaded clip
+(`refreshError`); FrameCanvas tags preview layers with the candidate list they belong to, stores the drag anchor in image
+space and uses a separate preview cache; `usePrompting` allows one in-flight accept and re-requests an identical text or
+box after a failure; the Label page tracks job ownership, coalesces streamed frame events per animation frame and handles
+a 409's job id once. See the roadmap's "Carried forward from Plan 3".

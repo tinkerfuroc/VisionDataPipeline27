@@ -10,7 +10,7 @@ proves (most importantly: Plan 1 Task 6 is the first time SAM3 inference runs on
 |---|---|---|---|---|
 | 1 | `2026-09-20-vsp-plan1-backend-core.md` | uv project, settings, `vsp doctor`, store, ingest, weights tooling, `Engine` protocol, `FakeEngine`, `Sam3Engine` verified on GPU | Task 6 only | **Done** (branch `plan1-backend-core`, 71 tests, 10 on GPU) |
 | 2 | `2026-09-20-vsp-plan2-labeling-api.md` — labeling, jobs, HTTP API | Everything the GUI calls, fully testable with `FakeEngine` and `TestClient` | Two added GPU tests | **Done** (branch `plan2-labeling-api`, 167 tests, 12 on GPU) |
-| 3 | `2026-09-20-vsp-plan3-web-gui.md` — web GUI | React SPA: Clips page, Label page, served by `vsp serve`; no Python changes | For the end-to-end smoke and manual QA | **Written, ready to execute** |
+| 3 | `2026-09-20-vsp-plan3-web-gui.md` — web GUI | React SPA: Clips page, Label page, served by `vsp serve`; no Python changes | For the end-to-end smoke and manual QA | **Done** (branch `plan3-web-gui`, 134 web tests; Python suite unchanged at 167) |
 | 4 | Export | `ExportPlan` + YOLO-seg, YOLO-det, COCO, mask PNG exporters, Export dialog | No | Outline below |
 
 Plans 3 and 4 are independent of each other once Plan 2 is done and can run in either order.
@@ -99,6 +99,24 @@ suppression have no test; `PromptSpec.box` accepts floats (truncated to int when
 still interleave with delete/restore/prune on the same clip; `ProjectStore.lock`'s parameter is named `clip_id` although
 `add_class` passes a project id; propagate's synchronous validation is best-effort (a keyframe
 removed between the route and the job thread surfaces as a job error).
+
+## Carried forward from Plan 3 (executed 2026-09-20/21, branch `plan3-web-gui`)
+
+Verified against the real server: `scripts/seed_demo.py` imports 40 synthetic frames, accepts one click and propagates
+39 masks; headless Firefox renders both pages (frame, tinted overlay, timeline, all panels).
+
+For Plan 4 (export):
+- Reuse `useJob` (it resets during render on a new job id) and `ImportJobRow` as the template for an export progress row.
+- Add `clip_id` (or a scope) to `Job.snapshot()` on the server: today a 409 names the job holding the global GPU lock with
+  no way to tell whose it is, so the Label page tracks ownership client-side (only jobs it started, or re-attached from
+  its own `sessionStorage` key, may patch its states; a foreign job only shows progress and Stop).
+- The Export dialog is the one spec §7 item not built yet.
+
+Deferred minors (none blocking): `test/setup-dom.ts` replaces `getContext` without restoring it; `localStorage` /
+`sessionStorage` access is unguarded; the clip-card thumbnail is always frame 0; the propagate `starting` guard is
+state-only; the burst test cannot observe intermediate frames in jsdom (coalescing is proven by `useClip.patchFrames`'s
+test); `FrameCanvas`'s failed-frame fallback and the `key={clipId}` route wrapper have no test; the poll fallback retries
+every second without backoff; the 320 px sidebar wraps some button labels (superseded by the planned design pass).
 
 ## Plan 2 outline — labeling, jobs, HTTP API (spec §4 API table, §5.2–§5.4, §9)
 
