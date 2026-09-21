@@ -91,6 +91,8 @@ def check_request(
         raise BadRequest("stride must be 1 or more")
     mode = options.split_mode or ("per_clip" if len(clips) >= 2 else "contiguous")
     val_ids: tuple[str, ...] = ()
+    if mode == "contiguous" and options.val_clip_ids:
+        raise BadRequest("validation clips apply to the per-clip split only; the contiguous split takes the tail of every clip")
     if mode == "per_clip":
         if len(clips) < 2:
             raise BadRequest("a per-clip split needs at least two clips; use the contiguous split for one clip")
@@ -110,14 +112,16 @@ def check_request(
 
 def _stems(clip: Clip, frames: list[int]) -> dict[int, str]:
     """`<clip_id>_<original stem | 6-digit idx>`; a colliding original stem falls back to the index form."""
+    fallback = {idx: f"{clip.id}_{idx:06d}" for idx in frames}
+    reserved = set(fallback.values())  # an original stem may not take another frame's index form either
     out: dict[int, str] = {}
     used: set[str] = set()
     for idx in frames:
         original = clip.original_names.get(idx)
         base = re.sub(r"[^A-Za-z0-9._-]+", "_", Path(original).stem) if original else ""
-        stem = f"{clip.id}_{base}" if base else f"{clip.id}_{idx:06d}"
-        if stem in used:
-            stem = f"{clip.id}_{idx:06d}"
+        stem = f"{clip.id}_{base}" if base else fallback[idx]
+        if stem in used or (stem in reserved and stem != fallback[idx]):
+            stem = fallback[idx]
         used.add(stem)
         out[idx] = stem
     return out

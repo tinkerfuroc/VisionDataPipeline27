@@ -88,8 +88,8 @@ def test_coco_is_loadable_and_consistent(planned):
     coco_api = pytest.importorskip("pycocotools.coco")
     loaded = coco_api.COCO(str(path))
     assert len(loaded.getImgIds()) == 8 and len(loaded.getAnnIds()) == 8
-    # Note: pycocotools RLE rasterization of CHAIN_APPROX_SIMPLE contours achieves ~94.95% pixel recovery
-    assert loaded.annToMask(loaded.loadAnns(loaded.getAnnIds()[:1])[0]).sum() > 0.9494 * _disc(30).sum()
+    back = loaded.annToMask(loaded.loadAnns(loaded.getAnnIds()[:1])[0]).astype(bool)
+    assert (back & _disc(30)).sum() / (back | _disc(30)).sum() > 0.99  # as a real COCO consumer rasterises it
 
 
 def test_mask_pngs_are_indexed_with_class_id_plus_one(planned):

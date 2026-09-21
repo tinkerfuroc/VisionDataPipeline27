@@ -101,5 +101,20 @@ def test_invalid_requests_are_refused(store, make_clip, tmp_path):
     with pytest.raises(BadRequest, match="every selected clip"):
         second = _extra_clip(store, project.id, tmp_path)
         check_request(store, project.id, [clip.id, second.id], ["coco"], ExportOptions(val_clip_ids=(clip.id, second.id)))
+    with pytest.raises(BadRequest, match="per-clip split only"):
+        check_request(store, project.id, [clip.id], ["coco"], ExportOptions(val_clip_ids=(clip.id,)))
     with pytest.raises(BadRequest, match="nothing to export"):
         build_plan(store, project.id, [clip.id], ExportOptions(include_empty=False, min_area_px=10_000))
+
+
+def test_stems_stay_unique_when_an_original_name_looks_like_another_frames_index(store, make_clip):
+    project, clip = make_clip(n_frames=8)
+    clip = _label(store, clip, range(8))
+    clip.original_names = {**clip.original_names, 3: "000007.png", 4: "dup.png", 5: "dup.jpg", 6: "a b/c.png"}
+    store.write_clip(clip)
+    plan = build_plan(store, project.id, [clip.id], ExportOptions(val_fraction=0.0))
+    stems = {f.frame_idx: f.stem for f in plan.frames}
+    assert len(set(stems.values())) == 8
+    assert stems[3] == f"{clip.id}_000003" and stems[7] != stems[3]  # "000007" is frame 7's own index form
+    assert stems[4] == f"{clip.id}_dup" and stems[5] == f"{clip.id}_000005"
+    assert stems[6] == f"{clip.id}_c"

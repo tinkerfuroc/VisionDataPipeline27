@@ -8,16 +8,29 @@ import numpy as np
 Polygon = list[tuple[float, float]]
 
 
-def mask_to_polygons(mask: np.ndarray, min_area_px: float = 4.0) -> list[Polygon]:
-    """Outer contours of every connected blob, in pixel coordinates. Holes are not represented:
-    neither YOLO-seg nor the plain COCO polygon form can carry them, and SAM masks of solid parts rarely have any."""
+def mask_to_polygons(mask: np.ndarray, min_area_px: float = 4.0, edge_scale: int = 1) -> list[Polygon]:
+    """Outer contours of every connected blob. Holes are not represented: neither YOLO-seg nor the plain COCO
+    polygon form can carry them, and SAM masks of solid parts rarely have any.
+
+    `edge_scale=1` returns OpenCV's convention: vertices on the centres of the boundary pixels, which is what
+    `cv2.fillPoly` (and so Ultralytics' YOLO loader) expects. Consumers that fill polygons in continuous coordinates
+    (pycocotools) would shave half a pixel off every side of that, a 5% loss on a 36 px part; `edge_scale=k` traces
+    the mask enlarged k times and returns continuous coordinates, leaving 0.5/k px.
+    """
     binary = (np.asarray(mask) > 0).astype(np.uint8)
+    k = max(1, int(edge_scale))
+    if k > 1:
+        binary = cv2.resize(binary, None, fx=k, fy=k, interpolation=cv2.INTER_NEAREST)
     contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     polygons: list[Polygon] = []
     for contour in contours:
-        if len(contour) < 3 or cv2.contourArea(contour) < min_area_px:
+        if len(contour) < 3 or cv2.contourArea(contour) / (k * k) < min_area_px:
             continue
-        polygons.append([(float(x), float(y)) for x, y in contour.reshape(-1, 2)])
+        points = contour.reshape(-1, 2)
+        if k > 1:
+            polygons.append([((float(x) + 0.5) / k, (float(y) + 0.5) / k) for x, y in points])
+        else:
+            polygons.append([(float(x), float(y)) for x, y in points])
     return polygons
 
 
