@@ -37,7 +37,7 @@ export function loadImage(url: string): Promise<HTMLImageElement | null> {
   });
 }
 
-/** Decode a mask image (white = object) into a canvas holding the coloured, semi-transparent overlay. */
+/** Decode a mask image (white = object) into a canvas holding the coloured, semi-transparent, outlined overlay. */
 export function tintToCanvas(img: HTMLImageElement, rgb: Rgb, alpha: number): HTMLCanvasElement {
   const canvas = document.createElement("canvas");
   canvas.width = img.naturalWidth;
@@ -45,7 +45,7 @@ export function tintToCanvas(img: HTMLImageElement, rgb: Rgb, alpha: number): HT
   const ctx = canvas.getContext("2d", { willReadFrequently: true })!;
   ctx.drawImage(img, 0, 0);
   const data = ctx.getImageData(0, 0, canvas.width, canvas.height);
-  tintMask(data.data, rgb, alpha);
+  tintMask(data.data, rgb, alpha, { width: canvas.width, height: canvas.height });
   ctx.putImageData(data, 0, 0);
   return canvas;
 }
