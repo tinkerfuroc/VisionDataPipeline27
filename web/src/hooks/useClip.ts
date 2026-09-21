@@ -25,10 +25,8 @@ export function useClip(clipId: string): ClipHandle {
   const versions = useRef({ epoch: 0, frames: new Map<number, number>() });
   // Guards against a slow response (a reload, or a previous clip id's initial load) landing after a newer one.
   const generation = useRef(0);
-  const detailRef = useRef<ClipDetail | null>(null);
-  useEffect(() => {
-    detailRef.current = detail;
-  }, [detail]);
+  // Written synchronously next to the state it describes (a mirror effect would lag one commit behind `detail`).
+  const loaded = useRef(false);
 
   const reload = useCallback(async () => {
     const gen = ++generation.current;
@@ -36,20 +34,21 @@ export function useClip(clipId: string): ClipHandle {
       const next = await api.getClip(clipId);
       if (gen !== generation.current) return; // superseded while in flight
       versions.current.epoch++;
+      loaded.current = true;
       setDetail(next);
       setError(null);
       setRefreshError(null);
     } catch (e) {
       if (gen !== generation.current) return;
       const message = e instanceof Error ? e.message : String(e);
-      if (detailRef.current === null) setError(message);
+      if (!loaded.current) setError(message);
       else setRefreshError(message);
     }
   }, [clipId]);
 
   useEffect(() => {
     generation.current++; // drop any response still in flight for the previous clip id
-    detailRef.current = null;
+    loaded.current = false;
     setDetail(null);
     setError(null);
     setRefreshError(null);
