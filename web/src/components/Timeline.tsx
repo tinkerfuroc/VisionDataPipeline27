@@ -166,7 +166,8 @@ export function Timeline({ states, frame, color, thumb, onSeek }: Props) {
   };
 
   const px = states.length > 0 ? width / states.length : 0;
-  const tipLeft = hover === null ? 0 : Math.max(0, Math.min(width - THUMB_W, hover * px + px / 2 - THUMB_W / 2));
+  const tipW = Math.min(THUMB_W, width);
+  const tipLeft = hover === null ? 0 : Math.max(0, Math.min(width - tipW, hover * px + px / 2 - tipW / 2));
 
   return (
     <div ref={wrap} className="relative w-full select-none">
@@ -187,7 +188,7 @@ export function Timeline({ states, frame, color, thumb, onSeek }: Props) {
       />
       {hover !== null && states.length > 0 && (
         <div className="pointer-events-none absolute z-10 overflow-hidden rounded border border-line bg-well shadow-lg"
-          style={{ left: tipLeft, bottom: HEIGHT + 6, width: THUMB_W }}>
+          style={{ left: tipLeft, bottom: HEIGHT + 6, width: tipW }}>
           {thumb !== undefined && (
             <img src={thumb.url(hover)} alt="" className="block w-full bg-well object-contain" style={{ aspectRatio: thumb.aspect }} />
           )}

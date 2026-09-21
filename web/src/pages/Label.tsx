@@ -301,7 +301,7 @@ export function Label() {
       <AppHeader>
         {back}
         <h1 className="truncate font-medium">{source.name}</h1>
-        <span className="hidden shrink-0 font-cond text-dim sm:inline">
+        <span className="shrink-0 font-cond text-dim">
           {width}×{height}, {fps} fps{stride > 1 ? `, every ${stride} frames` : ""}
         </span>
       </AppHeader>

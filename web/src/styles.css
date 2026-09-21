@@ -71,7 +71,7 @@ body,
     @apply bg-danger/10;
   }
   .field {
-    @apply min-w-0 rounded border border-line bg-well px-2 py-1 text-sm text-ink placeholder:text-dim/70;
+    @apply min-w-0 rounded border border-line bg-well px-2 py-1 text-sm text-ink placeholder:text-dim;
   }
   .heading {
     @apply font-cond text-[15px] font-semibold text-ink;
