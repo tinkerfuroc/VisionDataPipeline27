@@ -3,7 +3,7 @@ import { Link, useParams } from "react-router-dom";
 import { ApiError, INTERACTIVE, api, frameUrl, maskUrl, retryInteractive, thumbUrl } from "../api/rest";
 import type { ClipDetail, Direction, JobEvent } from "../api/types";
 import { AppHeader } from "../components/AppHeader";
-import { CleanupPanel } from "../components/CleanupPanel";
+import { CleanupPanel, type Range } from "../components/CleanupPanel";
 import { ClipStats } from "../components/ClipStats";
 import { FrameCanvas } from "../components/FrameCanvas";
 import { ObjectPanel } from "../components/ObjectPanel";
@@ -35,6 +35,7 @@ export function Label() {
   const [playing, setPlaying] = useState(false);
   const [overlay, setOverlay] = useState(true);
   const [fitSignal, setFitSignal] = useState(0);
+  const [range, setRange] = useState<Range | null>(null); // frames marked for clearing
   const [classId, setClassId] = useState<number | null>(null);
   const [jobId, setJobId] = useState<string | null>(() => sessionStorage.getItem(jobKey(clipId)));
   const [follow, setFollow] = useState(true);
@@ -192,7 +193,10 @@ export function Label() {
     if (window.confirm(`Delete frame ${frame} and every frame after it?`)) cleanup(api.prune(clipId, frame), false);
   }, [cleanup, clipId, frame]);
   const clearRange = useCallback(
-    (start: number, end: number) => cleanup(api.clearRange(clipId, start, end), true),
+    (start: number, end: number) => {
+      setRange(null); // the mark has done its job; the timeline shows the result
+      cleanup(api.clearRange(clipId, start, end), true);
+    },
     [cleanup, clipId],
   );
 
@@ -232,6 +236,12 @@ export function Label() {
         break;
       case "overlay":
         setOverlay((o) => !o);
+        break;
+      case "mark":
+        // the other edge follows when it would otherwise end up on the wrong side
+        setRange((r) =>
+          action.edge === "start" ? [frame, Math.max(frame, r?.[1] ?? frame)] : [Math.min(frame, r?.[0] ?? frame), frame],
+        );
         break;
     }
   });
@@ -306,8 +316,6 @@ export function Label() {
         </span>
       </AppHeader>
       <div className="flex min-h-0 flex-1">
-        <ToolRail tool={draft.tool} disabled={disabledReason !== null} onTool={(tool) => dispatch({ type: "tool", tool })}
-          onFit={() => setFitSignal((n) => n + 1)} />
         <div className="min-w-0 flex-1">
           <FrameCanvas
             store={store}
@@ -325,6 +333,9 @@ export function Label() {
             fitSignal={fitSignal}
           />
         </div>
+        {/* every control sits to the right of the frame: the tools first, then the inspector */}
+        <ToolRail tool={draft.tool} disabled={disabledReason !== null} onTool={(tool) => dispatch({ type: "tool", tool })}
+          onFit={() => setFitSignal((n) => n + 1)} />
         <aside className="flex w-80 shrink-0 flex-col gap-5 overflow-y-auto border-l border-line bg-panel p-3">
           {clip.refreshError !== null && (
             <p role="alert" className="alert text-xs">Could not refresh the clip: {clip.refreshError}</p>
@@ -345,10 +356,11 @@ export function Label() {
           />
           <CleanupPanel
             frame={frame}
-            frameCount={frameCount}
-            state={state}
-            clearBlockedReason={running ? "Clearing a range is unavailable while a propagation runs." : null}
+            states={detail.states}
+            range={range}
+            clearBlockedReason={running ? "Masks cannot be cleared while a propagation runs." : null}
             error={cleanupError}
+            onRange={setRange}
             onToggleDelete={toggleDelete}
             onPrune={prune}
             onClearRange={clearRange}
@@ -376,7 +388,9 @@ export function Label() {
           frame={frame}
           color={color}
           thumb={{ url: (i) => thumbUrl(clipId, i), aspect: width / height }}
+          range={range}
           onSeek={seek}
+          onRange={setRange}
         />
       </footer>
     </div>

@@ -357,6 +357,23 @@ describe("Label page (propagation, cleanup, keyboard)", () => {
     expect(screen.getByText("frame 1 / 39")).toBeTruthy();
   });
 
+  it("marks a range with [ and ], names it on the button, and unmarks it once cleared", async () => {
+    vi.mocked(api.getClip).mockResolvedValue(detail);
+    vi.mocked(api.clearRange).mockResolvedValue(detail);
+    renderLabel();
+    await screen.findByText("bench.mp4");
+    // nothing marked: the button acts on the current frame, and frame 0 is a keyframe with nothing to clear
+    expect((screen.getByRole("button", { name: "Clear masks in frame 0" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.keyDown(window, { key: "ArrowRight" });
+    fireEvent.keyDown(window, { key: "[" });
+    fireEvent.keyDown(window, { key: "ArrowRight", shiftKey: true });
+    fireEvent.keyDown(window, { key: "]" });
+    expect(screen.getByText(/Removes 11 propagated masks/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Clear masks in frames 1 to 11" }));
+    await waitFor(() => expect(api.clearRange).toHaveBeenCalledWith("c1", 1, 11));
+    expect(screen.getByRole("button", { name: "Clear masks in frame 11" })).toBeTruthy();
+  });
+
   it("prunes after confirmation and clears a range", async () => {
     vi.mocked(api.getClip).mockResolvedValue(detail);
     vi.mocked(api.prune).mockResolvedValue(detail);

@@ -21,13 +21,13 @@ const TOOLS: [Tool, string, ReactNode][] = [
   ["text", "Text", icon(<path d="M4 4.5h10M9 4.5v9.5" />)],
 ];
 
-const item = "flex h-12 w-12 flex-col items-center justify-center gap-0.5 rounded font-cond text-[11px] font-medium leading-none";
+const item = "flex h-12 w-12 flex-col items-center justify-center gap-0.5 rounded font-cond text-[0.6875rem] font-medium leading-none";
 const idle = "text-dim hover:bg-raise hover:text-ink disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent";
 
-/** The prompting tools, beside the frame they act on. */
+/** The prompting tools, between the frame they act on and the inspector. */
 export function ToolRail({ tool, disabled, onTool, onFit }: Props) {
   return (
-    <nav aria-label="Tools" className="flex w-14 shrink-0 flex-col items-center gap-1 border-r border-line bg-panel py-2">
+    <nav aria-label="Tools" className="flex w-14 shrink-0 flex-col items-center gap-1 border-l border-line bg-panel py-2">
       {TOOLS.map(([id, label, glyph]) => (
         <button key={id} type="button" disabled={disabled} aria-pressed={tool === id}
           className={`${item} ${tool === id && !disabled ? "bg-ink text-well" : idle}`} onClick={() => onTool(id)}>

@@ -152,8 +152,55 @@ export function Clips() {
       </AppHeader>
 
       <div className="flex min-h-0 flex-1 flex-col overflow-y-auto md:flex-row md:overflow-hidden">
+        <div className="flex min-w-0 flex-1 flex-col gap-4 p-4 md:overflow-y-auto">
+          {error !== null && (
+            <p role="alert" className="alert">
+              {error}
+            </p>
+          )}
+          {project === null && <p className="text-sm text-dim">Name a project in the bar above to start labelling.</p>}
+
+          {imports.length > 0 && (
+            <ul className="flex flex-col gap-1">
+              {imports.map((j) => (
+                <ImportJobRow key={j.id} jobId={j.id} label={j.label} onFinished={finished} onDismiss={dismiss} />
+              ))}
+            </ul>
+          )}
+
+          {project !== null && (
+            <section>
+              <h1 className="mb-3 font-cond text-xl font-semibold">Clips</h1>
+              {clips.length === 0 && (
+                <p className="text-sm text-dim">This project has no clips yet. Import a video or a folder of frames to add one.</p>
+              )}
+              <ul className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+                {clips.map((c) => (
+                  <li key={c.id} className="overflow-hidden rounded border border-line bg-panel">
+                    <img src={thumbUrl(c.id, 0)} alt="" className="aspect-video w-full bg-well object-contain" />
+                    <progress aria-label="Labeled" className="block h-0.5 rounded-none" value={percentLabeled(c)} max={100} />
+                    <div className="flex flex-col gap-1 p-3 text-sm">
+                      <span className="truncate font-medium">{c.source.name}</span>
+                      <span className="font-cond text-dim">
+                        {c.frame_count} frames, {c.width}×{c.height}, {c.fps} fps, {percentLabeled(c)}% labeled
+                      </span>
+                      <div className="mt-1 flex gap-1">
+                        <Link to={`/clips/${c.id}`} className="btn btn-on flex-1">Open</Link>
+                        <button type="button" aria-label="Delete clip" disabled={pending} className="btn hover:text-danger"
+                          onClick={() => deleteClip(c)}>
+                          Delete
+                        </button>
+                      </div>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
+        </div>
+
         {project !== null && (
-          <aside className="flex shrink-0 flex-col gap-5 border-b border-line bg-panel p-3 md:w-80 md:overflow-y-auto md:border-b-0 md:border-r">
+          <aside className="flex shrink-0 flex-col gap-5 border-t border-line bg-panel p-3 md:w-80 md:overflow-y-auto md:border-l md:border-t-0">
             <section className="flex flex-col gap-2">
               <h2 className="heading">Classes</h2>
               {project.classes.length > 0 && (
@@ -205,53 +252,6 @@ export function Clips() {
             </form>
           </aside>
         )}
-
-        <div className="flex min-w-0 flex-1 flex-col gap-4 p-4 md:overflow-y-auto">
-          {error !== null && (
-            <p role="alert" className="alert">
-              {error}
-            </p>
-          )}
-          {project === null && <p className="text-sm text-dim">Name a project in the bar above to start labelling.</p>}
-
-          {imports.length > 0 && (
-            <ul className="flex flex-col gap-1">
-              {imports.map((j) => (
-                <ImportJobRow key={j.id} jobId={j.id} label={j.label} onFinished={finished} onDismiss={dismiss} />
-              ))}
-            </ul>
-          )}
-
-          {project !== null && (
-            <section>
-              <h1 className="mb-3 font-cond text-xl font-semibold">Clips</h1>
-              {clips.length === 0 && (
-                <p className="text-sm text-dim">This project has no clips yet. Import a video or a folder of frames to add one.</p>
-              )}
-              <ul className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
-                {clips.map((c) => (
-                  <li key={c.id} className="overflow-hidden rounded border border-line bg-panel">
-                    <img src={thumbUrl(c.id, 0)} alt="" className="aspect-video w-full bg-well object-contain" />
-                    <progress aria-label="Labeled" className="block h-0.5 rounded-none" value={percentLabeled(c)} max={100} />
-                    <div className="flex flex-col gap-1 p-3 text-sm">
-                      <span className="truncate font-medium">{c.source.name}</span>
-                      <span className="font-cond text-dim">
-                        {c.frame_count} frames, {c.width}×{c.height}, {c.fps} fps, {percentLabeled(c)}% labeled
-                      </span>
-                      <div className="mt-1 flex gap-1">
-                        <Link to={`/clips/${c.id}`} className="btn btn-on flex-1">Open</Link>
-                        <button type="button" aria-label="Delete clip" disabled={pending} className="btn hover:text-danger"
-                          onClick={() => deleteClip(c)}>
-                          Delete
-                        </button>
-                      </div>
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            </section>
-          )}
-        </div>
       </div>
     </div>
   );

@@ -13,7 +13,7 @@ export function AppHeader({ children }: { children?: ReactNode }) {
   return (
     <>
       <header className="flex h-10 shrink-0 items-center gap-3 border-b border-line bg-panel px-3 text-sm">
-        <Link to="/" className="font-cond text-[15px] font-semibold tracking-wide">
+        <Link to="/" className="font-cond text-[0.9375rem] font-semibold tracking-wide">
           Vision Sampler
         </Link>
         <div className="flex min-w-0 flex-1 items-center gap-3">{children}</div>

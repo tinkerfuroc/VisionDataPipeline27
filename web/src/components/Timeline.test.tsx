@@ -28,6 +28,21 @@ describe("Timeline", () => {
     fireEvent.mouseMove(strip, { clientX: 20, buttons: 0 });
     expect(onSeek).toHaveBeenCalledTimes(2);
   });
+  it("marks a range with Shift-drag instead of seeking, in either direction", () => {
+    const onSeek = vi.fn();
+    const onRange = vi.fn();
+    render(<Timeline states={states} frame={0} color="#e6194b" onSeek={onSeek} onRange={onRange} />);
+    const strip = screen.getByLabelText("Timeline");
+    fireEvent.mouseDown(strip, { clientX: 65, button: 0, buttons: 1, shiftKey: true });
+    expect(onRange).toHaveBeenLastCalledWith([5, 5]);
+    fireEvent.mouseMove(strip, { clientX: 35, buttons: 1, shiftKey: true });
+    expect(onRange).toHaveBeenLastCalledWith([2, 5]);
+    fireEvent.mouseUp(strip);
+    fireEvent.mouseMove(strip, { clientX: 95, buttons: 1 }); // a plain drag afterwards seeks again
+    expect(onSeek).toHaveBeenCalledTimes(1);
+    expect(onSeek).toHaveBeenLastCalledWith(8);
+    expect(onRange).toHaveBeenCalledTimes(2);
+  });
   it("shows the hovered frame, its state and its thumbnail, and hides them again on leave", () => {
     const { container } = render(
       <Timeline states={states} frame={0} color="#e6194b" thumb={{ url: (i) => `/thumb/${i}`, aspect: 4 / 3 }} onSeek={() => {}} />,

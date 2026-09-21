@@ -10,6 +10,7 @@ body,
 
 @layer base {
   html {
+    font-size: 112.5%; /* every size is in rem, so this one number scales the whole interface */
     color-scheme: dark; /* native selects, spinners and scrollbars follow the chrome */
     scrollbar-color: theme("colors.line") transparent;
     scrollbar-width: thin;
@@ -27,7 +28,7 @@ body,
     outline-offset: 2px;
   }
   kbd {
-    @apply rounded-sm border border-line px-1 font-cond text-[11px] font-medium leading-4 text-dim;
+    @apply rounded-sm border border-line px-1 font-cond text-[0.6875rem] font-medium leading-4 text-dim;
   }
   progress {
     @apply h-1 w-full appearance-none overflow-hidden rounded-full border-0 bg-line;
@@ -74,7 +75,7 @@ body,
     @apply min-w-0 rounded border border-line bg-well px-2 py-1 text-sm text-ink placeholder:text-dim;
   }
   .heading {
-    @apply font-cond text-[15px] font-semibold text-ink;
+    @apply font-cond text-[0.9375rem] font-semibold text-ink;
   }
   .note {
     @apply text-xs leading-snug text-dim;

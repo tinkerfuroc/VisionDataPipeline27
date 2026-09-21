@@ -54,7 +54,7 @@ With the server running, `uv run python scripts/seed_demo.py` creates a project 
 ### Keyboard
 
 `Enter` accept · `Esc` clear · `Z` undo click · `←/→` step · `Shift+←/→` ±10 · `Space` play/pause · `K` / `Shift+K`
-next / previous keyframe · `G` next empty frame · `Del` delete or restore frame · `M` mask overlay · mouse wheel zoom ·
+next / previous keyframe · `G` next empty frame · `Del` delete or restore frame · `[` / `]` mark the first / last frame to clear · `M` mask overlay · mouse wheel zoom ·
 middle-drag pan · right click = negative point.
 
 ### Manual QA checklist (run on real footage before trusting a dataset)
@@ -65,7 +65,9 @@ middle-drag pan · right click = negative point.
 3. Propagate forward, backward and both from a mid-clip keyframe; press Stop during one and confirm the masks so far stay.
 4. Let the object leave the frame: propagation should stop early and seek to the "lost at" frame.
 5. Correct a bad frame mid-clip (it becomes a keyframe) and propagate again: the run must stop at the next keyframe.
-6. Scrub the timeline and play at clip fps with the overlay on; delete a frame, restore it, prune the tail, clear a range.
+6. Scrub the timeline and play at clip fps with the overlay on; delete a frame, restore it, prune the tail. Clear masks:
+   Shift-drag a stretch of the timeline (or press `[` and `]`), check the button names the frames and the note counts
+   the masks, clear them, and confirm the keyframes inside the stretch survive and the mark disappears.
 7. Reload the page during a propagation: the panel should re-attach to the running job.
 8. Stop the server: the banner says it is unreachable; start it without weights: the banner shows the reason and
    importing / cleanup still work.

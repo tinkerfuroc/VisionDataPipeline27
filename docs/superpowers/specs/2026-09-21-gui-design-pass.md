@@ -51,3 +51,17 @@ Firefox 111 headless takes the shot at the load event, before fetches finish. De
 6 s (port 28999); unset the proxy env vars and use a fresh `--profile`. Seed data with
 `uv run python scripts/seed_demo.py` against `HF_HUB_OFFLINE=1 uv run vsp serve`. Stop servers by PID from `ss -ltnp`
 (never `pkill -f "vsp serve"` from a shell whose own command line contains that string). Remove the shot pages afterwards.
+
+## Revisions after the first build (user feedback, 2026-09-21)
+- Every control sits on the RIGHT on every page: on the Label page the tool rail stands between the frame and the
+  inspector; on the Clips page the classes/import column is the right-hand sidebar. New pages follow the same rule.
+- The interface was too small: `html { font-size: 112.5% }` in `web/src/styles.css` scales everything (all sizes are rem);
+  the timeline (a canvas, sized in px) grew to 54 px. Tune that one percentage if it is still too small or too large.
+- Clearing masks was not intuitive, so it changed from "type two numbers" to "mark, then clear" (a behaviour change, the
+  only one in this pass): Shift-drag on the timeline, or `[` / `]`, marks a range that is drawn as a bracket on the strip;
+  the button says exactly what it will do ("Clear masks in frames 14 to 22") and the note counts the propagated masks that
+  will go (keyframes are kept); with nothing marked it acts on the current frame; the mark is dropped after a successful
+  request. The number fields stay for precision. Cleanup is open by default (it can still be folded).
+- Screenshot recipe addendum: headless Firefox can leave late-arriving text unpainted (seen on the clip cards). Have the
+  wrapper page call `getBoundingClientRect()` on something inside the iframe about a second before the shot; a real
+  browser flushes every frame, so this is not an application bug.

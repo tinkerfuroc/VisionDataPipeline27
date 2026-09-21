@@ -9,14 +9,18 @@ type Props = {
   color: string;
   /** thumbnail shown while hovering; omit to show the frame number only */
   thumb?: { url: (frame: number) => string; aspect: number };
+  /** frames marked for clearing (inclusive), drawn as a bracket over the strip */
+  range?: [number, number] | null;
   onSeek: (frame: number) => void;
+  /** Shift-drag marks a range instead of seeking; omit to disable marking */
+  onRange?: (range: [number, number]) => void;
 };
 
-const HEIGHT = 44;
-const BAND_TOP = 4;
-const BAND_H = 24;
+const HEIGHT = 54;
+const BAND_TOP = 6;
+const BAND_H = 30;
 const BAND_MID = BAND_TOP + BAND_H / 2;
-const THUMB_W = 128;
+const THUMB_W = 176;
 // canvas cannot read the Tailwind theme; these mirror tailwind.config.js
 const INK = "#E9E7E2";
 const DIM = "#A3A5AA";
@@ -31,12 +35,13 @@ const WORDS: Record<FrameState, string> = { keyframe: "keyframe", masked: "maske
  * Frame state is told apart by shape and texture as well as colour: a filled run is masked, a hollow run has no mask,
  * a hatched run is deleted, and a diamond marks a keyframe.
  */
-export function Timeline({ states, frame, color, thumb, onSeek }: Props) {
+export function Timeline({ states, frame, color, thumb, range = null, onSeek, onRange }: Props) {
   const wrap = useRef<HTMLDivElement>(null);
   const canvas = useRef<HTMLCanvasElement>(null);
   const [width, setWidth] = useState(0);
   const [hover, setHover] = useState<number | null>(null);
   const [fontsReady, setFontsReady] = useState(false);
+  const anchor = useRef<number | null>(null); // first frame of a Shift-drag in progress
 
   useEffect(() => {
     const el = wrap.current;
@@ -124,13 +129,26 @@ export function Timeline({ states, frame, color, thumb, onSeek }: Props) {
     // ruler
     const step = STEPS.find((s) => s * px >= 56) ?? STEPS[STEPS.length - 1];
     ctx.fillStyle = DIM;
-    ctx.font = '500 10px "Barlow Semi Condensed", sans-serif';
+    ctx.font = '500 12px "Barlow Semi Condensed", sans-serif';
     ctx.textBaseline = "alphabetic";
     for (let i = 0; i < states.length; i += step) {
       const x = i * px + px / 2;
       ctx.fillRect(Math.round(x), BAND_TOP + BAND_H + 1, 1, 3);
       ctx.textAlign = i === 0 ? "left" : "center";
-      ctx.fillText(String(i), i === 0 ? 0 : x, HEIGHT - 2);
+      ctx.fillText(String(i), i === 0 ? 0 : x, HEIGHT - 3);
+    }
+
+    if (range !== null && range[0] <= range[1]) {
+      // the marked range: a light wash with a bracket at each end, clear of the band so the states stay readable
+      const x0 = range[0] * px;
+      const x1 = (range[1] + 1) * px;
+      ctx.fillStyle = "rgba(233, 231, 226, 0.3)";
+      ctx.fillRect(x0, BAND_TOP, x1 - x0, BAND_H);
+      ctx.fillStyle = INK;
+      ctx.fillRect(x0, BAND_TOP - 4, x1 - x0, 2);
+      ctx.fillRect(x0, BAND_TOP - 4, 2, BAND_H + 8);
+      ctx.fillRect(x1 - 2, BAND_TOP - 4, 2, BAND_H + 8);
+      ctx.fillRect(x0, BAND_TOP + BAND_H + 2, x1 - x0, 2);
     }
 
     if (hover !== null && hover !== frame) {
@@ -158,7 +176,7 @@ export function Timeline({ states, frame, color, thumb, onSeek }: Props) {
     ctx.lineTo(cx, 6);
     ctx.closePath();
     ctx.fill();
-  }, [states, frame, width, color, hover, fontsReady]);
+  }, [states, frame, width, color, hover, range, fontsReady]);
 
   const at = (e: MouseEvent<HTMLCanvasElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
@@ -177,12 +195,24 @@ export function Timeline({ states, frame, color, thumb, onSeek }: Props) {
         className="block w-full cursor-pointer"
         style={{ height: HEIGHT }}
         onMouseDown={(e) => {
-          if (e.button === 0) onSeek(at(e));
+          if (e.button !== 0) return;
+          const f = at(e);
+          if (e.shiftKey && onRange !== undefined) {
+            anchor.current = f;
+            onRange([f, f]);
+          } else {
+            onSeek(f);
+          }
         }}
         onMouseMove={(e) => {
           const f = at(e);
           setHover(f);
-          if (e.buttons & 1) onSeek(f);
+          if (!(e.buttons & 1)) anchor.current = null; // the button was released outside the strip
+          else if (anchor.current !== null) onRange?.([Math.min(anchor.current, f), Math.max(anchor.current, f)]);
+          else onSeek(f);
+        }}
+        onMouseUp={() => {
+          anchor.current = null;
         }}
         onMouseLeave={() => setHover(null)}
       />

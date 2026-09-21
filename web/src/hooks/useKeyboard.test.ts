@@ -23,6 +23,10 @@ describe("keyAction", () => {
     expect(key("K", { shiftKey: true })).toEqual({ type: "keyframe", dir: -1 });
     expect(key("g")).toEqual({ type: "nextEmpty" });
   });
+  it("maps [ and ] to marking the range to clear", () => {
+    expect(key("[")).toEqual({ type: "mark", edge: "start" });
+    expect(key("]")).toEqual({ type: "mark", edge: "end" });
+  });
   it("maps play, delete and overlay", () => {
     expect(key(" ")).toEqual({ type: "play" });
     expect(key("Delete")).toEqual({ type: "delete" });

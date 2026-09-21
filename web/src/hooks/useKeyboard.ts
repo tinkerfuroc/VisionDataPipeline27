@@ -9,7 +9,9 @@ export type KeyAction =
   | { type: "keyframe"; dir: 1 | -1 }
   | { type: "nextEmpty" }
   | { type: "delete" }
-  | { type: "overlay" };
+  | { type: "overlay" }
+  /** mark the current frame as the first / last frame of the range to clear */
+  | { type: "mark"; edge: "start" | "end" };
 
 type KeyLike = { key: string; shiftKey: boolean; ctrlKey: boolean; metaKey: boolean; altKey: boolean };
 
@@ -29,6 +31,10 @@ export function keyAction(e: KeyLike): KeyAction | null {
       return { type: "play" };
     case "Delete":
       return { type: "delete" };
+    case "[":
+      return { type: "mark", edge: "start" };
+    case "]":
+      return { type: "mark", edge: "end" };
   }
   switch (e.key.toLowerCase()) {
     case "z":
