@@ -3198,7 +3198,7 @@ const baseDetail = (withObject: boolean): ClipDetail => ({
   classes: [{ id: 0, name: "a", color: "#ff0000" }, { id: 1, name: "b", color: "#00ff00" }],
 });
 const handle = (detail: ClipDetail): ClipHandle => ({
-  detail, error: null, reload: vi.fn(), apply: vi.fn(), patchFrame: vi.fn(), maskVersion: () => "0.0",
+  detail, error: null, refreshError: null, reload: vi.fn(), apply: vi.fn(), patchFrame: vi.fn(), maskVersion: () => "0.0",
 });
 type Args = { frame: number; classId: number | null; clip: ClipHandle; enabled: boolean };
 const setup = (over: Partial<Args> = {}) =>
@@ -3703,11 +3703,10 @@ import { useClip } from "../hooks/useClip";
 import { HealthContext, engineReady } from "../hooks/useHealth";
 import { usePlayback } from "../hooks/usePlayback";
 import { usePrompting } from "../hooks/usePrompting";
-import { FrameStore } from "../lib/frameCache";
+import { FrameStore, MASK_ALPHA } from "../lib/frameCache";
 import { hexToRgb } from "../lib/mask";
 import { clampFrame } from "../lib/timeline";
 
-const MASK_ALPHA = 0.45; // must match FrameCanvas so prefetched layers are cache hits
 
 export function Label() {
   const { clipId = "" } = useParams();
@@ -3826,7 +3825,7 @@ export function Label() {
 - [ ] **Step 4: Run tests, typecheck, build**
 
 Run: `bash -c 'source ~/.nvm/nvm.sh && cd web && npx vitest run && npm run build'`
-Expected: `99 passed` (85 + 7 prompting hook + 5 prompt panel + 2 label prompting); no warnings; build succeeds.
+Expected: `108 passed` (94 after the review-driven fixes to Tasks 3–5, + 7 prompting hook + 5 prompt panel + 2 label prompting); no warnings; build succeeds.
 
 - [ ] **Step 5: Commit**
 
@@ -3846,7 +3845,7 @@ git commit -m "feat(web): click, box and text prompting with live preview, class
 - Test: `web/src/hooks/useKeyboard.test.ts`
 
 **Interfaces:**
-- Consumes: `api.propagate`, `api.cancelJob`, `api.deleteFrame`, `api.restoreFrame`, `api.prune`, `api.clearRange`, `retryInteractive`, `ApiError` (Task 1); `findNext` (Task 2); `useJob`, `JobHandle`, `isTerminal` (Task 3); `useClip`, `usePrompting` and the components of Tasks 5–6.
+- Consumes: `api.propagate`, `api.cancelJob`, `api.deleteFrame`, `api.restoreFrame`, `api.prune`, `api.clearRange`, `retryInteractive`, `ApiError` (Task 1); `findNext` (Task 2); `useJob`, `JobHandle`, `isTerminal` (Task 3); `useClip`, `usePrompting` and the components of Tasks 5–6. After the Task 5 review, `ClipHandle` also has `refreshError: string | null` (a failed background `reload()` keeps the loaded clip) and `frameCache.ts` exports `MASK_ALPHA` / `PREVIEW_ALPHA`.
 - Produces: `useKeyboard.ts`: `type KeyAction`, `keyAction(e): KeyAction | null` (pure), `useKeyboard(onAction)`. `PropagatePanel.tsx`: props `{ job: JobHandle; running: boolean; blockedReason: string | null; follow: boolean; error: string | null; onStart(direction): void; onStop(): void; onFollow(follow: boolean): void }`. `CleanupPanel.tsx`: props `{ frame: number; frameCount: number; state: FrameState; clearBlockedReason: string | null; error: string | null; onToggleDelete(): void; onPrune(): void; onClearRange(start: number, end: number): void }`.
 
 Behaviour:
@@ -4246,12 +4245,11 @@ import { useJob } from "../hooks/useJob";
 import { useKeyboard, type KeyAction } from "../hooks/useKeyboard";
 import { usePlayback } from "../hooks/usePlayback";
 import { usePrompting } from "../hooks/usePrompting";
-import { FrameStore } from "../lib/frameCache";
+import { FrameStore, MASK_ALPHA } from "../lib/frameCache";
 import { isTerminal } from "../lib/jobReducer";
 import { hexToRgb } from "../lib/mask";
 import { clampFrame, findNext } from "../lib/timeline";
 
-const MASK_ALPHA = 0.45; // must match FrameCanvas so prefetched layers are cache hits
 const jobKey = (clipId: string) => `vsp.job.${clipId}`;
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -4477,6 +4475,9 @@ export function Label() {
         <aside className="flex w-80 flex-col gap-4 overflow-y-auto border-l border-neutral-700 p-3">
           <Link to="/" className="text-xs text-neutral-400 underline">← Back to clips</Link>
           <ClipInfo detail={detail} />
+          {clip.refreshError !== null && (
+            <p role="alert" className="rounded bg-red-900 px-2 py-1 text-xs">Could not refresh the clip: {clip.refreshError}</p>
+          )}
           <ObjectPanel detail={detail} classId={classId} onClassId={setClassId} onAddClass={addClass} />
           <PromptPanel prompting={prompting} disabledReason={disabledReason} />
           <PropagatePanel
@@ -4643,7 +4644,7 @@ middle-drag pan · right click = negative point.
 - [ ] **Step 6: Run everything**
 
 Run: `bash -c 'source ~/.nvm/nvm.sh && cd web && npx vitest run && npm run build'`
-Expected: `110 passed` (99 + 5 keyboard + 6 label); no warnings; build succeeds.
+Expected: `119 passed` (108 + 5 keyboard + 6 label); no warnings; build succeeds.
 
 Run: `uv run ruff check server && HF_HUB_OFFLINE=1 uv run pytest -q`
 Expected: clean; `167 passed` (no Python change in this plan).
@@ -4672,7 +4673,7 @@ git commit -m "feat(web): propagation with live progress, frame cleanup, keyboar
 
 ## Final verification (after all tasks)
 
-- `bash -c 'source ~/.nvm/nvm.sh && cd web && npx vitest run && npm run build'` → 110 passed, build succeeds, no warnings.
+- `bash -c 'source ~/.nvm/nvm.sh && cd web && npx vitest run && npm run build'` → 119 passed, build succeeds, no warnings.
 - `uv run ruff check server && HF_HUB_OFFLINE=1 uv run pytest -q` → clean, 167 passed.
 - `git status --short` is empty; `git ls-files | grep -c -E "vision_train|node_modules|web/dist"` prints `0`.
 - Best-effort visual check (Firefox 111 is installed; it has no "wait for network idle", so a blank or "Loading…" capture is not a failure): with the server running and seeded, `firefox --headless --window-size 1500,950 --screenshot /tmp/vsp-label.png 'http://127.0.0.1:28000/#/clips/<id>'`.
