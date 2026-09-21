@@ -56,6 +56,7 @@ def _project(client, classes=("part",)):
 def test_health_with_a_loaded_engine(client):
     body = client.get("/api/health").json()
     assert body["status"] == "ok" and body["engine"] == {"loaded": True, "device": None, "error": None}
+    assert body["upload"] == {"max_bytes": 8 * 2**30}
 
 
 def test_health_reports_a_background_load_failure(tmp_path):

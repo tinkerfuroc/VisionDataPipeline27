@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from .. import __version__
 from ..config import REPO_ROOT, Settings
 from ..engine.types import EngineNotLoaded
-from ..ingest import IngestError
+from ..ingest import IngestError, UploadTooLarge, clear_uploads
 from ..jobs import JobBusy, JobManager, JobNotFound
 from ..labeling.errors import BadRequest, Conflict, PropagationFailed
 from ..store import NotFound, ProjectStore, StoreError
@@ -25,7 +25,7 @@ log = logging.getLogger(__name__)
 
 _STATUS = [  # most specific first
     (NotFound, 404), (JobNotFound, 404), (Conflict, 409), (EngineNotLoaded, 503), (PropagationFailed, 500),
-    (BadRequest, 400), (IngestError, 400), (StoreError, 400),
+    (UploadTooLarge, 413), (BadRequest, 400), (IngestError, 400), (StoreError, 400),
 ]
 
 
@@ -84,6 +84,7 @@ def create_app(settings: Settings, *, engine=None, load_engine: bool = True) -> 
                 "device": getattr(eng, "device", None),
                 "error": getattr(eng, "load_error", None),
             },
+            "upload": {"max_bytes": st.settings.ingest.max_upload_bytes},
         }
 
     app.include_router(projects.router)
@@ -91,6 +92,10 @@ def create_app(settings: Settings, *, engine=None, load_engine: bool = True) -> 
     app.include_router(labeling.router)
     app.include_router(export.router)
     app.include_router(jobs.router)
+
+    removed = clear_uploads(state.settings.project.data_root)  # litter from a previous process; see clear_uploads
+    if removed:
+        log.info("removed %d stale upload(s) from a previous run", removed)
 
     dist = REPO_ROOT / "web" / "dist"  # built by Plan 3; absent until then
     if dist.is_dir():

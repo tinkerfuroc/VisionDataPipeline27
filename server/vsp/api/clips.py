@@ -3,20 +3,26 @@ from __future__ import annotations
 import re
 import shutil
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, File, Form, Response, UploadFile
+from fastapi import APIRouter, File, Form, Query, Request, Response, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
+from starlette.requests import ClientDisconnect
 
 from ..ingest import (
     FrameDirSource,
+    FrameSource,
     ImportCancelled,
     IngestError,
+    UploadTooLarge,
     VideoFileSource,
+    ZipFrameSource,
     import_clip,
     resolve_allowed,
+    save_stream,
 )
 from ..jobs import Job, JobBusy
 from ..labeling.prompts import OBJECT_ID
@@ -26,6 +32,21 @@ from .views import clip_detail
 
 router = APIRouter(tags=["clips"])
 
+VIDEO_SUFFIXES = frozenset({
+    ".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v", ".mpg", ".mpeg", ".wmv", ".flv", ".mts", ".m2ts",
+})
+
+
+def _safe_name(name: str) -> str:
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", Path(name).name)[:80] or "upload"
+
+
+def _upload_kind(name: str) -> str | None:
+    suffix = Path(name).suffix.lower()
+    if suffix == ".zip":
+        return "zip"
+    return "video" if suffix in VIDEO_SUFFIXES else None
+
 
 class ImportFramesBody(BaseModel):
     path: str
@@ -33,11 +54,15 @@ class ImportFramesBody(BaseModel):
     stride: int = Field(default=1, ge=1)
 
 
-def _start_import(state: AppState, project_id: str, source, stride: int, cleanup: Path | None = None) -> dict:
+def _start_import(
+    state: AppState, project_id: str, build_source: Callable[[], FrameSource], stride: int,
+    cleanup: Path | None = None,
+) -> dict:
     cfg = state.settings.ingest
 
     def work(job: Job) -> dict:
         try:
+            source = build_source()  # a decoder/zip failure here is the job's error, reported like any other
             clip = import_clip(
                 state.store, project_id, source, stride=stride, jpeg_quality=cfg.jpeg_quality,
                 thumb_width=cfg.thumb_width, progress=lambda n: job.emit({"type": "progress", "done": n}),
@@ -57,7 +82,8 @@ def _start_import(state: AppState, project_id: str, source, stride: int, cleanup
 def import_frames(project_id: str, body: ImportFramesBody, state: State) -> dict:
     state.store.read_project(project_id)
     path = resolve_allowed(body.path, state.settings.ingest.allowed_roots)
-    return _start_import(state, project_id, FrameDirSource(path, fps=body.fps), body.stride)
+    source = FrameDirSource(path, fps=body.fps)  # eager: a bad directory is a 400, not a job error
+    return _start_import(state, project_id, lambda: source, body.stride)
 
 
 @router.post("/api/projects/{project_id}/clips/import-video", status_code=202)
@@ -68,7 +94,7 @@ def import_video(
     stride: Annotated[int, Form(ge=1)] = 1,
 ) -> dict:
     state.store.read_project(project_id)
-    name = re.sub(r"[^A-Za-z0-9._-]+", "_", Path(file.filename or "upload").name)[:80] or "upload"
+    name = _safe_name(file.filename or "upload")
     tmp_dir = state.settings.project.data_root / "tmp"
     tmp_dir.mkdir(parents=True, exist_ok=True)
     tmp = tmp_dir / f"{uuid.uuid4().hex}_{name}"
@@ -90,7 +116,51 @@ def import_video(
             raise error
 
         return {"job_id": state.jobs.start("import", fail).id}
-    return _start_import(state, project_id, source, stride, cleanup=tmp)
+    return _start_import(state, project_id, lambda: source, stride, cleanup=tmp)
+
+
+@router.post("/api/projects/{project_id}/clips/upload", status_code=202)
+async def upload_clip(
+    project_id: str,
+    request: Request,
+    state: State,
+    name: Annotated[str, Query(min_length=1, max_length=1000)],
+    stride: Annotated[int, Query(ge=1)] = 1,
+    fps: Annotated[float, Query(gt=0)] = 30.0,
+) -> dict:
+    """Start an import from a file uploaded as the raw request body (not multipart: see the plan's header).
+
+    `fps` is used by a zip only; a video's frame rate comes from its own container.
+    """
+    state.store.read_project(project_id)
+    clean = _safe_name(name)
+    kind = _upload_kind(clean)
+    if kind is None:
+        raise IngestError(f"{clean} is not a video or a .zip of images")
+    limit = state.settings.ingest.max_upload_bytes
+    declared = request.headers.get("content-length")
+    if declared is not None and declared.isdigit() and int(declared) > limit:
+        # Refuse before reading a byte. A browser may see this as a broken connection rather than the 413,
+        # because it is still sending; the GUI checks the same limit from /api/health before it starts.
+        raise UploadTooLarge(f"the upload is {int(declared)} bytes; the limit is {limit}")
+    uploads = state.settings.project.data_root / "uploads"
+    uploads.mkdir(parents=True, exist_ok=True)
+    tmp = uploads / f"{uuid.uuid4().hex}_{clean}"
+    try:
+        await save_stream(request.stream(), tmp, limit)
+    except ClientDisconnect as e:  # the tab closed, or the SSH tunnel dropped
+        raise IngestError("the upload was interrupted") from e
+    cfg = state.settings.ingest
+
+    def build_source() -> FrameSource:
+        if kind == "video":
+            return VideoFileSource(tmp, name=clean)
+        return ZipFrameSource(
+            tmp, fps=fps, name=Path(clean).stem or clean,
+            max_entries=cfg.max_zip_entries, max_bytes=cfg.max_zip_bytes,
+        )
+
+    return _start_import(state, project_id, build_source, stride, cleanup=tmp)
 
 
 @router.get("/api/clips/{clip_id}")
