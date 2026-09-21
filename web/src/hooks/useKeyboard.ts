@@ -62,6 +62,9 @@ export function useKeyboard(onAction: (action: KeyAction) => void): void {
       if (isField(e.target)) return;
       const action = keyAction(e);
       if (action === null) return;
+      // Space on a focused checkbox or radio must keep toggling it (they are not text fields, so they get here)
+      const t = e.target;
+      if (action.type === "play" && t instanceof HTMLInputElement && (t.type === "checkbox" || t.type === "radio")) return;
       e.preventDefault();
       // Enter / Space would otherwise also activate whichever button was clicked last
       if (

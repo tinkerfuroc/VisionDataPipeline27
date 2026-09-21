@@ -24,7 +24,7 @@ export function usePlayback({ playing, fps, frame, frameCount, setFrame, setPlay
     const justStarted = playing && !wasPlaying.current;
     wasPlaying.current = playing;
     if (!playing || frameCount <= 0 || frame < frameCount - 1) return;
-    if (justStarted) setFrame(0);
-    else setPlaying(false);
+    if (justStarted && frameCount > 1) setFrame(0);
+    else setPlaying(false); // also a one-frame clip: there is nothing to restart
   }, [playing, frame, frameCount, setFrame, setPlaying]);
 }

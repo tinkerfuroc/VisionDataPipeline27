@@ -29,6 +29,14 @@ describe("usePlayback", () => {
     expect(result.current.frame).toBe(2);
     expect(result.current.playing).toBe(false);
   });
+  it("stops at once on a one-frame clip instead of latching on", () => {
+    const { result } = renderHook(() => usePlayer(1, 10, { frame: 0, playing: false }));
+    act(() => result.current.setPlaying(true)); // pressed Play: a false → true transition, like the restart case
+    act(() => vi.advanceTimersByTime(300));
+    expect(result.current.frame).toBe(0);
+    expect(result.current.playing).toBe(false);
+  });
+
   it("restarts from the beginning when Play is pressed while parked on the last frame", () => {
     const { result } = renderHook(() => usePlayer(3, 10, { frame: 2, playing: false }));
     expect(result.current.frame).toBe(2);

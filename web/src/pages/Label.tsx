@@ -97,12 +97,17 @@ export function Label() {
   useEffect(() => {
     if (jobId === null || !isTerminal(job.status)) return;
     const own = ownJob.current;
+    if (flushHandle.current !== null) {
+      // apply the last streamed frames now, so a late flush cannot override the seek to `lost_at` below
+      cancelAnimationFrame(flushHandle.current);
+      flushFrameEvents();
+    }
     if (own) sessionStorage.removeItem(jobKey(clipId));
     const lostAt = own ? job.result?.lost_at : undefined; // a foreign job's lost_at is none of this clip's business
     void reload().then(() => {
       if (typeof lostAt === "number") setFrame(lostAt);
     });
-  }, [jobId, job.status, job.result, clipId, reload]);
+  }, [jobId, job.status, job.result, clipId, reload, flushFrameEvents]);
 
   useEffect(() => {
     if (!running || job.transport !== "poll") return;
@@ -158,8 +163,14 @@ export function Label() {
           : null;
   const prompting = usePrompting({ clipId, frame, enabled: disabledReason === null && detail !== null, clip, classId });
 
+  // `busyJobId` outlives the 409 that produced it (only a later preview clears it), so each id is handled once;
+  // otherwise the page would re-attach to that long-finished job every time a job of its own ends.
+  const handledBusyJob = useRef<string | null>(null);
   useEffect(() => {
-    if (prompting.busyJobId !== null && prompting.busyJobId !== INTERACTIVE && !running) attach(prompting.busyJobId, false);
+    const busy = prompting.busyJobId;
+    if (busy === null || busy === INTERACTIVE || running || handledBusyJob.current === busy) return;
+    handledBusyJob.current = busy;
+    attach(busy, false);
   }, [prompting.busyJobId, running, attach]);
 
   // ---- cleanup ---------------------------------------------------------------------------------------------------

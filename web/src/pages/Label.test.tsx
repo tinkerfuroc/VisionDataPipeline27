@@ -224,6 +224,31 @@ describe("Label page (propagation, cleanup, keyboard)", () => {
     expect(screen.getByText(/19 masked/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Stop" }));
     await waitFor(() => expect(api.cancelJob).toHaveBeenCalledWith("j7"));
+    // frame events are applied on an animation frame: look again once one has certainly passed
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    expect(screen.getByText("frame 0 / 39")).toBeTruthy();
+    expect(screen.getByText(/19 masked/)).toBeTruthy();
+  });
+
+  it("does not re-attach to a finished foreign job when a job of its own ends", async () => {
+    vi.mocked(api.getClip).mockResolvedValue(detail);
+    vi.mocked(api.prompt).mockRejectedValue(new ApiError(409, "job j7 is still running", "j7"));
+    vi.mocked(api.propagate).mockResolvedValue({ job_id: "j8" });
+    renderLabel();
+    await screen.findByText("bench.mp4");
+    const canvas = screen.getByLabelText("Frame");
+    fireEvent.mouseDown(canvas, { clientX: 108, clientY: 58, button: 0 });
+    fireEvent.mouseUp(canvas, { clientX: 108, clientY: 58, button: 0 });
+    await waitFor(() => expect(FakeSocket.last?.url).toMatch(/j7$/)); // the prompt's 409 attached the foreign job
+    FakeSocket.last!.emit({ seq: 0, type: "done", processed: 5, written: 5, lost_at: null, cancelled: false });
+    await waitFor(() => expect((screen.getByRole("button", { name: "Forward ▶" }) as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(screen.getByRole("button", { name: "Forward ▶" }));
+    await waitFor(() => expect(FakeSocket.last?.url).toMatch(/j8$/));
+    FakeSocket.last!.emit({ seq: 0, type: "done", processed: 39, written: 39, lost_at: null, cancelled: false });
+    expect(await screen.findByText(/Done: 39 frames processed/)).toBeTruthy();
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    expect(FakeSocket.last?.url).toMatch(/j8$/); // no new socket to j7
+    expect(screen.queryByText(/not started from this page/i)).toBeNull();
   });
 
   it("re-attaches to its own job from sessionStorage and applies its frame events", async () => {
