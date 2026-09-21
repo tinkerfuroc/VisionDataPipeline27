@@ -196,3 +196,8 @@ Still deferred: `clip_id`/scope on `Job.snapshot()`; listing past exports in the
 carry the path); a propagation started while an export runs is tolerated (mask writes are atomic) rather than refused;
 progress events are one per frame per pass, unthrottled, and finished jobs are never evicted from memory; a server killed
 mid-export leaves a half-written folder (recognisable by its missing `export.json`); holes in masks are not represented in polygon formats.
+Known cost, measured in the scoped re-review of the final fix: each mask is decoded and cleaned five times per export
+(once by the plan, once by each of the four writers, because writers run format by format): about 5-7 ms per call at
+1920x1080, so roughly a minute of redundant work for an 1800-frame, four-format export. The fix when it matters is a
+frame-major loop (read and clean each mask once, hand it to all writers); a cache cannot help in format-major order.
+`clean_mask` uses 8-connectivity, so a diagonal staircase of single pixels counts as one blob.
