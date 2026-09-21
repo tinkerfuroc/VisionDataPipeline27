@@ -1286,4 +1286,65 @@ Why it is not in this plan: it adds server-side session state and GC plus a seco
 
 ## As executed
 
-*(filled in when the plan is executed: what changed against the text above, every review fix, and the measured tunnel throughput.)*
+Executed 2026-09-21 on branch `plan5-uploads` (from `main` at `eba777f`). Tasks 1, 2, 3 and 5 by the controller;
+Task 4 delegated to one subagent and reviewed by the controller. Commits, in order:
+
+| Commit | Task |
+|---|---|
+| `6ce5ec8` | 1 — `save_stream`, `clear_uploads` |
+| `9fe8401` | 2 — `ZipFrameSource` |
+| `fdc0702` | fix — a zip source is named after the upload, not its temp file |
+| `6f860c2` | 4 — the XHR upload client and the upload helpers |
+| `99cc569` | 3 — the upload route, the cap, the health key, the sweep |
+| `d3f9eb2` | 5 — the Clips page section, and the multipart route removed |
+
+### What changed against the text above
+
+- **`ZipFrameSource` gained an optional `name` (fix `fdc0702`).** The plan derived the clip's name from
+  `path.stem`, which is right for `run.zip` and wrong for the route's temp copy (`<uuid>_run.zip`), so an uploaded zip
+  produced a clip named `5e1543bd9d3245818ccd9169a53f93b3_run`. The Task 3 API test
+  `test_a_zip_upload_becomes_a_frame_directory_clip` caught it; the constructor now takes `name: str | None = None`
+  exactly as `VideoFileSource` does, the route passes `Path(clean).stem`, and
+  `test_an_explicit_name_overrides_the_temp_file_stem` pins it.
+- **The `# noqa: F401` on the `test_api_core` import in `test_api_upload.py` was unused** (`wait_job`/`_project` are
+  both called), which `ruff` reports as RUF100; it was removed. Plan 4's "As executed" note covers the case where the
+  `client` fixture is imported too, which trips F811 — only the helpers are imported here.
+- **Two plan-supplied Clips page tests were wrong about promise timing**, not about the page:
+  `uploads the chosen video…` mocked `uploadClip` with an already-resolved promise, so the component's identity guard
+  had already cleared the upload by the time the test pushed progress and no bar was ever rendered; and
+  `shows why the server refused an upload` used `Promise.reject(...)` at mock-setup time, which vitest reports as an
+  unhandled rejection before the click can attach to it. Both now use a deferred promise the test resolves/rejects
+  inside `act`. Every other plan-supplied assertion held as written.
+- **`clear_uploads` is called from `create_app`, not from the lifespan**, and the stale-upload test simply builds the
+  app (the plan text was corrected to drop a redundant direct call). A killed server's partial upload is gone before
+  the process serves anything.
+
+### Verified against the real server (`uv run vsp --config .verify/config.yaml serve`, port 28050)
+
+A pre-existing `vsp serve` already held port 28000, so verification used an isolated config with
+`project.data_root: .verify/data` and a separate port; that server was left untouched. `/tmp` is private to each
+command in this sandbox and `~/.cache/uv` is read-only, so `uv` ran with `UV_CACHE_DIR` inside the workspace — an
+environment quirk, not a code change.
+
+- `POST /clips/upload?name=bench.avi&stride=2` with a 30-frame MJPG AVI sent with `Content-Length` → job `done`,
+  clip `frame_count: 15`, `source {video, bench.avi}`.
+- The same upload sent with `Transfer-Encoding: chunked` (no `Content-Length`, so the `save_stream` cap is the only
+  guard) → job `done`; the streaming path works.
+- `POST /clips/upload?name=frames.zip&fps=12` with a zip holding `run/frame_1..12.png` plus `run/notes.txt` → job
+  `done`, clip `frame_count: 12`, `fps: 12`, `source {frame_dir, frames}`, `notes.txt` skipped.
+- `data/uploads/` was empty after every job and after both 413s.
+- `?name=notes.txt` → 400 before anything was written; a non-video body named `x.mp4` → job `error`
+  `cannot open video: x.mp4`.
+- With `ingest.max_upload_bytes: 1000`: a 13 966-byte body → 413 `the upload is 13966 bytes; the limit is 1000`
+  (declared length) and 413 `the upload is larger than 1000 bytes` (chunked), with nothing left on disk.
+- **The forwarded-port topology**: this box has no sshd, so a byte-copying TCP relay (`.verify/relay.py`, 28099 →
+  28050) stood in for `ssh -L`. A full video upload through it → job `done`, 30 frames, which is everything the server
+  can observe about a tunnel. A real `ssh -L` run still belongs on the deployment host.
+- **Headless Firefox** (the delayed-wrapper recipe from the design-pass brief) rendered the Clips page against the real
+  server: the "Upload footage" section sits in the right-hand sidebar with the file picker, the drop note,
+  "Keep every Nth frame", and the disabled "Upload and import" button; after the two uploads the clip cards show
+  `bench.avi` (15 frames, 120×60, 15 fps) and `frames` (12 frames, 120×60, 12 fps). Upload *progress and cancel* were
+  not driven in a browser — they are covered by the component tests, and driving them headlessly was not worth the
+  harness.
+- Suites at the end: `HF_HUB_OFFLINE=1 uv run pytest -q` → **204 passed, 12 skipped** (GPU tests); `uv run ruff check .`
+  clean; `npx tsc --noEmit` clean; `npx vitest run` → **167 passed** in 21 files; `npm run build` succeeds.

@@ -29,7 +29,8 @@ repository root, not the current working directory, so `vsp` can be run from any
     HF_HUB_OFFLINE=1 uv run vsp serve        # http://127.0.0.1:28000 ; the model loads in the background
     curl -s --noproxy '*' http://127.0.0.1:28000/api/health
 
-`/api/health` shows `engine.loaded` and, if loading failed, the reason. Interactive API docs: `/docs`.
+`/api/health` shows `engine.loaded` and, if loading failed, the reason. It also reports `upload.max_bytes`, the
+size cap the GUI checks before it starts an upload. Interactive API docs: `/docs`.
 Importing, browsing and frame cleanup work without a GPU; prompting and propagation return 503 until the
 engine is loaded, and 409 (with the running `job_id`) while a propagation job holds the GPU. A propagate
 request also returns 409 with `job_id: "interactive"` if a prompt/accept/clear-range call is in flight;
@@ -39,6 +40,32 @@ never race a propagation's writes. Cancelling an import job removes the partial 
 `POST /api/projects/{id}/export` starts an export job; body `{clips, formats, options}` → `202 {job_id}`.
 It returns 400 for an invalid request (unknown format, no clips, a bad option) and 409 (with the running
 `job_id`) while a propagation job runs, since propagation rewrites the very masks an export reads.
+
+### Reaching the GUI from another machine
+
+`vsp serve` binds `127.0.0.1` by default. Forward the port instead of binding the server to the network:
+
+    ssh -N -L 28000:127.0.0.1:28000 user@gpu-host
+
+then open `http://127.0.0.1:28000/` locally; uploads travel through the tunnel. Binding a public interface
+exposes an unauthenticated labeling server, which is why the CLI warns about it. `-o Compression=no` is
+usually faster for already-compressed footage, and `-o ServerAliveInterval=30` keeps a NAT'd tunnel alive.
+
+### Uploading footage
+
+The Clips page uploads a video file or a `.zip` of images and imports it in one step. The browser sends the
+file as the raw request body (not multipart) to
+`POST /api/projects/{p}/clips/upload?name=<file>&stride=<n>&fps=<n>` → `202 {job_id}`. `stride` applies to
+both kinds; `fps` only to a zip, because a video's frame rate comes from its container. A name is accepted if
+it ends in one of the video extensions in `vsp.api.clips.VIDEO_SUFFIXES` or in `.zip`; a zip may hold
+`.jpg/.jpeg/.png` entries in nested folders (natural order; `__MACOSX` and dotfiles are skipped). The upload
+is streamed once into `data/uploads/` and deleted when the import job ends, and a server killed mid-upload
+sweeps that directory at its next start. A body over `ingest.max_upload_bytes` (8 GiB by default) is refused
+with 413; the GUI refuses the file before the transfer begins, using the cap from `/api/health`.
+
+The transfer is a single request, so it needs the page to stay open: reloading or closing the tab cancels it
+and leaves nothing behind. The GUI shows percentage progress and a Cancel button. Resumable uploads are not
+implemented yet. Peak disk use during an import is the upload plus the JPEG frames and thumbnails it writes.
 
 ## Web GUI
 
@@ -111,3 +138,9 @@ middle-drag pan · right click = negative point.
     `export.json`, then load the result in the tool you train with: `yolo_seg/data.yaml` or `yolo_det/data.yaml` in
     Ultralytics, `coco/annotations/instances_train.json` with pycocotools, and look at a few `masks/masks/` PNGs
     (pixel value = `mask_value` from the manifest's class map).
+14. Upload footage from the Clips page over the SSH forward, once as a video and once as a zip of frames: the
+    percentage must move, Cancel mid-transfer must stop it without an error message, and the finished import must
+    appear as a clip whose name, frame count and fps are right. Reload the page during an upload and confirm the
+    transfer stops, no partial clip appears, and `data/uploads/` is empty.
+15. Upload a file larger than `ingest.max_upload_bytes`: the GUI must refuse it before the transfer starts, and
+    `curl -X POST --data-binary @big.mp4 .../clips/upload?name=big.mp4` must answer 413.
