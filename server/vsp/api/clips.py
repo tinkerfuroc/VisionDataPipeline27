@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import re
-import shutil
 import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, File, Form, Query, Request, Response, UploadFile
+from fastapi import APIRouter, Query, Request, Response
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from starlette.requests import ClientDisconnect
@@ -84,39 +83,6 @@ def import_frames(project_id: str, body: ImportFramesBody, state: State) -> dict
     path = resolve_allowed(body.path, state.settings.ingest.allowed_roots)
     source = FrameDirSource(path, fps=body.fps)  # eager: a bad directory is a 400, not a job error
     return _start_import(state, project_id, lambda: source, body.stride)
-
-
-@router.post("/api/projects/{project_id}/clips/import-video", status_code=202)
-def import_video(
-    project_id: str,
-    state: State,
-    file: Annotated[UploadFile, File()],
-    stride: Annotated[int, Form(ge=1)] = 1,
-) -> dict:
-    state.store.read_project(project_id)
-    name = _safe_name(file.filename or "upload")
-    tmp_dir = state.settings.project.data_root / "tmp"
-    tmp_dir.mkdir(parents=True, exist_ok=True)
-    tmp = tmp_dir / f"{uuid.uuid4().hex}_{name}"
-    try:
-        with tmp.open("wb") as out:
-            shutil.copyfileobj(file.file, out)
-    except BaseException:
-        tmp.unlink(missing_ok=True)
-        raise
-
-    try:
-        source = VideoFileSource(tmp, name=name)
-    except IngestError as e:
-        # Report an unreadable upload as a failed job so the UI has one code path, and remove the upload.
-        tmp.unlink(missing_ok=True)
-        error = IngestError(str(e))  # `e` is unbound once this block ends; the job runs later on another thread
-
-        def fail(job: Job) -> dict:
-            raise error
-
-        return {"job_id": state.jobs.start("import", fail).id}
-    return _start_import(state, project_id, lambda: source, stride, cleanup=tmp)
 
 
 @router.post("/api/projects/{project_id}/clips/upload", status_code=202)

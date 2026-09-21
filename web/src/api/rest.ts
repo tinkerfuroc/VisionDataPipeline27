@@ -152,13 +152,6 @@ export const api = {
 
   importFrames: (projectId: string, body: { path: string; fps: number; stride: number }) =>
     request<{ job_id: string }>(`/api/projects/${projectId}/clips/import-frames`, post(body)),
-  importVideo: (projectId: string, file: File, stride: number) => {
-    const form = new FormData();
-    form.append("file", file);
-    form.append("stride", String(stride));
-    // no Content-Type header: the browser must add the multipart boundary itself
-    return request<{ job_id: string }>(`/api/projects/${projectId}/clips/import-video`, { method: "POST", body: form });
-  },
   uploadClip,
 
   getClip: (id: string) => request<ClipDetail>(`/api/clips/${id}`),

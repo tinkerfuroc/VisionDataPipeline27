@@ -108,16 +108,10 @@ describe("api", () => {
     });
   });
 
-  it("uses `from` as the prune field name and uploads videos as multipart", async () => {
-    const fetchMock = mockFetch(jsonResponse({}), jsonResponse({ job_id: "j2" }, 202));
+  it("uses `from` as the prune field name", async () => {
+    const fetchMock = mockFetch(jsonResponse({}));
     await api.prune("c1", 12);
     expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ from: 12 });
-    await api.importVideo("p1", new File(["x"], "a.mp4"), 2);
-    const [url, init] = fetchMock.mock.calls[1];
-    expect(url).toBe("/api/projects/p1/clips/import-video");
-    expect(init.body).toBeInstanceOf(FormData);
-    expect((init.body as FormData).get("stride")).toBe("2");
-    expect(init.headers).toBeUndefined();
   });
 
   it("versions mask URLs", () => {
