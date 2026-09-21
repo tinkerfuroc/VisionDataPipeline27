@@ -48,6 +48,7 @@ export function useJob(jobId: string | null, onEvent?: (event: JobEvent) => void
 
     const ws = new WebSocket(wsUrl(`/ws/jobs/${jobId}`));
     ws.onmessage = (m: MessageEvent) => {
+      if (closed) return;
       const event = JSON.parse(String(m.data)) as JobEvent;
       if (event.seq < nextSeq) return;
       nextSeq = event.seq + 1;

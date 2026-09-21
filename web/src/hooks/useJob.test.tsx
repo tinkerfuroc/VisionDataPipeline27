@@ -86,4 +86,26 @@ describe("useJob", () => {
     unmount();
     expect(socket().closed).toBe(true);
   });
+
+  it("ignores messages from a superseded or unmounted socket", () => {
+    const seen: number[] = [];
+    const { result, rerender, unmount } = renderHook(({ id }) => useJob(id, (e) => seen.push(e.seq)), {
+      initialProps: { id: "j1" },
+    });
+    const first = socket();
+    rerender({ id: "j2" });
+    act(() => first.emit({ seq: 0, type: "done", clip_id: "old" }));
+    expect(result.current.status).toBe("idle");
+    expect(result.current.result).toBeNull();
+    expect(seen).toEqual([]);
+
+    const second = socket();
+    act(() => second.emit({ seq: 0, type: "progress", done: 1, total: 5 }));
+    expect(result.current).toMatchObject({ status: "running", done: 1 });
+    expect(seen).toEqual([0]);
+
+    unmount();
+    act(() => second.emit({ seq: 1, type: "progress", done: 2, total: 5 }));
+    expect(seen).toEqual([0]);
+  });
 });
