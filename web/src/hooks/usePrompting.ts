@@ -27,8 +27,19 @@ export function usePrompting({ clipId, frame, enabled, clip, classId }: Options)
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busyJobId, setBusyJobId] = useState<string | null>(null);
+  const [accepting, setAccepting] = useState(false);
+  const acceptingRef = useRef(false);
+  const [attempt, setAttempt] = useState(0);
   const requestId = useRef(0);
   const draftIsStale = useRef(false);
+
+  // "submit" (text) and "box" can repeat identical content after a failed preview; bump a counter so the
+  // preview effect re-requests even though the prompt itself did not change. Everything else that mutates
+  // content already changes the prompt, and candidate/phrase/undo/tool must not re-request on their own.
+  const wrappedDispatch = useCallback<Dispatch<DraftAction>>((action) => {
+    if (action.type === "submit" || action.type === "box") setAttempt((a) => a + 1);
+    dispatch(action);
+  }, []);
 
   const promptKey = JSON.stringify([draft.tool, draft.points, draft.box, draft.query]);
   // eslint-disable-next-line react-hooks/exhaustive-deps -- promptKey covers every field toPrompt reads
@@ -67,21 +78,25 @@ export function usePrompting({ clipId, frame, enabled, clip, classId }: Options)
         setBusyJobId(e instanceof ApiError && e.status === 409 ? e.jobId : null);
         setBusy(false);
       });
-  }, [clipId, frame, enabled, prompt]);
+  }, [clipId, frame, enabled, prompt, attempt]);
 
   const object = clip.detail?.clip.objects[0] ?? null;
   const needsClass = object === null;
-  const canAccept = enabled && prompt !== null && !busy && draft.candidate < candidates.length && !(needsClass && classId === null);
+  const canAccept =
+    enabled && prompt !== null && !busy && !accepting && draft.candidate < candidates.length && !(needsClass && classId === null);
 
   const apply = clip.apply;
   const accept = useCallback(async () => {
-    if (prompt === null || candidates.length === 0) return;
-    if (needsClass && classId === null) {
-      setError("Choose a class before accepting the first mask.");
-      return;
-    }
-    const sendClass = classId !== null && (object === null || object.class_id !== classId);
+    if (acceptingRef.current) return; // a second call in the same tick is ignored
+    acceptingRef.current = true;
+    setAccepting(true);
     try {
+      if (prompt === null || candidates.length === 0) return;
+      if (needsClass && classId === null) {
+        setError("Choose a class before accepting the first mask.");
+        return;
+      }
+      const sendClass = classId !== null && (object === null || object.class_id !== classId);
       const next = await api.accept(clipId, frame, prompt, { classId: sendClass ? classId : undefined, candidate: draft.candidate });
       apply(next, true);
       dispatch({ type: "clear" });
@@ -89,6 +104,9 @@ export function usePrompting({ clipId, frame, enabled, clip, classId }: Options)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       setBusyJobId(e instanceof ApiError && e.status === 409 ? e.jobId : null);
+    } finally {
+      acceptingRef.current = false;
+      setAccepting(false);
     }
   }, [prompt, candidates.length, needsClass, classId, object, clipId, frame, draft.candidate, apply]);
 
@@ -97,5 +115,5 @@ export function usePrompting({ clipId, frame, enabled, clip, classId }: Options)
     setError(null);
   }, []);
 
-  return { draft, dispatch, candidates, busy, error, busyJobId, canAccept, accept, clear };
+  return { draft, dispatch: wrappedDispatch, candidates, busy, error, busyJobId, canAccept, accept, clear };
 }

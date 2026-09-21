@@ -129,4 +129,57 @@ describe("usePrompting", () => {
     expect(api.accept).not.toHaveBeenCalled();
     expect(result.current.error).toMatch(/class/i);
   });
+
+  it("a second accept while one is in flight is ignored", async () => {
+    vi.mocked(api.prompt).mockResolvedValue({ candidates: [cand(900)] });
+    let resolveAccept: (v: ClipDetail) => void = () => {};
+    vi.mocked(api.accept).mockReturnValue(new Promise((r) => (resolveAccept = r)));
+    const clip = handle(baseDetail(true));
+    const { result } = setup({ clip });
+    act(() => result.current.dispatch({ type: "point", x: 5, y: 6, label: 1 }));
+    await waitFor(() => expect(result.current.canAccept).toBe(true));
+
+    act(() => {
+      void result.current.accept();
+      void result.current.accept();
+    });
+    expect(api.accept).toHaveBeenCalledTimes(1);
+    expect(result.current.canAccept).toBe(false);
+
+    const accepted = baseDetail(true);
+    await act(async () => resolveAccept(accepted));
+    expect(clip.apply).toHaveBeenCalledTimes(1);
+    expect(result.current.draft.points).toEqual([]);
+  });
+
+  it("re-submitting the same text after a failure retries", async () => {
+    vi.mocked(api.prompt)
+      .mockRejectedValueOnce(new ApiError(409, "job j9 is still running", "j9"))
+      .mockResolvedValueOnce({ candidates: [cand(900)] });
+    const { result } = setup();
+    act(() => result.current.dispatch({ type: "tool", tool: "text" }));
+    act(() => result.current.dispatch({ type: "phrase", phrase: "bolt" }));
+    act(() => result.current.dispatch({ type: "submit" }));
+    await waitFor(() => expect(result.current.error).toBe("job j9 is still running"));
+    act(() => result.current.dispatch({ type: "submit" }));
+    await waitFor(() => expect(api.prompt).toHaveBeenCalledTimes(2));
+    expect(result.current.candidates).toHaveLength(1);
+    expect(result.current.error).toBeNull();
+    expect(result.current.busyJobId).toBeNull();
+  });
+
+  it("re-drawing the identical box retries", async () => {
+    vi.mocked(api.prompt)
+      .mockRejectedValueOnce(new ApiError(409, "job j9 is still running", "j9"))
+      .mockResolvedValueOnce({ candidates: [cand(900)] });
+    const { result } = setup();
+    act(() => result.current.dispatch({ type: "tool", tool: "box" }));
+    act(() => result.current.dispatch({ type: "box", box: [10, 10, 50, 50] }));
+    await waitFor(() => expect(result.current.error).toBe("job j9 is still running"));
+    act(() => result.current.dispatch({ type: "box", box: [10, 10, 50, 50] }));
+    await waitFor(() => expect(api.prompt).toHaveBeenCalledTimes(2));
+    expect(result.current.candidates).toHaveLength(1);
+    expect(result.current.error).toBeNull();
+    expect(result.current.busyJobId).toBeNull();
+  });
 });
