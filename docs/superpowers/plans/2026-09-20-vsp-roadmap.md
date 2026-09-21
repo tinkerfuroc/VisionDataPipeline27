@@ -171,3 +171,15 @@ unlike its `server/`).
 5. Runner — copy images once into `exports/<id>/images/`, hardlink into format dirs (copy fallback),
    `export.json` manifest, runs as a job; API route.
 6. `ExportDialog` in the SPA (if Plan 3 has landed).
+
+## GUI design pass (done, 2026-09-21)
+
+Brief and the revisions made after user review: `docs/superpowers/specs/2026-09-21-gui-design-pass.md`. What Plan 4 must
+respect when it adds the Export dialog:
+- Every page keeps its controls in a right-hand sidebar; pages render their own `AppHeader` (it carries the engine banner).
+- Chrome has no hue: use the `btn` / `btn-on` / `btn-danger` / `field` / `heading` / `note` / `alert` classes from
+  `web/src/styles.css` and the Tailwind tokens (`surround`, `well`, `panel`, `line`, `ink`, `dim`, `key`, `danger`).
+- The interface scale is the single root `font-size` percentage in `web/src/styles.css`; sizes are rem.
+- Prefer direct manipulation with a button that names exactly what it will do (the mark-then-clear range is the model).
+- The mask overlay is outlined (`tintMask` with a size); exported mask PNGs are unaffected, it is display only.
+- `scripts/seed_demo.py` builds a colourful tracking scene for judging overlays.
