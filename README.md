@@ -35,3 +35,12 @@ engine is loaded, and 409 (with the running `job_id`) while a propagation job ho
 request also returns 409 with `job_id: "interactive"` if a prompt/accept/clear-range call is in flight;
 retry. Deleting a clip also returns 409 (with the running `job_id`) while a GPU job runs, so a delete can
 never race a propagation's writes. Cancelling an import job removes the partial clip it had started.
+
+## Web GUI
+
+Node 22 is installed with nvm (`source ~/.nvm/nvm.sh` in a fresh shell).
+
+    cd web && npm ci            # once
+    npm run build               # writes web/dist, which `vsp serve` serves at http://127.0.0.1:28000/
+    npm run dev                 # or: hot-reloading dev server on http://127.0.0.1:5173 (proxies /api and /ws to :28000)
+    npm test                    # vitest
