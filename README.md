@@ -44,3 +44,28 @@ Node 22 is installed with nvm (`source ~/.nvm/nvm.sh` in a fresh shell).
     npm run build               # writes web/dist, which `vsp serve` serves at http://127.0.0.1:28000/
     npm run dev                 # or: hot-reloading dev server on http://127.0.0.1:5173 (proxies /api and /ws to :28000)
     npm test                    # vitest
+
+### Demo data
+
+With the server running, `uv run python scripts/seed_demo.py` creates a project "demo" with a synthetic 40-frame clip
+(a disc moving across the frame), labels frame 0 with one click and propagates forward, then prints the URL to open.
+`--no-label` imports only.
+
+### Keyboard
+
+`Enter` accept · `Esc` clear · `Z` undo click · `←/→` step · `Shift+←/→` ±10 · `Space` play/pause · `K` / `Shift+K`
+next / previous keyframe · `G` next empty frame · `Del` delete or restore frame · `M` mask overlay · mouse wheel zoom ·
+middle-drag pan · right click = negative point.
+
+### Manual QA checklist (run on real footage before trusting a dataset)
+
+1. Import a video and a frame directory (try a stride > 1); cancel one import midway and confirm no clip appears.
+2. Label by each method: clicks (add a negative click), a box dragged bottom-right → top-left plus a refining click,
+   and a text phrase with several candidates. Check the "no usable mask" message on an empty region.
+3. Propagate forward, backward and both from a mid-clip keyframe; press Stop during one and confirm the masks so far stay.
+4. Let the object leave the frame: propagation should stop early and seek to the "lost at" frame.
+5. Correct a bad frame mid-clip (it becomes a keyframe) and propagate again: the run must stop at the next keyframe.
+6. Scrub the timeline and play at clip fps with the overlay on; delete a frame, restore it, prune the tail, clear a range.
+7. Reload the page during a propagation: the panel should re-attach to the running job.
+8. Stop the server: the banner says it is unreachable; start it without weights: the banner shows the reason and
+   importing / cleanup still work.

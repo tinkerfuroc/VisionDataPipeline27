@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError, api } from "../api/rest";
@@ -10,8 +10,33 @@ import { Label } from "./Label";
 
 vi.mock("../api/rest", async (original) => ({
   ...(await original<typeof import("../api/rest")>()),
-  api: { getClip: vi.fn(), prompt: vi.fn(), accept: vi.fn(), addClass: vi.fn() },
+  api: {
+    getClip: vi.fn(),
+    prompt: vi.fn(),
+    accept: vi.fn(),
+    addClass: vi.fn(),
+    propagate: vi.fn(),
+    cancelJob: vi.fn(),
+    deleteFrame: vi.fn(),
+    restoreFrame: vi.fn(),
+    prune: vi.fn(),
+    clearRange: vi.fn(),
+    getJob: vi.fn(),
+  },
 }));
+
+class FakeSocket {
+  static last: FakeSocket | null = null;
+  onmessage: ((m: { data: string }) => void) | null = null;
+  onclose: (() => void) | null = null;
+  constructor(readonly url: string) {
+    FakeSocket.last = this;
+  }
+  close() {}
+  emit(event: object) {
+    act(() => this.onmessage?.({ data: JSON.stringify(event) }));
+  }
+}
 
 const detail: ClipDetail = {
   clip: {
@@ -46,6 +71,9 @@ beforeEach(() => {
   Object.defineProperty(HTMLElement.prototype, "clientWidth", { configurable: true, get: () => 656 });
   Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 496 });
   HTMLCanvasElement.prototype.getBoundingClientRect = () => ({ left: 0, top: 0, width: 656, height: 496 }) as DOMRect;
+  FakeSocket.last = null;
+  vi.stubGlobal("WebSocket", FakeSocket);
+  sessionStorage.clear();
 });
 afterEach(() => {
   cleanup();
@@ -133,7 +161,111 @@ describe("Label page (prompting)", () => {
     const again = screen.getByLabelText("Frame");
     fireEvent.mouseDown(again, { clientX: 108, clientY: 58, button: 0 });
     fireEvent.mouseUp(again, { clientX: 108, clientY: 58, button: 0 });
-    expect(screen.getByText(/engine is not loaded/i)).toBeTruthy();
+    // both the prompt panel and (now) the propagate panel report the disabled engine
+    expect(screen.getAllByText(/engine is not loaded/i).length).toBeGreaterThan(0);
     expect(api.prompt).not.toHaveBeenCalled();
+  });
+});
+
+describe("Label page (propagation, cleanup, keyboard)", () => {
+  it("propagates from a keyframe, follows the streamed frames and reloads when the job ends", async () => {
+    vi.mocked(api.getClip).mockResolvedValue(detail);
+    vi.mocked(api.propagate).mockResolvedValue({ job_id: "j1" });
+    renderLabel();
+    await screen.findByText("bench.mp4");
+    fireEvent.click(screen.getByRole("button", { name: "Forward ▶" }));
+    await waitFor(() => expect(api.propagate).toHaveBeenCalledWith("c1", 0, "forward"));
+    await waitFor(() => expect(FakeSocket.last?.url).toMatch(/j1$/));
+    expect(sessionStorage.getItem("vsp.job.c1")).toBe("j1");
+    FakeSocket.last!.emit({ seq: 0, type: "progress", done: 0, total: 39 });
+    FakeSocket.last!.emit({ seq: 1, type: "frame", frame: 20, has_mask: true, done: 1, total: 39 });
+    expect(screen.getByText("frame 20 / 39")).toBeTruthy();
+    expect(screen.getByText(/20 masked/)).toBeTruthy();
+    expect(screen.getByText(/propagation is running/i)).toBeTruthy();
+    const loads = vi.mocked(api.getClip).mock.calls.length;
+    FakeSocket.last!.emit({ seq: 2, type: "done", processed: 39, written: 38, lost_at: 33, cancelled: false });
+    await waitFor(() => expect(vi.mocked(api.getClip).mock.calls.length).toBe(loads + 1));
+    expect(await screen.findByText("frame 33 / 39")).toBeTruthy();
+    expect(screen.getByText(/lost the object at frame 33/i)).toBeTruthy();
+    expect(sessionStorage.getItem("vsp.job.c1")).toBeNull();
+  });
+
+  it("only offers propagation on a keyframe, and Stop cancels the job", async () => {
+    vi.mocked(api.getClip).mockResolvedValue(detail);
+    vi.mocked(api.propagate).mockResolvedValue({ job_id: "j2" });
+    vi.mocked(api.cancelJob).mockResolvedValue({ id: "j2", kind: "propagate", status: "running", result: null, error: null, created_at: "", n_events: 0 });
+    renderLabel();
+    await screen.findByText("bench.mp4");
+    fireEvent.click(screen.getByRole("button", { name: "Next frame" }));
+    expect((screen.getByRole("button", { name: "Forward ▶" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText(/Go to a keyframe/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Previous frame" }));
+    fireEvent.click(screen.getByRole("button", { name: "Both" }));
+    await waitFor(() => expect(FakeSocket.last?.url).toMatch(/j2$/));
+    fireEvent.click(screen.getByRole("button", { name: "Stop" }));
+    await waitFor(() => expect(api.cancelJob).toHaveBeenCalledWith("j2"));
+  });
+
+  it("attaches to the job a 409 names instead of reporting an error", async () => {
+    vi.mocked(api.getClip).mockResolvedValue(detail);
+    vi.mocked(api.propagate).mockRejectedValue(new ApiError(409, "job j7 is still running", "j7"));
+    renderLabel();
+    await screen.findByText("bench.mp4");
+    fireEvent.click(screen.getByRole("button", { name: "◀ Backward" }));
+    await waitFor(() => expect(FakeSocket.last?.url).toMatch(/j7$/));
+  });
+
+  it("handles the keyboard map", async () => {
+    vi.mocked(api.getClip).mockResolvedValue(detail);
+    const deleted = { ...detail, states: detail.states.map((s, i) => (i === 11 ? "deleted" : s)) } as ClipDetail;
+    vi.mocked(api.deleteFrame).mockResolvedValue(deleted);
+    vi.mocked(api.restoreFrame).mockResolvedValue(detail);
+    renderLabel();
+    await screen.findByText("bench.mp4");
+    fireEvent.keyDown(window, { key: "ArrowRight" });
+    fireEvent.keyDown(window, { key: "ArrowRight", shiftKey: true });
+    expect(screen.getByText("frame 11 / 39")).toBeTruthy();
+    fireEvent.keyDown(window, { key: "Delete" });
+    await waitFor(() => expect(api.deleteFrame).toHaveBeenCalledWith("c1", 11));
+    await screen.findByText(/2 deleted/);
+    fireEvent.keyDown(window, { key: "Delete" });
+    await waitFor(() => expect(api.restoreFrame).toHaveBeenCalledWith("c1", 11));
+    fireEvent.keyDown(window, { key: "K", shiftKey: true });
+    expect(screen.getByText("frame 0 / 39")).toBeTruthy();
+    fireEvent.keyDown(window, { key: "g" });
+    expect(screen.getByText("frame 20 / 39")).toBeTruthy();
+    fireEvent.keyDown(window, { key: "m" });
+    expect((screen.getByRole("checkbox", { name: /overlay/i }) as HTMLInputElement).checked).toBe(false);
+    fireEvent.keyDown(window, { key: " " });
+    expect(screen.getByRole("button", { name: "Pause" })).toBeTruthy();
+  });
+
+  it("ignores shortcuts typed into a field", async () => {
+    vi.mocked(api.getClip).mockResolvedValue(detail);
+    renderLabel();
+    await screen.findByText("bench.mp4");
+    fireEvent.keyDown(screen.getByLabelText("New class"), { key: "ArrowRight" });
+    fireEvent.keyDown(screen.getByLabelText("New class"), { key: "m" });
+    expect(screen.getByText("frame 0 / 39")).toBeTruthy();
+    expect((screen.getByRole("checkbox", { name: /overlay/i }) as HTMLInputElement).checked).toBe(true);
+  });
+
+  it("prunes after confirmation and clears a range", async () => {
+    vi.mocked(api.getClip).mockResolvedValue(detail);
+    vi.mocked(api.prune).mockResolvedValue(detail);
+    vi.mocked(api.clearRange).mockResolvedValue(detail);
+    const confirm = vi.fn().mockReturnValueOnce(false).mockReturnValue(true);
+    vi.stubGlobal("confirm", confirm);
+    renderLabel();
+    await screen.findByText("bench.mp4");
+    fireEvent.keyDown(window, { key: "ArrowRight", shiftKey: true });
+    fireEvent.click(screen.getByRole("button", { name: /Prune/ }));
+    expect(api.prune).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: /Prune/ }));
+    await waitFor(() => expect(api.prune).toHaveBeenCalledWith("c1", 10));
+    fireEvent.change(screen.getByLabelText("Range start"), { target: { value: "5" } });
+    fireEvent.change(screen.getByLabelText("Range end"), { target: { value: "9" } });
+    fireEvent.click(screen.getByRole("button", { name: /Clear masks/ }));
+    await waitFor(() => expect(api.clearRange).toHaveBeenCalledWith("c1", 5, 9));
   });
 });
