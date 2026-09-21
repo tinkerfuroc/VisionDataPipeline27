@@ -10,7 +10,7 @@ proves (most importantly: Plan 1 Task 6 is the first time SAM3 inference runs on
 |---|---|---|---|---|
 | 1 | `2026-09-20-vsp-plan1-backend-core.md` | uv project, settings, `vsp doctor`, store, ingest, weights tooling, `Engine` protocol, `FakeEngine`, `Sam3Engine` verified on GPU | Task 6 only | **Done** (branch `plan1-backend-core`, 71 tests, 10 on GPU) |
 | 2 | `2026-09-20-vsp-plan2-labeling-api.md` — labeling, jobs, HTTP API | Everything the GUI calls, fully testable with `FakeEngine` and `TestClient` | Two added GPU tests | **Done** (branch `plan2-labeling-api`, 167 tests, 12 on GPU) |
-| 3 | Web GUI | React SPA: Clips page, Label page, served by `vsp serve` | For manual QA | Outline below |
+| 3 | `2026-09-20-vsp-plan3-web-gui.md` — web GUI | React SPA: Clips page, Label page, served by `vsp serve`; no Python changes | For the end-to-end smoke and manual QA | **Written, ready to execute** |
 | 4 | Export | `ExportPlan` + YOLO-seg, YOLO-det, COCO, mask PNG exporters, Export dialog | No | Outline below |
 
 Plans 3 and 4 are independent of each other once Plan 2 is done and can run in either order.
