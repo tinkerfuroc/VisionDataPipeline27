@@ -7,12 +7,11 @@ import { Timeline } from "../components/Timeline";
 import { Transport } from "../components/Transport";
 import { useClip } from "../hooks/useClip";
 import { usePlayback } from "../hooks/usePlayback";
-import { FrameStore } from "../lib/frameCache";
+import { FrameStore, MASK_ALPHA } from "../lib/frameCache";
 import { hexToRgb } from "../lib/mask";
 import { emptyDraft } from "../lib/promptState";
 import { clampFrame } from "../lib/timeline";
 
-const MASK_ALPHA = 0.45; // must match FrameCanvas so prefetched layers are cache hits
 const NO_DRAFT = emptyDraft();
 const noop = () => {};
 

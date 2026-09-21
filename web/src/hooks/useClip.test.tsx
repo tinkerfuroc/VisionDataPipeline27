@@ -22,6 +22,17 @@ const detail: ClipDetail = {
 beforeEach(() => vi.resetAllMocks());
 afterEach(cleanup);
 
+/** A promise this test can resolve/reject on its own schedule. */
+function deferred<T>() {
+  let resolve!: (v: T) => void;
+  let reject!: (e: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 describe("useClip", () => {
   it("loads the clip detail", async () => {
     vi.mocked(api.getClip).mockResolvedValue(detail);
@@ -63,5 +74,59 @@ describe("useClip", () => {
     expect(result.current.maskVersion(0)).toBe(before);
     act(() => result.current.apply(next, true));
     expect(result.current.maskVersion(0)).not.toBe(before);
+  });
+  it("drops a reload that resolves after a newer one", async () => {
+    const first = deferred<ClipDetail>();
+    vi.mocked(api.getClip).mockReturnValueOnce(first.promise);
+    const { result } = renderHook(() => useClip("c1"));
+
+    const second: ClipDetail = { ...detail, states: ["keyframe", "masked", "masked"] };
+    vi.mocked(api.getClip).mockResolvedValueOnce(second);
+    await act(async () => {
+      await result.current.reload();
+    });
+    expect(result.current.detail).toEqual(second);
+    const versionAfterSecond = result.current.maskVersion(0);
+
+    await act(async () => {
+      first.resolve(detail);
+      await Promise.resolve();
+    });
+    expect(result.current.detail).toEqual(second);
+    expect(result.current.maskVersion(0)).toBe(versionAfterSecond);
+  });
+  it("drops the response for a previous clip id", async () => {
+    const c1 = deferred<ClipDetail>();
+    const c2Detail: ClipDetail = { ...detail, clip: { ...detail.clip, id: "c2" } };
+    vi.mocked(api.getClip).mockImplementation((id: string) => (id === "c1" ? c1.promise : Promise.resolve(c2Detail)));
+    const { result, rerender } = renderHook(({ id }) => useClip(id), { initialProps: { id: "c1" } });
+
+    rerender({ id: "c2" });
+    await waitFor(() => expect(result.current.detail?.clip.id).toBe("c2"));
+
+    await act(async () => {
+      c1.resolve(detail);
+      await Promise.resolve();
+    });
+    expect(result.current.detail?.clip.id).toBe("c2");
+  });
+  it("a failed refresh keeps the loaded clip and reports refreshError", async () => {
+    vi.mocked(api.getClip).mockResolvedValueOnce(detail);
+    const { result } = renderHook(() => useClip("c1"));
+    await waitFor(() => expect(result.current.detail).toEqual(detail));
+
+    vi.mocked(api.getClip).mockRejectedValueOnce(new ApiError(500, "server exploded"));
+    await act(async () => {
+      await result.current.reload();
+    });
+    expect(result.current.detail).toEqual(detail);
+    expect(result.current.error).toBeNull();
+    expect(result.current.refreshError).toBe("server exploded");
+
+    vi.mocked(api.getClip).mockResolvedValueOnce(detail);
+    await act(async () => {
+      await result.current.reload();
+    });
+    expect(result.current.refreshError).toBeNull();
   });
 });

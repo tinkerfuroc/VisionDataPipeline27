@@ -50,13 +50,22 @@ export function tintToCanvas(img: HTMLImageElement, rgb: Rgb, alpha: number): HT
   return canvas;
 }
 
+/** Shared alpha for the stored mask overlay; must match every caller so prefetched layers are cache hits. */
+export const MASK_ALPHA = 0.45;
+/** Alpha for a text-prompt candidate preview overlay. */
+export const PREVIEW_ALPHA = 0.55;
+
 /** Small on purpose: a decoded 1080p frame or layer is about 8 MB. */
 const MAX_IMAGES = 64;
 const MAX_LAYERS = 48;
+/** Preview keys are whole base64 data URLs (one per candidate, per prompt); kept tiny and separate so a run
+ * of text-prompt previews can never evict prefetched playback mask layers. */
+const MAX_PREVIEWS = 12;
 
 export class FrameStore {
   private readonly images = new LruCache<Promise<HTMLImageElement | null>>(MAX_IMAGES);
   private readonly layers = new LruCache<Promise<HTMLCanvasElement | null>>(MAX_LAYERS);
+  private readonly previews = new LruCache<Promise<HTMLCanvasElement | null>>(MAX_PREVIEWS);
 
   constructor(
     private readonly load: (url: string) => Promise<HTMLImageElement | null> = loadImage,
@@ -76,17 +85,31 @@ export class FrameStore {
   }
 
   layer(url: string, rgb: Rgb, alpha: number): Promise<HTMLCanvasElement | null> {
+    return this.layerFrom(this.layers, url, rgb, alpha);
+  }
+
+  /** Like `layer()`, but cached separately so text-prompt candidate previews cannot evict stored mask layers. */
+  preview(dataUrl: string, rgb: Rgb, alpha: number): Promise<HTMLCanvasElement | null> {
+    return this.layerFrom(this.previews, dataUrl, rgb, alpha);
+  }
+
+  private layerFrom(
+    cache: LruCache<Promise<HTMLCanvasElement | null>>,
+    url: string,
+    rgb: Rgb,
+    alpha: number,
+  ): Promise<HTMLCanvasElement | null> {
     const key = `${url}|${rgb.join(",")}|${alpha}`;
-    let pending = this.layers.get(key);
+    let pending = cache.get(key);
     if (pending === undefined) {
       pending = this.load(url).then((img) => {
         if (img === null) {
-          this.layers.delete(key);
+          cache.delete(key);
           return null;
         }
         return this.tint(img, rgb, alpha);
       });
-      this.layers.set(key, pending);
+      cache.set(key, pending);
     }
     return pending;
   }

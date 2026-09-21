@@ -46,4 +46,16 @@ describe("FrameStore", () => {
     const store = new FrameStore(vi.fn(async () => null), vi.fn());
     expect(await store.layer("/m/9?v=0.0", [1, 2, 3], 0.5)).toBeNull();
   });
+  it("previews never evict mask layers", async () => {
+    const load = vi.fn(async (url: string) => img(url));
+    const tint = vi.fn(() => canvas("layer"));
+    const store = new FrameStore(load, tint);
+    await store.layer("/m/1?v=0.0", [255, 0, 0], 0.45);
+    for (let i = 0; i < 20; i++) {
+      await store.preview(`data:image/png;base64,p${i}`, [0, 255, 0], 0.55);
+    }
+    tint.mockClear();
+    await store.layer("/m/1?v=0.0", [255, 0, 0], 0.45);
+    expect(tint).not.toHaveBeenCalled();
+  });
 });

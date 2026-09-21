@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, type MouseEvent } from "react";
 import type { Box, Candidate } from "../api/types";
-import type { FrameStore } from "../lib/frameCache";
+import { MASK_ALPHA, PREVIEW_ALPHA, type FrameStore } from "../lib/frameCache";
 import {
   clampPoint, fitView, insideImage, normBox, panBy, pickCandidate, toImage, toScreen, zoomAt, type View,
 } from "../lib/geometry";
@@ -27,12 +27,16 @@ type Props = {
   onPickCandidate: (index: number) => void;
 };
 
-const MASK_ALPHA = 0.45;
-const PREVIEW_ALPHA = 0.55;
 const DRAG_PX = 4;
 const MAX_SCALE = 40;
 
-type Drag = { button: number; sx: number; sy: number; lastX: number; lastY: number; moved: boolean };
+/** Decoded preview layers together with the exact candidate list they belong to, so a redraw never mixes
+ * one request's layers with another's candidates while new ones are still decoding. */
+type LayerState = { owner: Candidate[] | null; items: (HTMLCanvasElement | null)[] };
+
+/** `ix`/`iy`: the mousedown point in image space, fixed for the whole drag so a wheel-zoom mid-drag cannot
+ * shift the box's first corner or a click's target. */
+type Drag = { button: number; sx: number; sy: number; ix: number; iy: number; lastX: number; lastY: number; moved: boolean };
 
 export function FrameCanvas(props: Props) {
   const { store, width, height, frameUrl, maskUrl, color, tool, candidates, onPoint, onBox, onPickCandidate } = props;
@@ -42,7 +46,7 @@ export function FrameCanvas(props: Props) {
   const view = useRef<View>({ scale: 1, tx: 0, ty: 0 });
   const fitScale = useRef(1);
   const assets = useRef<{ frame: HTMLImageElement | null; mask: HTMLCanvasElement | null }>({ frame: null, mask: null });
-  const layers = useRef<(HTMLCanvasElement | null)[]>([]);
+  const layers = useRef<LayerState>({ owner: null, items: [] });
   const drag = useRef<Drag | null>(null);
   const dragBox = useRef<Box | null>(null);
   const latest = useRef(props);
@@ -65,12 +69,20 @@ export function FrameCanvas(props: Props) {
     ctx.imageSmoothingEnabled = v.scale < 3;
     if (assets.current.frame) ctx.drawImage(assets.current.frame, 0, 0, p.width, p.height);
     if (p.candidates.length > 0) {
-      layers.current.forEach((layer, i) => {
-        if (layer === null) return;
-        ctx.globalAlpha = i === p.draft.candidate ? 1 : 0.45;
-        ctx.drawImage(layer, 0, 0, p.width, p.height);
-      });
-      ctx.globalAlpha = 1;
+      const state = layers.current;
+      const current = state.owner === p.candidates;
+      // Not current: new previews are still decoding. Only bridge the gap when it's the same single
+      // candidate being refined (an extra click on the same object) — anything else would flash a mismatched
+      // preview (or, previously, the frame's stored mask) against the wrong candidate list.
+      const bridgeOld = !current && state.owner !== null && state.owner.length === 1 && p.candidates.length === 1;
+      if (current || bridgeOld) {
+        state.items.forEach((layer, i) => {
+          if (layer === null) return;
+          ctx.globalAlpha = i === p.draft.candidate ? 1 : 0.45;
+          ctx.drawImage(layer, 0, 0, p.width, p.height);
+        });
+        ctx.globalAlpha = 1;
+      }
     } else if (assets.current.mask) {
       ctx.drawImage(assets.current.mask, 0, 0, p.width, p.height);
     }
@@ -149,14 +161,14 @@ export function FrameCanvas(props: Props) {
   useEffect(() => {
     let live = true;
     if (candidates.length === 0) {
-      layers.current = [];
+      layers.current = { owner: null, items: [] };
       draw();
       return;
     }
-    const pending = candidates.map((c) => store.layer(`data:image/png;base64,${c.mask_png_b64}`, rgb, PREVIEW_ALPHA));
-    void Promise.all(pending).then((ready) => {
+    const pending = candidates.map((c) => store.preview(`data:image/png;base64,${c.mask_png_b64}`, rgb, PREVIEW_ALPHA));
+    void Promise.all(pending).then((items) => {
       if (!live) return;
-      layers.current = ready;
+      layers.current = { owner: candidates, items };
       draw();
     });
     return () => {
@@ -188,7 +200,8 @@ export function FrameCanvas(props: Props) {
   const onMouseDown = (e: MouseEvent) => {
     e.preventDefault(); // no text selection, no middle-click autoscroll
     const [sx, sy] = local(e);
-    drag.current = { button: e.button, sx, sy, lastX: sx, lastY: sy, moved: false };
+    const [ix, iy] = toImage(view.current, sx, sy);
+    drag.current = { button: e.button, sx, sy, ix, iy, lastX: sx, lastY: sy, moved: false };
   };
 
   const onMouseMove = (e: MouseEvent) => {
@@ -202,7 +215,7 @@ export function FrameCanvas(props: Props) {
       d.lastY = sy;
       draw();
     } else if (d.button === 0 && tool === "box" && d.moved) {
-      dragBox.current = normBox(toImage(view.current, d.sx, d.sy), toImage(view.current, sx, sy), width, height);
+      dragBox.current = normBox([d.ix, d.iy], toImage(view.current, sx, sy), width, height);
       draw();
     }
   };
@@ -219,7 +232,7 @@ export function FrameCanvas(props: Props) {
       return;
     }
     if (!commit || d.moved || tool === null) return;
-    const [ix, iy] = toImage(view.current, d.sx, d.sy);
+    const [ix, iy] = [d.ix, d.iy];
     if (!insideImage(ix, iy, width, height)) return;
     const [x, y] = clampPoint(ix, iy, width, height);
     if (tool === "text") {
