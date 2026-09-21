@@ -52,11 +52,12 @@ def run_export(
     exports_root.mkdir(parents=True, exist_ok=True)
     export_id = f"{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
     out = exports_root / export_id
+    out.mkdir()  # outside the try: if the id ever collided, fail without touching (or later deleting) the other export
     try:
         plan = build_plan(store, project_id, clip_ids, options, tick=tick)
         # include_empty=False may have dropped frames: shrink the total so the bar still ends at 100%
         state["total"] = state["done"] + len(plan.frames) * (1 + len(formats))
-        (out / "images").mkdir(parents=True)
+        (out / "images").mkdir()
         for frame in plan.frames:
             shutil.copy2(frame.image_path, shared_image(out, frame))  # a copy: store frames are never linked outside
             tick()

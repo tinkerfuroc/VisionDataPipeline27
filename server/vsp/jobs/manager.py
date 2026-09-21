@@ -135,6 +135,14 @@ class JobManager:
         job.request_cancel()
         return job
 
+    def active(self, kind: str) -> str | None:
+        """The id of an unfinished job of this kind, if any."""
+        with self._lock:
+            for job in self._jobs.values():
+                if job.kind == kind and job.status not in TERMINAL:
+                    return job.id
+        return None
+
     def running(self, exclusive: str) -> str | None:
         with self._lock:
             for job in self._jobs.values():

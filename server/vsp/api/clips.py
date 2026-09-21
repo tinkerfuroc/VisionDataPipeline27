@@ -18,7 +18,7 @@ from ..ingest import (
     import_clip,
     resolve_allowed,
 )
-from ..jobs import Job
+from ..jobs import Job, JobBusy
 from ..labeling.prompts import OBJECT_ID
 from ..store import NotFound
 from .deps import AppState, State, gpu_lease
@@ -101,6 +101,9 @@ def get_clip(clip_id: str, state: State) -> dict:
 @router.delete("/api/clips/{clip_id}", status_code=204)
 def delete_clip(clip_id: str, state: State) -> Response:
     with gpu_lease(state):  # coarse across clips, deliberately: don't race a running GPU job's writes
+        exporting = state.jobs.active("export")
+        if exporting is not None:  # an export is reading clips; pulling one out from under it fails the whole export
+            raise JobBusy(exporting)
         state.store.delete_clip(clip_id)
     return Response(status_code=204)
 
