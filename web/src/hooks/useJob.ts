@@ -11,6 +11,21 @@ const POLL_MS = 1000;
 export function useJob(jobId: string | null, onEvent?: (event: JobEvent) => void): JobHandle {
   const [view, dispatch] = useReducer(jobReducer, idleJob);
   const [transport, setTransport] = useState<"ws" | "poll">("ws");
+  // Reset DURING RENDER (not only in the effect below) so the commit where `jobId` changes never exposes
+  // the previous job's terminal status/result to a consumer such as Label.tsx's terminal-job effect.
+  // `dispatch`/`setTransport` called here only take effect on React's next (replay) pass of this
+  // component, so `view`/`transport` captured above are still stale for the remainder of THIS pass;
+  // `effectiveView`/`effectiveTransport` make the value this same call returns already reflect the reset.
+  const [seenJobId, setSeenJobId] = useState(jobId);
+  let effectiveView = view;
+  let effectiveTransport = transport;
+  if (seenJobId !== jobId) {
+    setSeenJobId(jobId);
+    setTransport("ws");
+    dispatch({ type: "reset" });
+    effectiveView = idleJob;
+    effectiveTransport = "ws";
+  }
   const callback = useRef(onEvent);
   callback.current = onEvent;
 
@@ -69,5 +84,5 @@ export function useJob(jobId: string | null, onEvent?: (event: JobEvent) => void
     };
   }, [jobId]);
 
-  return { ...view, transport };
+  return { ...effectiveView, transport: effectiveTransport };
 }

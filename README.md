@@ -69,3 +69,8 @@ middle-drag pan · right click = negative point.
 7. Reload the page during a propagation: the panel should re-attach to the running job.
 8. Stop the server: the banner says it is unreachable; start it without weights: the banner shows the reason and
    importing / cleanup still work.
+9. Propagate twice in one page session (let the first run finish, then start a second from a keyframe) and reload
+   the page partway through the second run: it must re-attach to the second job, not the first.
+10. Open the same clip in two tabs; start a propagation in tab A, then click to prompt in tab B on a different clip:
+    B must not move or show A's progress as its own.
+11. Delete a keyframe: its marker disappears from the timeline and propagation is blocked from it until it is restored.

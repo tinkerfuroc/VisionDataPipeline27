@@ -4,6 +4,10 @@ import type { JobHandle } from "../hooks/useJob";
 type Props = {
   job: JobHandle;
   running: boolean;
+  /** true while `job` is a propagation this page did not start (attached from a 409 naming another clip's job) */
+  foreign: boolean;
+  /** true while a start request (including its interactive retries) is in flight and has no job yet to show */
+  starting: boolean;
   /** why propagation cannot start from here, or null */
   blockedReason: string | null;
   follow: boolean;
@@ -16,8 +20,8 @@ type Props = {
 const button = "rounded bg-neutral-700 px-3 py-1 text-sm hover:bg-neutral-600 disabled:opacity-40";
 const num = (v: unknown): number | null => (typeof v === "number" ? v : null);
 
-export function PropagatePanel({ job, running, blockedReason, follow, error, onStart, onStop, onFollow }: Props) {
-  const blocked = running || blockedReason !== null;
+export function PropagatePanel({ job, running, foreign, starting, blockedReason, follow, error, onStart, onStop, onFollow }: Props) {
+  const blocked = running || starting || blockedReason !== null;
   const lostAt = num(job.result?.lost_at);
   return (
     <section className="flex flex-col gap-2 text-sm">
@@ -36,7 +40,11 @@ export function PropagatePanel({ job, running, blockedReason, follow, error, onS
 
       {running && (
         <>
-          <p className="text-xs text-amber-400">Propagating — prompting is paused. Stop keeps the masks written so far.</p>
+          <p className="text-xs text-amber-400">
+            {foreign
+              ? "The GPU is busy with a propagation that was not started from this page. Stop cancels it."
+              : "Propagating — prompting is paused. Stop keeps the masks written so far."}
+          </p>
           <progress className="w-full" value={job.total === null ? undefined : job.done} max={job.total ?? undefined} />
           <p className="text-xs tabular-nums text-neutral-300">
             {job.done} / {job.total ?? "?"} frames{job.transport === "poll" ? " (live updates lost — polling)" : ""}

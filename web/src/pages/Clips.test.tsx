@@ -183,8 +183,10 @@ describe("Clips page", () => {
     await waitFor(() => expect(m.createProject).toHaveBeenCalledWith("x"));
     const addClassBtn = () => screen.getByRole("button", { name: "Add class" }) as HTMLButtonElement;
     const importFramesBtn = () => screen.getByRole("button", { name: "Import frames" }) as HTMLButtonElement;
+    const deleteClipBtn = () => screen.getByRole("button", { name: "Delete clip" }) as HTMLButtonElement;
     expect(addClassBtn().disabled).toBe(true);
     expect(importFramesBtn().disabled).toBe(true);
+    expect(deleteClipBtn().disabled).toBe(true);
 
     await act(async () => {
       resolveCreate(project);
@@ -192,6 +194,7 @@ describe("Clips page", () => {
     await waitFor(() => expect(addClassBtn().disabled).toBe(false));
     // "Import frames" stays disabled, but now because the path field is empty, not because of pending
     expect(importFramesBtn().disabled).toBe(true);
+    expect(deleteClipBtn().disabled).toBe(false);
   });
 
   it("clears a load error once a later load succeeds", async () => {

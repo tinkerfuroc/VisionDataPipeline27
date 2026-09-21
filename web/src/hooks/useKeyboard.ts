@@ -43,8 +43,15 @@ export function keyAction(e: KeyLike): KeyAction | null {
   return null;
 }
 
-const isField = (t: EventTarget | null): boolean =>
-  t instanceof HTMLElement && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable);
+// A non-text <input> (a checkbox, a button, ...) has no text cursor to protect, so it must not swallow shortcuts.
+const NON_TEXT_INPUT_TYPES = new Set(["checkbox", "radio", "button", "submit", "range", "file", "color"]);
+
+export function isField(t: EventTarget | null): boolean {
+  if (!(t instanceof HTMLElement)) return false;
+  if (t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable) return true;
+  if (t.tagName === "INPUT") return !NON_TEXT_INPUT_TYPES.has((t as HTMLInputElement).type.toLowerCase());
+  return false;
+}
 
 export function useKeyboard(onAction: (action: KeyAction) => void): void {
   const handler = useRef(onAction);
@@ -57,7 +64,13 @@ export function useKeyboard(onAction: (action: KeyAction) => void): void {
       if (action === null) return;
       e.preventDefault();
       // Enter / Space would otherwise also activate whichever button was clicked last
-      if (document.activeElement instanceof HTMLElement && document.activeElement.tagName === "BUTTON") document.activeElement.blur();
+      if (
+        (action.type === "accept" || action.type === "play") &&
+        document.activeElement instanceof HTMLElement &&
+        document.activeElement.tagName === "BUTTON"
+      ) {
+        document.activeElement.blur();
+      }
       handler.current(action);
     };
     window.addEventListener("keydown", onKeyDown);

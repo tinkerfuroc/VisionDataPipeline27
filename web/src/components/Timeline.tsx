@@ -60,12 +60,7 @@ export function Timeline({ states, frame, onSeek }: Props) {
     <div ref={wrap} className="w-full select-none">
       <canvas
         ref={canvas}
-        role="slider"
         aria-label="Timeline"
-        aria-valuemin={0}
-        aria-valuemax={Math.max(0, states.length - 1)}
-        aria-valuenow={frame}
-        tabIndex={-1}
         className="block w-full cursor-pointer"
         style={{ height: HEIGHT }}
         onMouseDown={(e) => {

@@ -108,4 +108,25 @@ describe("useJob", () => {
     act(() => second.emit({ seq: 1, type: "progress", done: 2, total: 5 }));
     expect(seen).toEqual([0]);
   });
+
+  it("resets to idle for a new job id before that job's first event, never showing the old job's terminal status", () => {
+    const statuses: string[] = [];
+    const { rerender } = renderHook(
+      ({ id }: { id: string | null }) => {
+        const job = useJob(id);
+        statuses.push(job.status);
+        return job;
+      },
+      { initialProps: { id: "j1" as string | null } },
+    );
+    act(() => socket().emit({ seq: 0, type: "done", processed: 1 }));
+    expect(statuses[statuses.length - 1]).toBe("done");
+
+    const beforeRerender = statuses.length;
+    rerender({ id: "j2" });
+    const afterRerender = statuses.slice(beforeRerender);
+    expect(afterRerender.length).toBeGreaterThan(0);
+    expect(afterRerender).not.toContain("done");
+    expect(afterRerender[afterRerender.length - 1]).toBe("idle");
+  });
 });

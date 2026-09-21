@@ -179,7 +179,8 @@ describe("Label page (propagation, cleanup, keyboard)", () => {
     expect(sessionStorage.getItem("vsp.job.c1")).toBe("j1");
     FakeSocket.last!.emit({ seq: 0, type: "progress", done: 0, total: 39 });
     FakeSocket.last!.emit({ seq: 1, type: "frame", frame: 20, has_mask: true, done: 1, total: 39 });
-    expect(screen.getByText("frame 20 / 39")).toBeTruthy();
+    // F3: frame events are buffered and applied on the next animation frame, not synchronously
+    expect(await screen.findByText("frame 20 / 39")).toBeTruthy();
     expect(screen.getByText(/20 masked/)).toBeTruthy();
     expect(screen.getByText(/propagation is running/i)).toBeTruthy();
     const loads = vi.mocked(api.getClip).mock.calls.length;
@@ -206,13 +207,84 @@ describe("Label page (propagation, cleanup, keyboard)", () => {
     await waitFor(() => expect(api.cancelJob).toHaveBeenCalledWith("j2"));
   });
 
-  it("attaches to the job a 409 names instead of reporting an error", async () => {
+  it("attaches to the job a 409 names, but a foreign job never drives this clip and Stop still cancels it", async () => {
     vi.mocked(api.getClip).mockResolvedValue(detail);
     vi.mocked(api.propagate).mockRejectedValue(new ApiError(409, "job j7 is still running", "j7"));
+    vi.mocked(api.cancelJob).mockResolvedValue({
+      id: "j7", kind: "propagate", status: "running", result: null, error: null, created_at: "", n_events: 0,
+    });
     renderLabel();
     await screen.findByText("bench.mp4");
     fireEvent.click(screen.getByRole("button", { name: "◀ Backward" }));
     await waitFor(() => expect(FakeSocket.last?.url).toMatch(/j7$/));
+    expect(sessionStorage.getItem("vsp.job.c1")).toBeNull();
+    expect(screen.getByText(/GPU is busy with a propagation that was not started from this page/i)).toBeTruthy();
+    FakeSocket.last!.emit({ seq: 0, type: "frame", frame: 20, has_mask: true, done: 1, total: 39 });
+    expect(screen.getByText("frame 0 / 39")).toBeTruthy();
+    expect(screen.getByText(/19 masked/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Stop" }));
+    await waitFor(() => expect(api.cancelJob).toHaveBeenCalledWith("j7"));
+  });
+
+  it("re-attaches to its own job from sessionStorage and applies its frame events", async () => {
+    sessionStorage.setItem("vsp.job.c1", "j5");
+    vi.mocked(api.getClip).mockResolvedValue(detail);
+    renderLabel();
+    await screen.findByText("bench.mp4");
+    await waitFor(() => expect(FakeSocket.last?.url).toMatch(/j5$/));
+    FakeSocket.last!.emit({ seq: 0, type: "frame", frame: 20, has_mask: true, done: 1, total: 39 });
+    expect(await screen.findByText("frame 20 / 39")).toBeTruthy();
+    expect(screen.getByText(/20 masked/)).toBeTruthy();
+  });
+
+  it("runs a second propagation cleanly: the first job's terminal status never leaks onto the second", async () => {
+    vi.mocked(api.getClip).mockResolvedValue(detail);
+    vi.mocked(api.propagate).mockResolvedValueOnce({ job_id: "j1" }).mockResolvedValueOnce({ job_id: "j2" });
+    renderLabel();
+    await screen.findByText("bench.mp4");
+    fireEvent.click(screen.getByRole("button", { name: "Forward ▶" }));
+    await waitFor(() => expect(FakeSocket.last?.url).toMatch(/j1$/));
+    FakeSocket.last!.emit({ seq: 0, type: "done", processed: 39, written: 38, lost_at: 33, cancelled: false });
+    expect(await screen.findByText("frame 33 / 39")).toBeTruthy();
+    expect(sessionStorage.getItem("vsp.job.c1")).toBeNull();
+
+    fireEvent.keyDown(window, { key: "K", shiftKey: true }); // back to frame 0, a keyframe
+    expect(screen.getByText("frame 0 / 39")).toBeTruthy();
+    const loads = vi.mocked(api.getClip).mock.calls.length;
+    fireEvent.click(screen.getByRole("button", { name: "Forward ▶" }));
+    await waitFor(() => expect(sessionStorage.getItem("vsp.job.c1")).toBe("j2"));
+    expect(screen.getByText("frame 0 / 39")).toBeTruthy(); // no jump to the first job's lost_at (33)
+    expect(vi.mocked(api.getClip).mock.calls.length).toBe(loads); // no extra reload at the moment j2 started
+  });
+
+  it("coalesces a burst of streamed frame events into a single flush", async () => {
+    const emptyDetail: ClipDetail = {
+      ...detail,
+      states: Array.from({ length: 40 }, (_, i) => (i === 0 ? "keyframe" : "empty")),
+    };
+    vi.mocked(api.getClip).mockResolvedValue(emptyDetail);
+    vi.mocked(api.propagate).mockResolvedValue({ job_id: "j1" });
+    renderLabel();
+    await screen.findByText("bench.mp4");
+    fireEvent.click(screen.getByRole("button", { name: "Forward ▶" }));
+    await waitFor(() => expect(FakeSocket.last?.url).toMatch(/j1$/));
+
+    const seen = new Set<string>();
+    const observer = new MutationObserver(() => {
+      const el = screen.queryByText(/^frame \d+ \/ 39$/);
+      if (el?.textContent !== undefined && el?.textContent !== null) seen.add(el.textContent);
+    });
+    observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+    for (let f = 1; f <= 30; f++) FakeSocket.last!.emit({ seq: f, type: "frame", frame: f, has_mask: true, done: f, total: 39 });
+    expect(await screen.findByText("frame 30 / 39")).toBeTruthy();
+    observer.disconnect();
+    expect(screen.getByText(/30 masked/)).toBeTruthy();
+    // The observer also wakes on unrelated mutations (each event bumps the job's own progress text), so it can
+    // legitimately resample the frame counter's pre-flush value ("frame 0 / 39") more than once; what matters is
+    // that the coalesced flush jumped straight from 0 to 30 and never showed any of the 29 frames in between.
+    const seenFrames = [...seen].map((t) => Number(/^frame (\d+) \/ 39$/.exec(t)?.[1]));
+    expect(seenFrames.every((n) => n === 0 || n === 30)).toBe(true);
+    expect(seenFrames).toContain(30);
   });
 
   it("handles the keyboard map", async () => {
@@ -248,6 +320,16 @@ describe("Label page (propagation, cleanup, keyboard)", () => {
     fireEvent.keyDown(screen.getByLabelText("New class"), { key: "m" });
     expect(screen.getByText("frame 0 / 39")).toBeTruthy();
     expect((screen.getByRole("checkbox", { name: /overlay/i }) as HTMLInputElement).checked).toBe(true);
+  });
+
+  it("does not treat a checkbox as a field: shortcuts still work when it is focused", async () => {
+    vi.mocked(api.getClip).mockResolvedValue(detail);
+    renderLabel();
+    await screen.findByText("bench.mp4");
+    const overlay = screen.getByRole("checkbox", { name: /overlay/i });
+    fireEvent.click(overlay);
+    fireEvent.keyDown(overlay, { key: "ArrowRight" });
+    expect(screen.getByText("frame 1 / 39")).toBeTruthy();
   });
 
   it("prunes after confirmation and clears a range", async () => {

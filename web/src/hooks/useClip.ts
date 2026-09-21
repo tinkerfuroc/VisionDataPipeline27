@@ -13,6 +13,8 @@ export type ClipHandle = {
   apply: (detail: ClipDetail, masksChanged: boolean) => void;
   /** a propagation job wrote (or cleared) this frame's mask */
   patchFrame: (frame: number, hasMask: boolean) => void;
+  /** apply a batch of frame events in one update (coalesces a burst of streamed `frame` events into one render) */
+  patchFrames: (events: { frame: number; hasMask: boolean }[]) => void;
   /** cache-busting version for a frame's mask URL */
   maskVersion: (frame: number) => string;
 };
@@ -62,17 +64,25 @@ export function useClip(clipId: string): ClipHandle {
     setTick((t) => t + 1);
   }, []);
 
-  const patchFrame = useCallback((frame: number, hasMask: boolean) => {
+  const patchFrames = useCallback((events: { frame: number; hasMask: boolean }[]) => {
+    if (events.length === 0) return;
     const frames = versions.current.frames;
-    frames.set(frame, (frames.get(frame) ?? 0) + 1);
-    setDetail((d) => (d === null ? d : { ...d, states: applyFrameEvent(d.states, frame, hasMask) }));
+    for (const { frame } of events) frames.set(frame, (frames.get(frame) ?? 0) + 1);
+    setDetail((d) => {
+      if (d === null) return d;
+      let states = d.states;
+      for (const { frame, hasMask } of events) states = applyFrameEvent(states, frame, hasMask);
+      return states === d.states ? d : { ...d, states };
+    });
     setTick((t) => t + 1);
   }, []);
+
+  const patchFrame = useCallback((frame: number, hasMask: boolean) => patchFrames([{ frame, hasMask }]), [patchFrames]);
 
   const maskVersion = useCallback(
     (frame: number) => `${versions.current.epoch}.${versions.current.frames.get(frame) ?? 0}`,
     [],
   );
 
-  return { detail, error, refreshError, reload, apply, patchFrame, maskVersion };
+  return { detail, error, refreshError, reload, apply, patchFrame, patchFrames, maskVersion };
 }

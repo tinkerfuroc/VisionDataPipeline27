@@ -1,4 +1,4 @@
-import { useCallback, useContext, useEffect, useMemo, useState } from "react";
+import { useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { ApiError, INTERACTIVE, api, frameUrl, maskUrl, retryInteractive } from "../api/rest";
 import type { ClipDetail, Direction, JobEvent } from "../api/types";
@@ -49,22 +49,56 @@ export function Label() {
   }, [classId, detail, object]);
 
   // ---- propagation job -------------------------------------------------------------------------------------------
-  const { patchFrame, reload, apply } = clip;
+  const { patchFrames, reload, apply } = clip;
+  // true when this page itself started or resumed (from its own sessionStorage key) the current job; false when it
+  // was attached from a 409 naming some other job holding the GPU lock (possibly another clip's) — that job must
+  // never patch this clip's frames or move this view, and its lost_at must not be seeked to when it ends.
+  const ownJob = useRef(true);
+  // F3: a re-attach replays every event from seq 0, so `frame` events can arrive many per macrotask; buffer own-job
+  // ones and apply the whole batch (one setFrame, one patchFrames) on the next animation frame instead of per event.
+  const frameEventBuffer = useRef<{ frame: number; hasMask: boolean }[]>([]);
+  const flushHandle = useRef<number | null>(null);
+  const followRef = useRef(follow);
+  followRef.current = follow;
+  const frameCountRef = useRef(frameCount);
+  frameCountRef.current = frameCount;
+
+  const flushFrameEvents = useCallback(() => {
+    flushHandle.current = null;
+    const events = frameEventBuffer.current;
+    frameEventBuffer.current = [];
+    if (events.length === 0) return;
+    patchFrames(events);
+    if (followRef.current) setFrame(clampFrame(events[events.length - 1].frame, frameCountRef.current));
+  }, [patchFrames]);
+
   const onJobEvent = useCallback(
     (event: JobEvent) => {
       if (event.type !== "frame" || typeof event.frame !== "number") return;
-      patchFrame(event.frame, event.has_mask === true);
-      if (follow) setFrame(event.frame);
+      if (!ownJob.current) return; // a job this page did not start must not drive this clip
+      frameEventBuffer.current.push({ frame: event.frame, hasMask: event.has_mask === true });
+      if (flushHandle.current === null) flushHandle.current = requestAnimationFrame(flushFrameEvents);
     },
-    [patchFrame, follow],
+    [flushFrameEvents],
   );
   const job = useJob(jobId, onJobEvent);
   const running = jobId !== null && !isTerminal(job.status);
+  const foreign = running && !ownJob.current;
+
+  // A stale job's still-buffered events must never land on the next job; also cancels on unmount.
+  useEffect(() => {
+    return () => {
+      if (flushHandle.current !== null) cancelAnimationFrame(flushHandle.current);
+      flushHandle.current = null;
+      frameEventBuffer.current = [];
+    };
+  }, [jobId]);
 
   useEffect(() => {
     if (jobId === null || !isTerminal(job.status)) return;
-    sessionStorage.removeItem(jobKey(clipId));
-    const lostAt = job.result?.lost_at;
+    const own = ownJob.current;
+    if (own) sessionStorage.removeItem(jobKey(clipId));
+    const lostAt = own ? job.result?.lost_at : undefined; // a foreign job's lost_at is none of this clip's business
     void reload().then(() => {
       if (typeof lostAt === "number") setFrame(lostAt);
     });
@@ -77,26 +111,34 @@ export function Label() {
   }, [running, job.transport, reload]);
 
   const attach = useCallback(
-    (id: string) => {
-      sessionStorage.setItem(jobKey(clipId), id);
+    (id: string, own: boolean) => {
+      ownJob.current = own;
+      if (own) sessionStorage.setItem(jobKey(clipId), id);
       setJobId(id);
       setPlaying(false);
     },
     [clipId],
   );
 
+  const [starting, setStarting] = useState(false);
   const startPropagation = useCallback(
     (direction: Direction) => {
+      if (starting) return; // a second click while the request (including its interactive retries) is in flight
       setPropagateError(null);
+      setStarting(true);
       retryInteractive(() => api.propagate(clipId, frame, direction)).then(
-        (r) => attach(r.job_id),
+        (r) => {
+          setStarting(false);
+          attach(r.job_id, true);
+        },
         (e: unknown) => {
-          if (e instanceof ApiError && e.status === 409 && e.jobId !== null && e.jobId !== INTERACTIVE) attach(e.jobId);
+          setStarting(false);
+          if (e instanceof ApiError && e.status === 409 && e.jobId !== null && e.jobId !== INTERACTIVE) attach(e.jobId, false);
           else setPropagateError(message(e));
         },
       );
     },
-    [clipId, frame, attach],
+    [clipId, frame, attach, starting],
   );
 
   const stopPropagation = useCallback(() => {
@@ -117,8 +159,8 @@ export function Label() {
   const prompting = usePrompting({ clipId, frame, enabled: disabledReason === null && detail !== null, clip, classId });
 
   useEffect(() => {
-    if (prompting.busyJobId !== null && prompting.busyJobId !== INTERACTIVE && jobId === null) attach(prompting.busyJobId);
-  }, [prompting.busyJobId, jobId, attach]);
+    if (prompting.busyJobId !== null && prompting.busyJobId !== INTERACTIVE && !running) attach(prompting.busyJobId, false);
+  }, [prompting.busyJobId, running, attach]);
 
   // ---- cleanup ---------------------------------------------------------------------------------------------------
   const cleanup = useCallback(
@@ -254,6 +296,8 @@ export function Label() {
           <PropagatePanel
             job={job}
             running={running}
+            foreign={foreign}
+            starting={starting}
             blockedReason={propagateBlocked}
             follow={follow}
             error={propagateError}

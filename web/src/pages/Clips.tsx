@@ -232,7 +232,8 @@ export function Clips() {
                     </span>
                     <div className="mt-1 flex gap-2">
                       <Link to={`/clips/${c.id}`} className={button}>Open</Link>
-                      <button type="button" aria-label="Delete clip" className="rounded bg-neutral-700 px-3 py-1 text-sm hover:bg-red-800"
+                      <button type="button" aria-label="Delete clip" disabled={pending}
+                        className="rounded bg-neutral-700 px-3 py-1 text-sm hover:bg-red-800 disabled:opacity-40"
                         onClick={() => deleteClip(c)}>
                         Delete
                       </button>

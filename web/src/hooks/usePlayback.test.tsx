@@ -4,11 +4,11 @@ import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { usePlayback } from "./usePlayback";
 
-function usePlayer(frameCount: number, fps: number) {
-  const [frame, setFrame] = useState(0);
-  const [playing, setPlaying] = useState(true);
+function usePlayer(frameCount: number, fps: number, initial: { frame?: number; playing?: boolean } = {}) {
+  const [frame, setFrame] = useState(initial.frame ?? 0);
+  const [playing, setPlaying] = useState(initial.playing ?? true);
   usePlayback({ playing, fps, frame, frameCount, setFrame, setPlaying });
-  return { frame, playing };
+  return { frame, playing, setPlaying };
 }
 
 beforeEach(() => vi.useFakeTimers());
@@ -28,5 +28,14 @@ describe("usePlayback", () => {
     act(() => vi.advanceTimersByTime(1000));
     expect(result.current.frame).toBe(2);
     expect(result.current.playing).toBe(false);
+  });
+  it("restarts from the beginning when Play is pressed while parked on the last frame", () => {
+    const { result } = renderHook(() => usePlayer(3, 10, { frame: 2, playing: false }));
+    expect(result.current.frame).toBe(2);
+    act(() => result.current.setPlaying(true));
+    expect(result.current.frame).toBe(0); // restarted, not stopped immediately
+    expect(result.current.playing).toBe(true);
+    act(() => vi.advanceTimersByTime(150));
+    expect(result.current.frame).toBe(1); // and it keeps advancing from there
   });
 });

@@ -67,26 +67,40 @@ export function FrameCanvas(props: Props) {
     ctx.translate(v.tx, v.ty);
     ctx.scale(v.scale, v.scale);
     ctx.imageSmoothingEnabled = v.scale < 3;
-    if (assets.current.frame) ctx.drawImage(assets.current.frame, 0, 0, p.width, p.height);
-    if (p.candidates.length > 0) {
-      const state = layers.current;
-      const current = state.owner === p.candidates;
-      // Not current: new previews are still decoding. Only bridge the gap when it's the same single
-      // candidate being refined (an extra click on the same object) — anything else would flash a mismatched
-      // preview (or, previously, the frame's stored mask) against the wrong candidate list.
-      const bridgeOld = !current && state.owner !== null && state.owner.length === 1 && p.candidates.length === 1;
-      if (current || bridgeOld) {
-        state.items.forEach((layer, i) => {
-          if (layer === null) return;
-          ctx.globalAlpha = i === p.draft.candidate ? 1 : 0.45;
-          ctx.drawImage(layer, 0, 0, p.width, p.height);
-        });
-        ctx.globalAlpha = 1;
+    if (assets.current.frame) {
+      ctx.drawImage(assets.current.frame, 0, 0, p.width, p.height);
+      // No mask or preview layer is drawn when the frame itself failed to load: either would be meaningless
+      // floating over a black canvas, and a stale stored mask would be actively misleading.
+      if (p.candidates.length > 0) {
+        const state = layers.current;
+        const current = state.owner === p.candidates;
+        // Not current: new previews are still decoding. Only bridge the gap when it's the same single
+        // candidate being refined (an extra click on the same object) — anything else would flash a mismatched
+        // preview (or, previously, the frame's stored mask) against the wrong candidate list.
+        const bridgeOld = !current && state.owner !== null && state.owner.length === 1 && p.candidates.length === 1;
+        if (current || bridgeOld) {
+          state.items.forEach((layer, i) => {
+            if (layer === null) return;
+            ctx.globalAlpha = i === p.draft.candidate ? 1 : 0.45;
+            ctx.drawImage(layer, 0, 0, p.width, p.height);
+          });
+          ctx.globalAlpha = 1;
+        }
+      } else if (assets.current.mask) {
+        ctx.drawImage(assets.current.mask, 0, 0, p.width, p.height);
       }
-    } else if (assets.current.mask) {
-      ctx.drawImage(assets.current.mask, 0, 0, p.width, p.height);
     }
     ctx.restore();
+
+    if (!assets.current.frame) {
+      ctx.fillStyle = "#a3a3a3";
+      ctx.font = "14px sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText("frame could not be loaded", size.current.w / 2, size.current.h / 2);
+      ctx.textAlign = "start";
+      ctx.textBaseline = "alphabetic";
+    }
 
     const box = dragBox.current ?? p.draft.box;
     if (box !== null) {
