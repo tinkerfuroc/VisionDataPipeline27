@@ -8,14 +8,19 @@ import numpy as np
 Polygon = list[tuple[float, float]]
 
 
-def mask_to_polygons(mask: np.ndarray, min_area_px: float = 4.0, edge_scale: int = 1) -> list[Polygon]:
+# Every exporter uses the same convention, so a YOLO-seg polygon, a YOLO-det box and a COCO bbox of one object agree.
+EDGE_SCALE = 2  # measured: IoU 1.0 through pycocotools on a 36 px disc (0.93 at scale 1)
+
+
+def mask_to_polygons(mask: np.ndarray, min_area_px: float = 4.0, edge_scale: int = EDGE_SCALE) -> list[Polygon]:
     """Outer contours of every connected blob. Holes are not represented: neither YOLO-seg nor the plain COCO
     polygon form can carry them, and SAM masks of solid parts rarely have any.
 
-    `edge_scale=1` returns OpenCV's convention: vertices on the centres of the boundary pixels, which is what
-    `cv2.fillPoly` (and so Ultralytics' YOLO loader) expects. Consumers that fill polygons in continuous coordinates
-    (pycocotools) would shave half a pixel off every side of that, a 5% loss on a 36 px part; `edge_scale=k` traces
-    the mask enlarged k times and returns continuous coordinates, leaving 0.5/k px.
+    Coordinates are continuous image coordinates (pixel i covers [i, i + 1)), the convention of `mask_bbox`, of
+    normalised YOLO boxes and of pycocotools. OpenCV alone (`edge_scale=1`) puts vertices on the CENTRES of the
+    boundary pixels, which shaves half a pixel off every side: a 5% loss on a 36 px part, and a half-pixel
+    disagreement with the box formats. Tracing the mask enlarged `edge_scale` times leaves 0.5/edge_scale px.
+    Loaders that truncate to integer pixels before filling (Ultralytics' polygon2mask) recover the mask exactly.
     """
     binary = (np.asarray(mask) > 0).astype(np.uint8)
     k = max(1, int(edge_scale))
@@ -37,7 +42,8 @@ def mask_to_polygons(mask: np.ndarray, min_area_px: float = 4.0, edge_scale: int
 def polygons_to_mask(polygons: list[Polygon], width: int, height: int) -> np.ndarray:
     canvas = np.zeros((height, width), np.uint8)
     for polygon in polygons:
-        cv2.fillPoly(canvas, [np.round(np.array(polygon)).astype(np.int32)], 1)
+        # floor, not round: continuous coordinate c lies in pixel floor(c) (Ultralytics truncates the same way)
+        cv2.fillPoly(canvas, [np.floor(np.array(polygon)).astype(np.int32)], 1)
     return canvas.astype(bool)
 
 

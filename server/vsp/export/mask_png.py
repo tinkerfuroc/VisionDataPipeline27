@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
+from ..labeling.errors import BadRequest
 from .base import ExportSummary, Tick, place_image, read_mask, shared_image
 from .plan import ExportPlan
 
@@ -24,6 +25,8 @@ class MaskPng:
     name = "masks"
 
     def write(self, plan: ExportPlan, out_dir: Path, tick: Tick) -> ExportSummary:
+        if any(c.id + 1 > 255 for c in plan.classes):
+            raise BadRequest("the mask image format holds at most 255 classes (8-bit pixels, 0 is the background)")
         root = out_dir / self.name
         summary = ExportSummary(self.name)
         palette = _palette(plan)
@@ -34,7 +37,7 @@ class MaskPng:
             linked = place_image(shared_image(out_dir, frame), root / "images" / frame.split / f"{frame.stem}.jpg")
             summary.linked = summary.linked and linked
             canvas = np.zeros((frame.height, frame.width), np.uint8)
-            for obj in frame.objects:
+            for obj in frame.objects:  # one value per pixel: where objects overlap, the later one wins
                 canvas[read_mask(obj)] = obj.class_id + 1
             img = Image.fromarray(canvas)  # mode "L"; putpalette turns it into an indexed ("P") image in place
             img.putpalette(palette)

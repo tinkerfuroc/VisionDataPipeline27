@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from .base import ExportSummary, Tick, place_image, read_mask, shared_image
@@ -10,7 +11,8 @@ from .polygons import mask_bbox, mask_to_polygons
 
 
 def _data_yaml(plan: ExportPlan) -> str:
-    names = "\n".join(f"  {c.id}: {c.name}" for c in sorted(plan.classes, key=lambda c: c.id))
+    # json.dumps: a quoted JSON string is a valid YAML scalar, so names with ':' or '#' survive the round trip
+    names = "\n".join(f"  {c.id}: {json.dumps(c.name)}" for c in sorted(plan.classes, key=lambda c: c.id))
     return f"path: .\ntrain: images/train\nval: images/val\nnames:\n{names}\n"
 
 

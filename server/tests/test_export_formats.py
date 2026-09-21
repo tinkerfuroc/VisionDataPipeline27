@@ -6,6 +6,7 @@ import shutil
 
 import numpy as np
 import pytest
+import yaml as yaml_lib
 from PIL import Image
 from vsp.export import EXPORTERS
 from vsp.export import base as export_base
@@ -60,7 +61,10 @@ def test_yolo_seg_writes_normalised_polygons_that_rasterise_back(planned):
     assert (back & truth).sum() / (back | truth).sum() > 0.95
     assert (root / "labels" / "val" / f"{clip.id}_0008.txt").read_text() == ""  # an empty frame is a background negative
     yaml = (root / "data.yaml").read_text()
-    assert "train: images/train" in yaml and "val: images/val" in yaml and "0: bolt" in yaml and "1: nut" in yaml
+    parsed = yaml_lib.safe_load(yaml)
+    assert parsed["train"] == "images/train" and parsed["val"] == "images/val" and parsed["names"] == {0: "bolt", 1: "nut"}
+    # the polygon and the detection box of the same object agree (one coordinate convention for every format)
+    assert coords[:, 0].min() * W == pytest.approx(12.25, abs=1e-3) and coords[:, 0].max() * W == pytest.approx(48.75, abs=1e-3)
 
 
 def test_yolo_det_writes_the_normalised_box_of_the_mask(planned):
@@ -116,3 +120,19 @@ def test_images_are_hardlinked_with_a_copy_fallback(planned, monkeypatch):
     monkeypatch.setattr(export_base.os, "link", refuse)
     assert _write("yolo_seg", plan, out).linked is False
     assert (out / "yolo_seg" / "images" / "train" / f"{clip.id}_0000.jpg").is_file()
+
+
+def test_data_yaml_survives_awkward_class_names(store, make_clip, tmp_path):
+    project, clip = make_clip(n_frames=4, classes=("bolt: m6", "nut #steel", 'say "hi"'))
+    clip.objects = [LabelObject(id=1, class_id=0)]
+    store.write_clip(clip)
+    for i in range(4):
+        store.write_mask(clip.id, 1, i, _disc(40))
+    plan = build_plan(store, project.id, [clip.id], ExportOptions())
+    out = tmp_path / "export"
+    (out / "images").mkdir(parents=True)
+    for frame in plan.frames:
+        shutil.copy2(frame.image_path, export_base.shared_image(out, frame))
+    EXPORTERS["yolo_det"].write(plan, out, lambda: None)
+    names = yaml_lib.safe_load((out / "yolo_det" / "data.yaml").read_text())["names"]
+    assert names == {0: "bolt: m6", 1: "nut #steel", 2: 'say "hi"'}

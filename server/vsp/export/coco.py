@@ -10,9 +10,6 @@ from .base import ExportSummary, Tick, place_image, read_mask, shared_image
 from .plan import ExportPlan
 from .polygons import mask_bbox, mask_to_polygons
 
-# pycocotools fills polygons in continuous coordinates; see mask_to_polygons
-COCO_EDGE_SCALE = 2  # measured: IoU 1.0 through pycocotools on a 36 px disc (0.93 at scale 1)
-
 
 class Coco:
     name = "coco"
@@ -32,7 +29,7 @@ class Coco:
                 images.append({"id": image_id, "file_name": f"{frame.stem}.jpg", "width": frame.width, "height": frame.height})
                 for obj in frame.objects:
                     mask = read_mask(obj)
-                    polygons = mask_to_polygons(mask, edge_scale=COCO_EDGE_SCALE)
+                    polygons = mask_to_polygons(mask)
                     box = mask_bbox(mask)
                     if not polygons or box is None:
                         continue
