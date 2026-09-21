@@ -1,6 +1,7 @@
 import { Route, Routes, useParams } from "react-router-dom";
 import { HealthContext, useHealth } from "./hooks/useHealth";
 import { Clips } from "./pages/Clips";
+import { Export } from "./pages/Export";
 import { Label } from "./pages/Label";
 
 // A fresh `key` per clip id remounts the whole Label subtree on navigation between clips, instead of reusing
@@ -20,6 +21,7 @@ export function App() {
           <Routes>
             <Route path="/" element={<Clips />} />
             <Route path="/clips/:clipId" element={<LabelRoute />} />
+            <Route path="/projects/:projectId/export" element={<Export />} />
           </Routes>
         </main>
       </div>

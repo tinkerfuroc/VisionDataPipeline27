@@ -1,5 +1,5 @@
 import type {
-  Candidate, ClassDef, ClipDetail, ClipSummary, Direction, Health, JobSnapshot, Project, PromptSpec,
+  Candidate, ClassDef, ClipDetail, ClipSummary, Direction, ExportRequest, Health, JobSnapshot, Project, PromptSpec,
 } from "./types";
 
 /** The `job_id` the server reports while a prompt/accept/clear-range call holds the GPU lease. */
@@ -128,4 +128,7 @@ export const api = {
 
   getJob: (id: string) => request<JobSnapshot>(`/api/jobs/${id}`),
   cancelJob: (id: string) => request<JobSnapshot>(`/api/jobs/${id}`, { method: "DELETE" }),
+
+  startExport: (projectId: string, body: ExportRequest) =>
+    request<{ job_id: string }>(`/api/projects/${projectId}/export`, post(body)),
 };

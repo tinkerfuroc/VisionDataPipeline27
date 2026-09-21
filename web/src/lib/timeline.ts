@@ -1,4 +1,4 @@
-import type { FrameState } from "../api/types";
+import type { ClipSummary, FrameState } from "../api/types";
 
 /** A maximal run of consecutive frames in one state; `end` is inclusive. */
 export type Run = { state: FrameState; start: number; end: number };
@@ -35,6 +35,12 @@ export function labeledPercent(states: readonly FrameState[]): number {
   const c = counts(states);
   const live = states.length - c.deleted;
   return live === 0 ? 0 : Math.round((100 * (c.masked + c.keyframe)) / live);
+}
+
+/** Labeled frames of one clip summary, as a rounded percentage of its non-deleted frames. */
+export function percentLabeled(c: ClipSummary): number {
+  const live = c.frame_count - c.deleted_frames.length;
+  return live <= 0 ? 0 : Math.round((100 * c.labeled_frames) / live);
 }
 
 /** Apply a propagation `frame` event. Keyframes and deleted frames never change; unchanged input is returned as is. */

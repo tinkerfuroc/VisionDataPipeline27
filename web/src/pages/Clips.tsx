@@ -4,13 +4,9 @@ import { api, thumbUrl } from "../api/rest";
 import type { ClipSummary, Project } from "../api/types";
 import { AppHeader } from "../components/AppHeader";
 import { ImportJobRow } from "../components/ImportJobRow";
+import { percentLabeled } from "../lib/timeline";
 
 const PROJECT_KEY = "vsp.project";
-
-function percentLabeled(c: ClipSummary): number {
-  const live = c.frame_count - c.deleted_frames.length;
-  return live <= 0 ? 0 : Math.round((100 * c.labeled_frames) / live);
-}
 
 export function Clips() {
   const [projects, setProjects] = useState<Project[]>([]);
@@ -201,6 +197,11 @@ export function Clips() {
 
         {project !== null && (
           <aside className="flex shrink-0 flex-col gap-5 border-t border-line bg-panel p-3 md:w-80 md:overflow-y-auto md:border-l md:border-t-0">
+            {clips.length > 0 && (
+              <Link to={`/projects/${project.id}/export`} className="btn btn-on">
+                Export dataset
+              </Link>
+            )}
             <section className="flex flex-col gap-2">
               <h2 className="heading">Classes</h2>
               {project.classes.length > 0 && (

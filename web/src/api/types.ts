@@ -62,6 +62,16 @@ export type JobEvent = {
   [key: string]: unknown;
 };
 
+export type ExportFormat = "yolo_seg" | "yolo_det" | "coco" | "masks";
+export type SplitMode = "per_clip" | "contiguous";
+export type ExportRequest = {
+  clips: string[];
+  formats: ExportFormat[];
+  options: { split_mode: SplitMode; val_clips?: string[]; val_fraction: number; stride: number; include_empty: boolean };
+};
+export type SplitCounts = { images: number; annotated: number; empty: number };
+export type ExportResult = { export_id: string; path: string; formats: ExportFormat[]; counts: { train: SplitCounts; val: SplitCounts }; linked: boolean };
+
 export type Health = {
   status: string;
   version: string;

@@ -60,6 +60,7 @@ describe("Clips page", () => {
     expect(screen.getByText("connector")).toBeTruthy();
     expect(screen.getByText(/40 frames/).textContent).toContain("50% labeled");
     expect(screen.getByRole("link", { name: /open/i }).getAttribute("href")).toBe("/clips/c1");
+    expect(screen.getByRole("link", { name: "Export dataset" }).getAttribute("href")).toBe(`/projects/${project.id}/export`);
     expect(m.listClips).toHaveBeenCalledWith(project.id);
     expect(localStorage.getItem("vsp.project")).toBe(project.id);
   });

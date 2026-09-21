@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError, api, detailText, maskUrl, request, retryInteractive } from "./rest";
+import type { ExportRequest } from "./types";
 
 function mockFetch(...responses: Response[]) {
   const fn = vi.fn();
@@ -121,5 +122,19 @@ describe("api", () => {
 
   it("versions mask URLs", () => {
     expect(maskUrl("c1", 4, "2.1")).toBe("/api/clips/c1/masks/4?v=2.1");
+  });
+
+  it("posts an export request with the server's field names", async () => {
+    const fetchMock = mockFetch(jsonResponse({ job_id: "j3" }, 202));
+    const body: ExportRequest = {
+      clips: ["a", "b"],
+      formats: ["coco", "masks"],
+      options: { split_mode: "per_clip", val_clips: ["b"], val_fraction: 0.2, stride: 1, include_empty: true },
+    };
+    expect(await api.startExport("p1", body)).toEqual({ job_id: "j3" });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/projects/p1/export");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body)).toEqual(body);
   });
 });
