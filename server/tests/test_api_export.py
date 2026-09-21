@@ -1,0 +1,90 @@
+from __future__ import annotations
+
+import json
+import time
+from pathlib import Path
+
+import cv2
+import numpy as np
+import pytest
+from fastapi.testclient import TestClient
+from vsp.api.app import create_app
+from vsp.config import Settings
+from vsp.engine.fake import FakeEngine
+
+# Helpers copied from test_api_core.py rather than imported: importing `client` (a fixture) alongside test
+# functions that take `client` as a parameter trips ruff's F811 (redefinition) in this repo's configuration.
+
+
+def _settings(tmp_path):
+    s = Settings.load(None)
+    s.project.data_root = tmp_path / "data"
+    s.ingest.allowed_roots = [str(tmp_path)]
+    return s
+
+
+def wait_job(client, job_id, timeout=10.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        snap = client.get(f"/api/jobs/{job_id}").json()
+        if snap["status"] in ("done", "error", "cancelled"):
+            return snap
+        time.sleep(0.02)
+    raise AssertionError(f"job {job_id} did not finish: {snap}")
+
+
+@pytest.fixture
+def client(tmp_path):
+    app = create_app(_settings(tmp_path), engine=FakeEngine(), load_engine=False)
+    with TestClient(app) as c:
+        yield c
+
+
+def _frames_dir(tmp_path, n=5):
+    src = tmp_path / "frames"
+    src.mkdir()
+    for i in range(n):
+        assert cv2.imwrite(str(src / f"f_{i}.png"), np.full((60, 120, 3), 90, np.uint8))
+    return src
+
+
+def _project(client, classes=("part",)):
+    p = client.post("/api/projects", json={"name": "Board"}).json()
+    for name in classes:
+        assert client.post(f"/api/projects/{p['id']}/classes", json={"name": name}).status_code == 201
+    return p["id"]
+
+
+def _clip_with_masks(client, tmp_path, project_id):
+    started = client.post(f"/api/projects/{project_id}/clips/import-frames", json={"path": str(_frames_dir(tmp_path, n=6)), "fps": 10})
+    clip_id = wait_job(client, started.json()["job_id"])["result"]["clip_id"]
+    accepted = client.post(f"/api/clips/{clip_id}/accept", json={"frame": 0, "prompt": {"type": "clicks", "points": [[30, 30, 1]]}, "class_id": 0})
+    assert accepted.status_code == 200, accepted.text
+    job = client.post(f"/api/clips/{clip_id}/propagate", json={"from_frame": 0, "direction": "forward"}).json()["job_id"]
+    assert wait_job(client, job)["status"] == "done"
+    return clip_id
+
+
+def test_export_runs_as_a_job_and_reports_where_it_wrote(client, tmp_path):
+    project_id = _project(client)
+    clip_id = _clip_with_masks(client, tmp_path, project_id)
+    started = client.post(f"/api/projects/{project_id}/export", json={"clips": [clip_id], "formats": ["yolo_det", "coco"]})
+    assert started.status_code == 202, started.text
+    snap = wait_job(client, started.json()["job_id"])
+    assert snap["status"] == "done" and snap["kind"] == "export"
+    out = Path(snap["result"]["path"])
+    assert out.parent.name == "exports" and (out / "coco" / "annotations" / "instances_train.json").is_file()
+    assert json.loads((out / "export.json").read_text())["options"]["val_fraction"] == 0.2
+
+
+def test_export_request_errors(client, tmp_path):
+    project_id = _project(client)
+    clip_id = _clip_with_masks(client, tmp_path, project_id)
+    url = f"/api/projects/{project_id}/export"
+    assert client.post(url, json={"clips": [clip_id], "formats": ["voc"]}).status_code == 400
+    assert client.post(url, json={"clips": [], "formats": ["coco"]}).status_code == 400
+    assert client.post(url, json={"clips": ["nope"], "formats": ["coco"]}).status_code == 404
+    assert client.post("/api/projects/nope/export", json={"clips": [clip_id], "formats": ["coco"]}).status_code == 404
+    assert client.post(url, json={"clips": [clip_id], "formats": ["coco"], "options": {"val_fraction": 1.5}}).status_code == 422
+    body = client.post(url, json={"clips": [clip_id], "formats": ["coco"], "options": {"split_mode": "per_clip"}})
+    assert body.status_code == 400 and "at least two clips" in body.json()["detail"]

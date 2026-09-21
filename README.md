@@ -36,6 +36,10 @@ request also returns 409 with `job_id: "interactive"` if a prompt/accept/clear-r
 retry. Deleting a clip also returns 409 (with the running `job_id`) while a GPU job runs, so a delete can
 never race a propagation's writes. Cancelling an import job removes the partial clip it had started.
 
+`POST /api/projects/{id}/export` starts an export job; body `{clips, formats, options}` → `202 {job_id}`.
+It returns 400 for an invalid request (unknown format, no clips, a bad option) and 409 (with the running
+`job_id`) while a propagation job runs, since propagation rewrites the very masks an export reads.
+
 ## Web GUI
 
 Node 22 is installed with nvm (`source ~/.nvm/nvm.sh` in a fresh shell).
@@ -50,6 +54,17 @@ Node 22 is installed with nvm (`source ~/.nvm/nvm.sh` in a fresh shell).
 With the server running, `uv run python scripts/seed_demo.py` creates a project "demo" with a synthetic 40-frame clip
 (a disc moving across the frame), labels frame 0 with one click and propagates forward, then prints the URL to open.
 `--no-label` imports only.
+
+### Exporting
+
+An export lands under `data/exports/<export_id>/`: an `images/` directory holding one copy of every
+exported frame, plus one directory per requested format — `yolo_seg/`, `yolo_det/`, `coco/` and/or
+`masks/` — and an `export.json` manifest recording the resolved options, the clips exported (with their
+per-split frame counts), the class map (`yolo_id`, `coco_id`, `mask_value` per class) and the train/val
+image counts. The train/val split is always either per clip (whole clips held out for validation) or
+contiguous (the tail of every clip held out), never random per frame: neighbouring video frames are
+nearly identical, so a random per-frame split would leak validation frames into training. A cancelled or
+failed export removes its directory rather than leaving a partial dataset behind.
 
 ### Keyboard
 
