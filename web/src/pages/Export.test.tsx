@@ -130,7 +130,7 @@ describe("Export page", () => {
     fireEvent.click(screen.getByRole("checkbox", { name: "Include c.mp4" }));
 
     expect(screen.getByRole("button", { name: "Export 1 clip" })).toBeTruthy();
-    expect(screen.getByText(/last 20% of its frames/)).toBeTruthy();
+    expect(screen.getByText(/last 20% of its exported frames/)).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "Export 1 clip" }));
     await waitFor(() => expect(m.startExport).toHaveBeenCalled());

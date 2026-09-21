@@ -13,6 +13,7 @@ import numpy as np
 from PIL import Image
 
 from .plan import ExportPlan, PlanFrame, PlanObject
+from .polygons import clean_mask
 
 Tick = Callable[[], None]
 
@@ -49,4 +50,5 @@ def place_image(src: Path, dst: Path) -> bool:
 
 
 def read_mask(obj: PlanObject) -> np.ndarray:
-    return np.array(Image.open(obj.mask_path).convert("L")) > 127
+    """The object as every format sees it: the stored mask with its noise blobs removed (see `clean_mask`)."""
+    return clean_mask(np.array(Image.open(obj.mask_path).convert("L")) > 127, obj.min_area_px)

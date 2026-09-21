@@ -245,7 +245,7 @@ export function Export() {
             <p className="note">
               {mode === "per_clip"
                 ? "Whole clips go to training or validation, so neighbouring frames never end up on both sides. Choose the validation clips on the left."
-                : `With one clip, the last ${valSharePercent}% of its frames become the validation set.`}
+                : `With one clip, the last ${valSharePercent}% of its exported frames become the validation set.`}
             </p>
             {mode === "per_clip" && orderedVal.length === 0 && (
               <p className="note text-ink">

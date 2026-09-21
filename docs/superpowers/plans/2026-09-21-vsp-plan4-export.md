@@ -1308,3 +1308,13 @@ Tasks 1-2 by Haiku, 3-4 by Sonnet, each reviewed by Sonnet; fixes by the control
   delete-during-export.
 - **Task 4:** the plan's sample `done` event nested the result under `result`; the real event is flat
   (`JobManager._run` spreads the result onto the event) and the page follows the real shape.
+- **Final whole-branch review (Opus):** two silent data-correctness defects, both fixed test-first. (1) The noise
+  filter lived only in `mask_to_polygons`, so one stray tracker pixel stretched the YOLO-det and COCO boxes across the
+  frame while the polygon ignored it, and a mask of scattered specks was "annotated" in two formats and absent in the
+  other two. `clean_mask(mask, min_area_px)` now removes blobs below `min_area_px` ONCE; the plan decides presence with
+  it and every exporter reads the cleaned mask (`PlanObject.min_area_px`), so `min_area_px` is a per-blob threshold
+  that reaches every format. (2) With `include_empty=False` the contiguous tail was taken before the empty frames were
+  dropped (a clip labelled only at its start got no validation frames); the split now follows the filter. Also:
+  duplicate formats are refused; the Clips page explains a refused delete instead of showing a job id; tests for
+  image/label/annotation/mask pairing per split, cross-format consistency on one noisy frame, and a clip with no masks.
+  Left as notes: a killed server leaves a half-written export without `export.json`; job events are never evicted.

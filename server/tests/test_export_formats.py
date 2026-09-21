@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -136,3 +137,69 @@ def test_data_yaml_survives_awkward_class_names(store, make_clip, tmp_path):
     EXPORTERS["yolo_det"].write(plan, out, lambda: None)
     names = yaml_lib.safe_load((out / "yolo_det" / "data.yaml").read_text())["names"]
     assert names == {0: "bolt: m6", 1: "nut #steel", 2: 'say "hi"'}
+
+
+def _export_all(store, project, clip, tmp_path, options):
+    plan = build_plan(store, project.id, [clip.id], options)
+    out = tmp_path / "export_all"
+    (out / "images").mkdir(parents=True)
+    for frame in plan.frames:
+        shutil.copy2(frame.image_path, export_base.shared_image(out, frame))
+    for name in EXPORTERS:
+        EXPORTERS[name].write(plan, out, lambda: None)
+    return plan, out
+
+
+def test_a_stray_pixel_does_not_make_the_formats_disagree_about_the_object(store, make_clip, tmp_path):
+    project, clip = make_clip(n_frames=2)
+    clip.objects = [LabelObject(id=1, class_id=0)]
+    store.write_clip(clip)
+    noisy = np.zeros((H, W), bool)
+    noisy[10:30, 10:30] = True  # the object: 400 px
+    noisy[55, 115] = True  # one stray pixel, routine in tracker output
+    for i in range(2):
+        store.write_mask(clip.id, 1, i, noisy)
+    plan, out = _export_all(store, project, clip, tmp_path, ExportOptions(val_fraction=0.0))
+    stem = plan.frames[0].stem
+    _, cx, cy, w, h = map(float, (out / "yolo_det" / "labels" / "train" / f"{stem}.txt").read_text().split())
+    assert (cx * W, cy * H, w * W, h * H) == pytest.approx((20, 20, 20, 20), abs=1e-3)
+    seg = np.array((out / "yolo_seg" / "labels" / "train" / f"{stem}.txt").read_text().split()[1:], float).reshape(-1, 2)
+    assert seg[:, 0].max() * W < 30 and seg[:, 1].max() * H < 30
+    ann = json.loads((out / "coco" / "annotations" / "instances_train.json").read_text())["annotations"][0]
+    assert ann["bbox"] == [10, 10, 20, 20] and ann["area"] == 400.0
+    png = np.array(Image.open(out / "masks" / "masks" / "train" / f"{stem}.png"))
+    assert (png > 0).sum() == 400
+
+
+def test_a_mask_of_scattered_specks_is_absent_in_every_format(store, make_clip, tmp_path):
+    project, clip = make_clip(n_frames=3)
+    clip.objects = [LabelObject(id=1, class_id=0)]
+    store.write_clip(clip)
+    specks = np.zeros((H, W), bool)
+    specks[::6, ::10] = True  # 120 isolated pixels: well over min_area_px in total, no real blob
+    store.write_mask(clip.id, 1, 0, specks)
+    store.write_mask(clip.id, 1, 1, _disc(40))
+    plan, out = _export_all(store, project, clip, tmp_path, ExportOptions(val_fraction=0.0))
+    assert [len(f.objects) for f in plan.frames] == [0, 1, 0]
+    stem = plan.frames[0].stem
+    assert (out / "yolo_seg" / "labels" / "train" / f"{stem}.txt").read_text() == ""
+    assert (out / "yolo_det" / "labels" / "train" / f"{stem}.txt").read_text() == ""
+    assert not np.array(Image.open(out / "masks" / "masks" / "train" / f"{stem}.png")).any()
+    data = json.loads((out / "coco" / "annotations" / "instances_train.json").read_text())
+    assert len(data["annotations"]) == 1
+
+
+def test_every_image_has_its_label_annotation_and_mask_in_the_same_split(planned):
+    plan, out, _clip = planned
+    for name in EXPORTERS:
+        EXPORTERS[name].write(plan, out, lambda: None)
+    for split in ("train", "val"):
+        stems = {f.stem for f in plan.of_split(split)}
+        for fmt in ("yolo_seg", "yolo_det"):
+            assert {p.stem for p in (out / fmt / "images" / split).iterdir()} == stems
+            assert {p.stem for p in (out / fmt / "labels" / split).iterdir()} == stems
+        assert {p.stem for p in (out / "masks" / "images" / split).iterdir()} == stems
+        assert {p.stem for p in (out / "masks" / "masks" / split).iterdir()} == stems
+        coco = json.loads((out / "coco" / "annotations" / f"instances_{split}.json").read_text())
+        assert {Path(i["file_name"]).stem for i in coco["images"]} == stems
+        assert {p.stem for p in (out / "coco" / "images" / split).iterdir()} == stems

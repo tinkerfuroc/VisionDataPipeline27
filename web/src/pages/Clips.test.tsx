@@ -131,7 +131,9 @@ describe("Clips page", () => {
     fireEvent.click(screen.getByRole("button", { name: "Delete clip" }));
     expect(m.deleteClip).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Delete clip" }));
-    expect(await screen.findByText(/job abc is still running/)).toBeTruthy();
+    // the server only names a job id; the page says what that means for the user
+    expect(await screen.findByText("A propagation or an export is running. Wait for it to finish, then delete this clip.")).toBeTruthy();
+    expect(screen.queryByText(/job abc/)).toBeNull();
     expect(screen.getByText("bench.mp4")).toBeTruthy();
   });
 

@@ -12,8 +12,26 @@ Polygon = list[tuple[float, float]]
 EDGE_SCALE = 2  # measured: IoU 1.0 through pycocotools on a 36 px disc (0.93 at scale 1)
 
 
-def mask_to_polygons(mask: np.ndarray, min_area_px: float = 4.0, edge_scale: int = EDGE_SCALE) -> list[Polygon]:
-    """Outer contours of every connected blob. Holes are not represented: neither YOLO-seg nor the plain COCO
+def clean_mask(mask: np.ndarray, min_area_px: int) -> np.ndarray:
+    """The mask without its connected blobs smaller than `min_area_px` (8-connectivity).
+
+    This is THE noise rule of an export, applied once and used by every format: what survives is the object, for
+    the polygon, the box, the area and the mask image alike. Filtering in only one of them makes the formats disagree
+    (one stray tracker pixel used to stretch the YOLO-det and COCO boxes across the frame while the polygon ignored it).
+    An object with nothing left is absent from the frame.
+    """
+    binary = (np.asarray(mask) > 0).astype(np.uint8)
+    if min_area_px <= 1 or not binary.any():
+        return binary.astype(bool)
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(binary, connectivity=8)
+    keep = np.zeros(count, bool)
+    keep[1:] = stats[1:, cv2.CC_STAT_AREA] >= min_area_px  # label 0 is the background
+    return keep[labels]
+
+
+def mask_to_polygons(mask: np.ndarray, min_area_px: float = 0.0, edge_scale: int = EDGE_SCALE) -> list[Polygon]:
+    """Outer contours of every connected blob (pass a `clean_mask`ed mask; nothing is filtered here by default, so
+    every blob of the mask gets a polygon and the formats stay consistent). Holes are not represented: neither YOLO-seg nor the plain COCO
     polygon form can carry them, and SAM masks of solid parts rarely have any.
 
     Coordinates are continuous image coordinates (pixel i covers [i, i + 1)), the convention of `mask_bbox`, of

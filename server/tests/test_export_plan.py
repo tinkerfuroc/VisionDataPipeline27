@@ -118,3 +118,33 @@ def test_stems_stay_unique_when_an_original_name_looks_like_another_frames_index
     assert stems[3] == f"{clip.id}_000003" and stems[7] != stems[3]  # "000007" is frame 7's own index form
     assert stems[4] == f"{clip.id}_dup" and stems[5] == f"{clip.id}_000005"
     assert stems[6] == f"{clip.id}_c"
+
+
+def test_the_contiguous_tail_is_taken_after_empty_frames_are_dropped(store, make_clip):
+    project, clip = make_clip(n_frames=10)
+    _label(store, clip, range(6))  # masks on 0-5 only
+    plan = build_plan(store, project.id, [clip.id], ExportOptions(include_empty=False))
+    assert [(f.frame_idx, f.split) for f in plan.frames] == [
+        (0, "train"), (1, "train"), (2, "train"), (3, "train"), (4, "val"), (5, "val"),
+    ]
+    project2, late = make_clip(n_frames=10)
+    _label(store, late, range(6, 10))  # masks on 6-9 only
+    plan2 = build_plan(store, project2.id, [late.id], ExportOptions(include_empty=False))
+    assert [(f.frame_idx, f.split) for f in plan2.frames] == [(6, "train"), (7, "train"), (8, "train"), (9, "val")]
+
+
+def test_a_clip_without_masks_contributes_only_background_frames_or_nothing(store, make_clip, tmp_path):
+    project, first = make_clip(n_frames=4)
+    _label(store, first, range(4))
+    bare = _extra_clip(store, project.id, tmp_path, n=4)
+    ids = [first.id, bare.id]
+    keep = build_plan(store, project.id, ids, ExportOptions(val_clip_ids=()))
+    assert sum(1 for f in keep.frames if f.clip_id == bare.id) == 4
+    drop = build_plan(store, project.id, ids, ExportOptions(val_clip_ids=(), include_empty=False))
+    assert {f.clip_id for f in drop.frames} == {first.id}
+
+
+def test_duplicate_formats_are_refused(store, make_clip):
+    project, clip = make_clip(n_frames=4)
+    with pytest.raises(BadRequest, match="listed twice"):
+        check_request(store, project.id, [clip.id], ["coco", "coco"], ExportOptions())

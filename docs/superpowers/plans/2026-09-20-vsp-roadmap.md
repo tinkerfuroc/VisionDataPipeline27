@@ -194,4 +194,5 @@ masks that rasterise back to the mask PNG at IoU 1.0 (COCO through pycocotools).
 
 Still deferred: `clip_id`/scope on `Job.snapshot()`; listing past exports in the GUI (the job result and `export.json`
 carry the path); a propagation started while an export runs is tolerated (mask writes are atomic) rather than refused;
-progress events are one per frame per pass, unthrottled; holes in masks are not represented in polygon formats.
+progress events are one per frame per pass, unthrottled, and finished jobs are never evicted from memory; a server killed
+mid-export leaves a half-written folder (recognisable by its missing `export.json`); holes in masks are not represented in polygon formats.

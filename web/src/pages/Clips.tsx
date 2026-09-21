@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
-import { api, thumbUrl } from "../api/rest";
+import { ApiError, api, thumbUrl } from "../api/rest";
 import type { ClipSummary, Project } from "../api/types";
 import { AppHeader } from "../components/AppHeader";
 import { ImportJobRow } from "../components/ImportJobRow";
@@ -121,7 +121,14 @@ export function Clips() {
   const deleteClip = (clip: ClipSummary) => {
     if (!window.confirm(`Delete "${clip.source.name}" and all of its masks?`)) return;
     guarded(async () => {
-      await api.deleteClip(clip.id);
+      try {
+        await api.deleteClip(clip.id);
+      } catch (e) {
+        // 409: a propagation or an export is using the clips; the server only names the job's id
+        if (e instanceof ApiError && e.status === 409)
+          throw new Error("A propagation or an export is running. Wait for it to finish, then delete this clip.");
+        throw e;
+      }
       if (projectId !== null) await loadClips(projectId);
     })();
   };

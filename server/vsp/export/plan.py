@@ -13,6 +13,7 @@ from typing import Literal
 from ..labeling.errors import BadRequest
 from ..store import ProjectStore
 from ..store.models import ClassDef, Clip
+from .polygons import clean_mask
 
 FORMATS = ("yolo_seg", "yolo_det", "coco", "masks")
 Split = Literal["train", "val"]
@@ -33,6 +34,7 @@ class PlanObject:
     object_id: int
     class_id: int
     mask_path: Path
+    min_area_px: int  # exporters clean the mask with the same rule the plan used to decide the object is present
 
 
 @dataclass(frozen=True)
@@ -82,6 +84,8 @@ def check_request(
     clips = _read_clips(store, project_id, clip_ids)
     if not formats:
         raise BadRequest("choose at least one format")
+    if len(set(formats)) != len(formats):
+        raise BadRequest("a format is listed twice")
     for name in formats:
         if name not in FORMATS:
             raise BadRequest(f"unknown format {name!r}; choose from {', '.join(FORMATS)}")
@@ -139,27 +143,32 @@ def build_plan(
     for clip in clips:
         deleted = set(clip.deleted_frames)
         kept = [i for i in range(clip.frame_count) if i not in deleted][:: resolved.stride]
-        if resolved.split_mode == "contiguous":
-            n_val = math.ceil(resolved.val_fraction * len(kept))
-            n_val = min(n_val, max(0, len(kept) - 1))  # never the whole clip
-            val_frames = set(kept[len(kept) - n_val :]) if n_val else set()
-        else:
-            val_frames = set(kept) if clip.id in (resolved.val_clip_ids or ()) else set()
         stems = _stems(clip, kept)
+        candidates: list[tuple[int, tuple[PlanObject, ...]]] = []
         for idx in kept:
             if tick is not None:
                 tick()
             objects = []
             for obj in clip.objects:
                 mask = store.read_mask(clip.id, obj.id, idx)
-                if mask is None or int(mask.sum()) < resolved.min_area_px:
-                    continue  # absent or degenerate mask = the object is not in this frame
-                objects.append(PlanObject(obj.id, obj.class_id, store.mask_path(clip.id, obj.id, idx)))
-            if not objects and not resolved.include_empty:
-                continue
+                # absent, or nothing but noise once cleaned = the object is not in this frame
+                if mask is None or not clean_mask(mask, resolved.min_area_px).any():
+                    continue
+                objects.append(PlanObject(obj.id, obj.class_id, store.mask_path(clip.id, obj.id, idx), resolved.min_area_px))
+            if objects or resolved.include_empty:
+                candidates.append((idx, tuple(objects)))
+        # The split comes AFTER the empty-frame filter: the tail of what is actually exported, not of the frame range
+        # (otherwise a clip labelled only at its start would get no validation frames at all).
+        if resolved.split_mode == "contiguous":
+            n_val = math.ceil(resolved.val_fraction * len(candidates))
+            n_val = min(n_val, max(0, len(candidates) - 1))  # never the whole clip
+            val_frames = {idx for idx, _ in candidates[len(candidates) - n_val :]} if n_val else set()
+        else:
+            val_frames = {idx for idx, _ in candidates} if clip.id in (resolved.val_clip_ids or ()) else set()
+        for idx, objects in candidates:
             frames.append(PlanFrame(
                 clip_id=clip.id, frame_idx=idx, stem=stems[idx], split="val" if idx in val_frames else "train",
-                image_path=store.frame_path(clip.id, idx), width=clip.width, height=clip.height, objects=tuple(objects),
+                image_path=store.frame_path(clip.id, idx), width=clip.width, height=clip.height, objects=objects,
             ))
     if not frames:
         raise BadRequest("nothing to export: no frame of the selected clips has a usable mask")

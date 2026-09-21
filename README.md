@@ -66,6 +66,11 @@ contiguous (the tail of every clip held out), never random per frame: neighbouri
 nearly identical, so a random per-frame split would leak validation frames into training. A cancelled or
 failed export removes its directory rather than leaving a partial dataset behind.
 
+Noise is removed once, the same way for every format: connected blobs of a mask smaller than `min_area_px`
+(64 by default) are dropped, what is left is the object for the polygon, the box, the area and the mask image alike,
+and an object with nothing left counts as absent. With "include frames without a mask" off, the validation tail of
+the contiguous split is taken from the frames that are actually exported.
+
 Polygon and box coordinates share one convention in every format: continuous image coordinates, where pixel
 `i` covers `[i, i + 1)`. An export refuses to start while a propagation is running (409), a clip cannot be
 deleted while an export is reading it (409), and a request that turns out to have no usable mask at all is
