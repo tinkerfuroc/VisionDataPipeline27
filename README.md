@@ -74,3 +74,7 @@ middle-drag pan · right click = negative point.
 10. Open the same clip in two tabs; start a propagation in tab A, then click to prompt in tab B on a different clip:
     B must not move or show A's progress as its own.
 11. Delete a keyframe: its marker disappears from the timeline and propagation is blocked from it until it is restored.
+12. Read the timeline without relying on colour: masked runs are filled (in the class colour), frames without a mask
+    are hollow, deleted frames are hatched and keyframes carry an amber diamond. Hover it for a thumbnail with the
+    frame number and state. Zoom into the frame, then press Fit in the tool rail. Tab through the page: every control
+    shows a focus ring.

@@ -24,17 +24,17 @@ export function ImportJobRow({ jobId, label, onFinished, onDismiss }: Props) {
 
   const running = !isTerminal(job.status);
   return (
-    <li className="flex items-center gap-3 rounded bg-neutral-800 px-3 py-2 text-sm">
+    <li className="flex items-center gap-3 rounded border border-line bg-panel px-3 py-1.5 text-sm">
       <span className="min-w-0 flex-1 truncate">{label}</span>
-      {running && <span className="text-neutral-300">{job.done} frames…</span>}
-      {job.status === "cancelled" && <span className="text-amber-400">cancelled</span>}
-      {job.status === "error" && <span className="text-red-400">{job.error}</span>}
+      {running && <span className="font-cond text-dim">{job.done} frames…</span>}
+      {job.status === "cancelled" && <span className="font-cond text-dim">Cancelled</span>}
+      {job.status === "error" && <span className="text-danger">{job.error}</span>}
       {running ? (
-        <button type="button" className="rounded bg-neutral-700 px-2 py-1" onClick={() => void api.cancelJob(jobId).catch(() => {})}>
+        <button type="button" className="btn" onClick={() => void api.cancelJob(jobId).catch(() => {})}>
           Cancel
         </button>
       ) : (
-        <button type="button" className="rounded bg-neutral-700 px-2 py-1" onClick={() => onDismiss(jobId)}>
+        <button type="button" className="btn" onClick={() => onDismiss(jobId)}>
           Dismiss
         </button>
       )}

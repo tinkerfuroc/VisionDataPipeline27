@@ -2,16 +2,41 @@ import { useEffect, useRef, useState, type MouseEvent } from "react";
 import type { FrameState } from "../api/types";
 import { frameAtX, runs } from "../lib/timeline";
 
-type Props = { states: FrameState[]; frame: number; onSeek: (frame: number) => void };
+type Props = {
+  states: FrameState[];
+  frame: number;
+  /** class colour of the object, hex: masked frames are drawn in it, so the strip matches the overlay */
+  color: string;
+  /** thumbnail shown while hovering; omit to show the frame number only */
+  thumb?: { url: (frame: number) => string; aspect: number };
+  onSeek: (frame: number) => void;
+};
 
-const HEIGHT = 28;
-const COLORS: Record<FrameState, string> = { empty: "#3f3f46", masked: "#10b981", keyframe: "#f59e0b", deleted: "#7f1d1d" };
-const LEGEND: [FrameState, string][] = [["keyframe", "keyframe"], ["masked", "masked"], ["empty", "empty"], ["deleted", "deleted"]];
+const HEIGHT = 44;
+const BAND_TOP = 4;
+const BAND_H = 24;
+const BAND_MID = BAND_TOP + BAND_H / 2;
+const THUMB_W = 128;
+// canvas cannot read the Tailwind theme; these mirror tailwind.config.js
+const INK = "#E9E7E2";
+const DIM = "#A3A5AA";
+const LINE = "#4A4D52";
+const WELL = "#1E1F21";
+const PANEL = "#36383C";
+const KEY = "#F59E0B";
+const STEPS = [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000];
+const WORDS: Record<FrameState, string> = { keyframe: "keyframe", masked: "masked", empty: "no mask", deleted: "deleted" };
 
-export function Timeline({ states, frame, onSeek }: Props) {
+/**
+ * Frame state is told apart by shape and texture as well as colour: a filled run is masked, a hollow run has no mask,
+ * a hatched run is deleted, and a diamond marks a keyframe.
+ */
+export function Timeline({ states, frame, color, thumb, onSeek }: Props) {
   const wrap = useRef<HTMLDivElement>(null);
   const canvas = useRef<HTMLCanvasElement>(null);
   const [width, setWidth] = useState(0);
+  const [hover, setHover] = useState<number | null>(null);
+  const [fontsReady, setFontsReady] = useState(false);
 
   useEffect(() => {
     const el = wrap.current;
@@ -20,6 +45,16 @@ export function Timeline({ states, frame, onSeek }: Props) {
     observer.observe(el);
     setWidth(el.clientWidth);
     return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    let closed = false;
+    void document.fonts?.ready.then(() => {
+      if (!closed) setFontsReady(true); // the ruler labels were drawn in the fallback face until now
+    });
+    return () => {
+      closed = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -33,51 +68,135 @@ export function Timeline({ states, frame, onSeek }: Props) {
     ctx.clearRect(0, 0, width, HEIGHT);
     if (states.length === 0) return;
     const px = width / states.length;
-    const all = runs(states);
-    for (const r of all) {
-      if (r.state === "keyframe") continue;
-      ctx.fillStyle = COLORS[r.state];
-      ctx.fillRect(r.start * px, 6, (r.end - r.start + 1) * px, HEIGHT - 12);
-    }
-    ctx.fillStyle = COLORS.keyframe; // keyframes on top, full height, never thinner than 3 px
-    for (const r of all) {
-      if (r.state !== "keyframe") continue;
-      for (let i = r.start; i <= r.end; i++) {
-        const w = Math.max(px, 3);
-        ctx.fillRect(i * px + px / 2 - w / 2, 0, w, HEIGHT);
+
+    for (const r of runs(states)) {
+      const x = r.start * px;
+      const w = (r.end - r.start + 1) * px;
+      if (r.state === "masked" || r.state === "keyframe") {
+        ctx.fillStyle = color;
+        ctx.fillRect(x, BAND_TOP, w, BAND_H);
+      } else if (r.state === "deleted") {
+        ctx.fillStyle = WELL;
+        ctx.fillRect(x, BAND_TOP, w, BAND_H);
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(x, BAND_TOP, w, BAND_H);
+        ctx.clip();
+        ctx.strokeStyle = DIM;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        for (let hx = x - BAND_H; hx < x + w; hx += 5) {
+          ctx.moveTo(hx, BAND_TOP + BAND_H);
+          ctx.lineTo(hx + BAND_H, BAND_TOP);
+        }
+        ctx.stroke();
+        ctx.restore();
+      } else {
+        ctx.strokeStyle = LINE;
+        ctx.lineWidth = 1;
+        ctx.strokeRect(x + 0.5, BAND_TOP + 0.5, Math.max(w - 1, 1), BAND_H - 1);
       }
     }
-    ctx.fillStyle = "#ffffff";
-    ctx.fillRect(frame * px + px / 2 - 1, 0, 2, HEIGHT);
-  }, [states, frame, width]);
 
-  const seek = (e: MouseEvent<HTMLCanvasElement>) => {
+    if (px >= 5) {
+      // frames are discrete: notch every boundary while there is room for it
+      ctx.fillStyle = PANEL;
+      for (let i = 1; i < states.length; i++) ctx.fillRect(Math.round(i * px), BAND_TOP, 1, BAND_H);
+    }
+
+    // keyframe diamonds, on top and never narrower than 10 px, outlined so they hold against any class colour
+    states.forEach((s, i) => {
+      if (s !== "keyframe") return;
+      const cx = i * px + px / 2;
+      ctx.beginPath();
+      ctx.moveTo(cx, BAND_MID - 7);
+      ctx.lineTo(cx + 6, BAND_MID);
+      ctx.lineTo(cx, BAND_MID + 7);
+      ctx.lineTo(cx - 6, BAND_MID);
+      ctx.closePath();
+      ctx.fillStyle = KEY;
+      ctx.fill();
+      ctx.strokeStyle = WELL;
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    });
+
+    // ruler
+    const step = STEPS.find((s) => s * px >= 56) ?? STEPS[STEPS.length - 1];
+    ctx.fillStyle = DIM;
+    ctx.font = '500 10px "Barlow Semi Condensed", sans-serif';
+    ctx.textBaseline = "alphabetic";
+    for (let i = 0; i < states.length; i += step) {
+      const x = i * px + px / 2;
+      ctx.fillRect(Math.round(x), BAND_TOP + BAND_H + 1, 1, 3);
+      ctx.textAlign = i === 0 ? "left" : "center";
+      ctx.fillText(String(i), i === 0 ? 0 : x, HEIGHT - 2);
+    }
+
+    if (hover !== null && hover !== frame) {
+      ctx.fillStyle = "rgba(233, 231, 226, 0.25)";
+      ctx.fillRect(hover * px, BAND_TOP, Math.max(px, 1), BAND_H);
+    }
+
+    // playhead: a flag and a light line. Where frames are wide enough the line stops at the band and an outline
+    // takes over, so it never hides a keyframe diamond on the current frame.
+    const cx = frame * px + px / 2;
+    const wide = px >= 14;
+    ctx.fillStyle = INK;
+    if (wide) {
+      ctx.fillRect(cx - 1, 0, 2, BAND_TOP);
+      ctx.fillRect(cx - 1, BAND_TOP + BAND_H, 2, 4);
+      ctx.strokeStyle = INK;
+      ctx.lineWidth = 2;
+      ctx.strokeRect(frame * px + 1, BAND_TOP + 1, px - 2, BAND_H - 2);
+    } else {
+      ctx.fillRect(cx - 1, 0, 2, BAND_TOP + BAND_H + 4);
+    }
+    ctx.beginPath();
+    ctx.moveTo(cx - 5, 0);
+    ctx.lineTo(cx + 5, 0);
+    ctx.lineTo(cx, 6);
+    ctx.closePath();
+    ctx.fill();
+  }, [states, frame, width, color, hover, fontsReady]);
+
+  const at = (e: MouseEvent<HTMLCanvasElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
-    onSeek(frameAtX(e.clientX - rect.left, rect.width, states.length));
+    return frameAtX(e.clientX - rect.left, rect.width, states.length);
   };
 
+  const px = states.length > 0 ? width / states.length : 0;
+  const tipLeft = hover === null ? 0 : Math.max(0, Math.min(width - THUMB_W, hover * px + px / 2 - THUMB_W / 2));
+
   return (
-    <div ref={wrap} className="w-full select-none">
+    <div ref={wrap} className="relative w-full select-none">
       <canvas
         ref={canvas}
         aria-label="Timeline"
         className="block w-full cursor-pointer"
         style={{ height: HEIGHT }}
         onMouseDown={(e) => {
-          if (e.button === 0) seek(e);
+          if (e.button === 0) onSeek(at(e));
         }}
         onMouseMove={(e) => {
-          if (e.buttons & 1) seek(e);
+          const f = at(e);
+          setHover(f);
+          if (e.buttons & 1) onSeek(f);
         }}
+        onMouseLeave={() => setHover(null)}
       />
-      <div className="mt-1 flex gap-4 text-xs text-neutral-400">
-        {LEGEND.map(([state, label]) => (
-          <span key={state} className="flex items-center gap-1">
-            <span className="inline-block h-2 w-3" style={{ background: COLORS[state] }} />
-            {label}
-          </span>
-        ))}
-      </div>
+      {hover !== null && states.length > 0 && (
+        <div className="pointer-events-none absolute z-10 overflow-hidden rounded border border-line bg-well shadow-lg"
+          style={{ left: tipLeft, bottom: HEIGHT + 6, width: THUMB_W }}>
+          {thumb !== undefined && (
+            <img src={thumb.url(hover)} alt="" className="block w-full bg-well object-contain" style={{ aspectRatio: thumb.aspect }} />
+          )}
+          <p className="flex justify-between px-1.5 py-0.5 font-cond text-xs">
+            <span>{`frame ${hover}`}</span>
+            <span className="text-dim">{WORDS[states[hover] ?? "empty"]}</span>
+          </p>
+        </div>
+      )}
     </div>
   );
 }

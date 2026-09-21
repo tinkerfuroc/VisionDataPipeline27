@@ -4,17 +4,16 @@ import type { Tool } from "../lib/promptState";
 
 type Props = { prompting: Prompting; disabledReason: string | null };
 
-const TOOLS: [Tool, string, string][] = [
-  ["clicks", "Click", "Left click = include, right click = exclude. Each click refreshes the preview."],
-  ["box", "Box", "Drag a box around the object, then refine with clicks."],
-  ["text", "Text", "Describe the object, then pick one of the numbered candidates."],
-];
-const base = "rounded px-3 py-1 text-sm disabled:opacity-40";
+// The tools themselves live in the ToolRail beside the frame; this panel is what the chosen tool needs.
+const HINTS: Record<Tool, string> = {
+  clicks: "Left-click the object to include it, right-click to exclude. Every click updates the preview.",
+  box: "Drag a box around the object. Add clicks afterwards to refine it.",
+  text: "Describe the object, then choose one of the numbered candidates.",
+};
 
 export function PromptPanel({ prompting, disabledReason }: Props) {
   const { draft, dispatch, candidates, busy, error, canAccept, accept, clear } = prompting;
   const disabled = disabledReason !== null;
-  const hint = TOOLS.find(([tool]) => tool === draft.tool)?.[2];
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
@@ -22,25 +21,15 @@ export function PromptPanel({ prompting, disabledReason }: Props) {
   };
 
   return (
-    <section className="flex flex-col gap-2 text-sm">
-      <h2 className="font-semibold">Prompt</h2>
-      <div className="flex gap-1">
-        {TOOLS.map(([tool, label]) => (
-          <button key={tool} type="button" disabled={disabled} aria-pressed={draft.tool === tool}
-            className={`${base} ${draft.tool === tool ? "bg-sky-700" : "bg-neutral-700"}`}
-            onClick={() => dispatch({ type: "tool", tool })}>
-            {label}
-          </button>
-        ))}
-      </div>
-      {disabled ? <p className="text-xs text-amber-400">{disabledReason}</p> : <p className="text-xs text-neutral-400">{hint}</p>}
+    <section className="flex flex-col gap-2">
+      <h2 className="heading">Prompt</h2>
+      {disabled ? <p className="note text-ink">{disabledReason}</p> : <p className="note">{HINTS[draft.tool]}</p>}
 
       {draft.tool === "text" && (
         <form className="flex gap-1" onSubmit={submit}>
-          <input aria-label="Text prompt" disabled={disabled} value={draft.phrase} placeholder="e.g. red connector"
-            className="min-w-0 flex-1 rounded border border-neutral-600 bg-neutral-800 px-2 py-1"
-            onChange={(e) => dispatch({ type: "phrase", phrase: e.target.value })} />
-          <button type="submit" disabled={disabled || draft.phrase.trim() === ""} className={`${base} bg-neutral-700`}>Find</button>
+          <input aria-label="Text prompt" disabled={disabled} value={draft.phrase} placeholder="red connector"
+            className="field flex-1" onChange={(e) => dispatch({ type: "phrase", phrase: e.target.value })} />
+          <button type="submit" disabled={disabled || draft.phrase.trim() === ""} className="btn">Find</button>
         </form>
       )}
 
@@ -49,24 +38,33 @@ export function PromptPanel({ prompting, disabledReason }: Props) {
           {candidates.map((c, i) => (
             <li key={i}>
               <button type="button" aria-pressed={draft.candidate === i}
-                className={`${base} w-full text-left ${draft.candidate === i ? "bg-amber-600" : "bg-neutral-700"}`}
+                className={`btn w-full justify-start gap-3 ${draft.candidate === i ? "btn-on" : ""}`}
                 onClick={() => dispatch({ type: "candidate", index: i })}>
-                {i + 1} · score {c.score.toFixed(2)} · {c.area} px
+                <span className="w-4 text-center font-semibold">{i + 1}</span>
+                <span>score {c.score.toFixed(2)}</span>
+                <span className="ml-auto opacity-70">{c.area} px</span>
               </button>
             </li>
           ))}
         </ul>
       )}
       {candidates.length === 1 && (
-        <p className="text-xs text-neutral-400">Preview: {candidates[0].area} px, score {candidates[0].score.toFixed(2)}</p>
+        <p className="note">Preview covers {candidates[0].area} px, score {candidates[0].score.toFixed(2)}.</p>
       )}
-      {busy && <p className="text-xs text-neutral-400">Predicting…</p>}
-      {error !== null && <p role="alert" className="text-xs text-red-400">{error}</p>}
+      {busy && <p className="note">Predicting…</p>}
+      {error !== null && <p role="alert" className="text-xs text-danger">{error}</p>}
 
       <div className="flex gap-1">
-        <button type="button" disabled={!canAccept} className={`${base} bg-emerald-700`} onClick={() => void accept()}>Accept (Enter)</button>
-        <button type="button" disabled={disabled} className={`${base} bg-neutral-700`} onClick={clear}>Clear (Esc)</button>
-        <button type="button" disabled={disabled} className={`${base} bg-neutral-700`} onClick={() => dispatch({ type: "undo" })}>Undo (Z)</button>
+        <button type="button" disabled={!canAccept} aria-keyshortcuts="Enter"
+          className={`btn flex-1 ${canAccept ? "btn-on" : ""}`} onClick={() => void accept()}>
+          Accept <kbd aria-hidden>Enter</kbd>
+        </button>
+        <button type="button" disabled={disabled} aria-keyshortcuts="Escape" className="btn" onClick={clear}>
+          Clear <kbd aria-hidden>Esc</kbd>
+        </button>
+        <button type="button" disabled={disabled} aria-keyshortcuts="Z" className="btn" onClick={() => dispatch({ type: "undo" })}>
+          Undo <kbd aria-hidden>Z</kbd>
+        </button>
       </div>
     </section>
   );

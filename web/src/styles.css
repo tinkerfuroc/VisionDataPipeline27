@@ -7,3 +7,90 @@ body,
 #root {
   height: 100%;
 }
+
+@layer base {
+  html {
+    color-scheme: dark; /* native selects, spinners and scrollbars follow the chrome */
+    scrollbar-color: theme("colors.line") transparent;
+    scrollbar-width: thin;
+  }
+  input[type="checkbox"],
+  input[type="radio"] {
+    accent-color: theme("colors.ink"); /* the browser default is blue; the chrome has no hue */
+  }
+  body {
+    @apply bg-surround font-sans text-ink antialiased;
+    font-variant-numeric: tabular-nums;
+  }
+  :focus-visible {
+    outline: 2px solid theme("colors.ink");
+    outline-offset: 2px;
+  }
+  kbd {
+    @apply rounded-sm border border-line px-1 font-cond text-[11px] font-medium leading-4 text-dim;
+  }
+  progress {
+    @apply h-1 w-full appearance-none overflow-hidden rounded-full border-0 bg-line;
+  }
+  progress::-webkit-progress-bar {
+    @apply bg-line;
+  }
+  progress::-webkit-progress-value {
+    @apply bg-ink;
+  }
+  progress::-moz-progress-bar {
+    @apply bg-ink;
+  }
+  summary {
+    @apply cursor-pointer select-none;
+  }
+}
+
+@layer components {
+  .btn {
+    @apply inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded bg-raise px-2.5 py-1 font-cond text-sm font-medium text-ink;
+  }
+  .btn:hover:not(:disabled) {
+    @apply bg-lift;
+  }
+  .btn:disabled {
+    @apply cursor-not-allowed opacity-40;
+  }
+  /* selected / primary: an inverted light chip, never an accent hue (class colours already span the hue wheel) */
+  .btn-on,
+  .btn-on:hover:not(:disabled) {
+    @apply bg-ink text-well;
+  }
+  .btn-on kbd {
+    @apply border-well/40 text-well/70;
+  }
+  .btn-danger {
+    @apply bg-transparent text-danger ring-1 ring-inset ring-danger/60;
+  }
+  .btn-danger:hover:not(:disabled) {
+    @apply bg-danger/10;
+  }
+  .field {
+    @apply min-w-0 rounded border border-line bg-well px-2 py-1 text-sm text-ink placeholder:text-dim/70;
+  }
+  .heading {
+    @apply font-cond text-[15px] font-semibold text-ink;
+  }
+  .note {
+    @apply text-xs leading-snug text-dim;
+  }
+  .alert {
+    @apply border-l-2 border-danger bg-well px-3 py-2 text-sm text-ink;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

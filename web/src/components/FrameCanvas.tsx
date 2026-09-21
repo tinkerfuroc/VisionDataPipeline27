@@ -25,6 +25,8 @@ type Props = {
   onPoint: (x: number, y: number, label: 0 | 1) => void;
   onBox: (box: Box) => void;
   onPickCandidate: (index: number) => void;
+  /** bump to fit the frame to the view again (the Fit button lives in the tool rail) */
+  fitSignal?: number;
 };
 
 const DRAG_PX = 4;
@@ -39,7 +41,7 @@ type LayerState = { owner: Candidate[] | null; items: (HTMLCanvasElement | null)
 type Drag = { button: number; sx: number; sy: number; ix: number; iy: number; lastX: number; lastY: number; moved: boolean };
 
 export function FrameCanvas(props: Props) {
-  const { store, width, height, frameUrl, maskUrl, color, tool, candidates, onPoint, onBox, onPickCandidate } = props;
+  const { store, width, height, frameUrl, maskUrl, color, tool, candidates, onPoint, onBox, onPickCandidate, fitSignal } = props;
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const size = useRef({ w: 0, h: 0 });
@@ -93,11 +95,11 @@ export function FrameCanvas(props: Props) {
     ctx.restore();
 
     if (!assets.current.frame) {
-      ctx.fillStyle = "#a3a3a3";
-      ctx.font = "14px sans-serif";
+      ctx.fillStyle = "#A3A5AA";
+      ctx.font = "14px Barlow, sans-serif";
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
-      ctx.fillText("frame could not be loaded", size.current.w / 2, size.current.h / 2);
+      ctx.fillText("This frame could not be loaded", size.current.w / 2, size.current.h / 2);
       ctx.textAlign = "start";
       ctx.textBaseline = "alphabetic";
     }
@@ -157,6 +159,13 @@ export function FrameCanvas(props: Props) {
     refit();
     return () => observer.disconnect();
   }, [refit]);
+
+  const fitted = useRef(fitSignal);
+  useEffect(() => {
+    if (fitted.current === fitSignal) return;
+    fitted.current = fitSignal;
+    refit();
+  }, [fitSignal, refit]);
 
   // Swap the frame and its mask in together so the overlay never shows on the wrong frame.
   useEffect(() => {
@@ -258,7 +267,7 @@ export function FrameCanvas(props: Props) {
   };
 
   return (
-    <div ref={wrapRef} className="relative h-full w-full overflow-hidden bg-black">
+    <div ref={wrapRef} className="relative h-full w-full overflow-hidden bg-well">
       <canvas
         ref={canvasRef}
         aria-label="Frame"
@@ -270,9 +279,6 @@ export function FrameCanvas(props: Props) {
         onMouseLeave={() => endDrag(false)}
         onContextMenu={(e) => e.preventDefault()}
       />
-      <button type="button" className="absolute right-2 top-2 rounded bg-neutral-800/80 px-2 py-1 text-xs" onClick={refit}>
-        Fit
-      </button>
     </div>
   );
 }

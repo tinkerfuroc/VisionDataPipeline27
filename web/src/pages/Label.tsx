@@ -1,14 +1,16 @@
 import { useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { ApiError, INTERACTIVE, api, frameUrl, maskUrl, retryInteractive } from "../api/rest";
+import { ApiError, INTERACTIVE, api, frameUrl, maskUrl, retryInteractive, thumbUrl } from "../api/rest";
 import type { ClipDetail, Direction, JobEvent } from "../api/types";
+import { AppHeader } from "../components/AppHeader";
 import { CleanupPanel } from "../components/CleanupPanel";
-import { ClipInfo } from "../components/ClipInfo";
+import { ClipStats } from "../components/ClipStats";
 import { FrameCanvas } from "../components/FrameCanvas";
 import { ObjectPanel } from "../components/ObjectPanel";
 import { PromptPanel } from "../components/PromptPanel";
 import { PropagatePanel } from "../components/PropagatePanel";
 import { Timeline } from "../components/Timeline";
+import { ToolRail } from "../components/ToolRail";
 import { Transport } from "../components/Transport";
 import { useClip } from "../hooks/useClip";
 import { HealthContext, engineReady } from "../hooks/useHealth";
@@ -32,6 +34,7 @@ export function Label() {
   const [frame, setFrame] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [overlay, setOverlay] = useState(true);
+  const [fitSignal, setFitSignal] = useState(0);
   const [classId, setClassId] = useState<number | null>(null);
   const [jobId, setJobId] = useState<string | null>(() => sessionStorage.getItem(jobKey(clipId)));
   const [follow, setFollow] = useState(true);
@@ -155,9 +158,9 @@ export function Label() {
   const disabledReason = !engineReady(health)
     ? "The SAM3 engine is not loaded."
     : running
-      ? "A propagation is running — Stop it to prompt."
+      ? "A propagation is running. Stop it to prompt."
       : state === "deleted"
-        ? "This frame is deleted — restore it to label it."
+        ? "This frame is deleted. Restore it to label it."
         : playing
           ? "Pause playback to prompt."
           : null;
@@ -260,31 +263,56 @@ export function Label() {
     [detail, apply],
   );
 
+  const back = (
+    <Link to="/" aria-label="Back to clips" className="flex items-center gap-1 font-cond text-dim hover:text-ink">
+      <span aria-hidden>‹</span> Clips
+    </Link>
+  );
+
   if (clip.error !== null) {
     return (
-      <div className="p-4 text-sm">
-        <p role="alert" className="mb-2 rounded bg-red-900 px-3 py-2">{clip.error}</p>
-        <Link to="/" className="underline">Back to clips</Link>
+      <div className="flex h-full flex-col">
+        <AppHeader>{back}</AppHeader>
+        <div className="p-4">
+          <p role="alert" className="alert">{clip.error}</p>
+        </div>
       </div>
     );
   }
-  if (detail === null) return <p className="p-4 text-sm text-neutral-400">Loading…</p>;
+  if (detail === null) {
+    return (
+      <div className="flex h-full flex-col">
+        <AppHeader>{back}</AppHeader>
+        <p className="p-4 text-sm text-dim">Loading the clip…</p>
+      </div>
+    );
+  }
 
   const propagateBlocked = !engineReady(health)
     ? "The SAM3 engine is not loaded."
     : state !== "keyframe"
-      ? "Go to a keyframe (K) to propagate from it."
+      ? "Go to a keyframe (press K) to propagate from it."
       : null;
   const { draft, dispatch } = prompting;
+  const { source, width, height, stride } = detail.clip;
 
   return (
     <div className="flex h-full flex-col">
+      <AppHeader>
+        {back}
+        <h1 className="truncate font-medium">{source.name}</h1>
+        <span className="hidden shrink-0 font-cond text-dim sm:inline">
+          {width}×{height}, {fps} fps{stride > 1 ? `, every ${stride} frames` : ""}
+        </span>
+      </AppHeader>
       <div className="flex min-h-0 flex-1">
+        <ToolRail tool={draft.tool} disabled={disabledReason !== null} onTool={(tool) => dispatch({ type: "tool", tool })}
+          onFit={() => setFitSignal((n) => n + 1)} />
         <div className="min-w-0 flex-1">
           <FrameCanvas
             store={store}
-            width={detail.clip.width}
-            height={detail.clip.height}
+            width={width}
+            height={height}
             frameUrl={frameUrl(clipId, frame)}
             maskUrl={overlay && hasMask(frame) ? maskUrl(clipId, frame, maskVersion(frame)) : null}
             color={color}
@@ -294,13 +322,12 @@ export function Label() {
             onPoint={(x, y, label) => dispatch({ type: "point", x, y, label })}
             onBox={(box) => dispatch({ type: "box", box })}
             onPickCandidate={(index) => dispatch({ type: "candidate", index })}
+            fitSignal={fitSignal}
           />
         </div>
-        <aside className="flex w-80 flex-col gap-4 overflow-y-auto border-l border-neutral-700 p-3">
-          <Link to="/" className="text-xs text-neutral-400 underline">← Back to clips</Link>
-          <ClipInfo detail={detail} />
+        <aside className="flex w-80 shrink-0 flex-col gap-5 overflow-y-auto border-l border-line bg-panel p-3">
           {clip.refreshError !== null && (
-            <p role="alert" className="rounded bg-red-900 px-2 py-1 text-xs">Could not refresh the clip: {clip.refreshError}</p>
+            <p role="alert" className="alert text-xs">Could not refresh the clip: {clip.refreshError}</p>
           )}
           <ObjectPanel detail={detail} classId={classId} onClassId={setClassId} onAddClass={addClass} />
           <PromptPanel prompting={prompting} disabledReason={disabledReason} />
@@ -328,21 +355,29 @@ export function Label() {
           />
         </aside>
       </div>
-      <footer className="flex flex-col gap-2 border-t border-neutral-700 p-3">
-        <Transport
+      <footer className="flex flex-col gap-2 border-t border-line bg-panel px-3 pb-2 pt-2">
+        <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-1">
+          <Transport
+            frame={frame}
+            frameCount={frameCount}
+            playing={playing}
+            overlay={overlay}
+            name={detail.clip.original_names?.[String(frame)] ?? null}
+            onStep={step}
+            onTogglePlay={() => {
+              if (!running) setPlaying((p) => !p);
+            }}
+            onToggleOverlay={() => setOverlay((o) => !o)}
+          />
+          <ClipStats states={detail.states} color={color} />
+        </div>
+        <Timeline
+          states={detail.states}
           frame={frame}
-          frameCount={frameCount}
-          fps={fps}
-          playing={playing}
-          overlay={overlay}
-          name={detail.clip.original_names?.[String(frame)] ?? null}
-          onStep={step}
-          onTogglePlay={() => {
-            if (!running) setPlaying((p) => !p);
-          }}
-          onToggleOverlay={() => setOverlay((o) => !o)}
+          color={color}
+          thumb={{ url: (i) => thumbUrl(clipId, i), aspect: width / height }}
+          onSeek={seek}
         />
-        <Timeline states={detail.states} frame={frame} onSeek={seek} />
       </footer>
     </div>
   );

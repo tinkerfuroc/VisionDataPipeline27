@@ -2,11 +2,10 @@ import { useCallback, useEffect, useRef, useState, type FormEvent } from "react"
 import { Link } from "react-router-dom";
 import { api, thumbUrl } from "../api/rest";
 import type { ClipSummary, Project } from "../api/types";
+import { AppHeader } from "../components/AppHeader";
 import { ImportJobRow } from "../components/ImportJobRow";
 
 const PROJECT_KEY = "vsp.project";
-const input = "rounded border border-neutral-600 bg-neutral-800 px-2 py-1 text-sm";
-const button = "rounded bg-sky-700 px-3 py-1 text-sm hover:bg-sky-600 disabled:opacity-40";
 
 function percentLabeled(c: ClipSummary): number {
   const live = c.frame_count - c.deleted_frames.length;
@@ -132,18 +131,12 @@ export function Clips() {
   };
 
   return (
-    <div className="mx-auto flex h-full max-w-6xl flex-col gap-6 overflow-y-auto p-4">
-      {error !== null && (
-        <p role="alert" className="rounded bg-red-900 px-3 py-2 text-sm">
-          {error}
-        </p>
-      )}
-
-      <section className="flex flex-wrap items-end gap-3">
-        <label className="flex flex-col text-xs text-neutral-400">
+    <div className="flex h-full flex-col">
+      <AppHeader>
+        <label className="flex items-center gap-2 font-cond text-dim">
           Project
-          <select aria-label="Project" className={input} value={projectId ?? ""} onChange={(e) => setProjectId(e.target.value || null)}>
-            {projects.length === 0 && <option value="">(none yet)</option>}
+          <select aria-label="Project" className="field py-0.5" value={projectId ?? ""} onChange={(e) => setProjectId(e.target.value || null)}>
+            {projects.length === 0 && <option value="">None yet</option>}
             {projects.map((p) => (
               <option key={p.id} value={p.id}>
                 {p.name}
@@ -151,100 +144,115 @@ export function Clips() {
             ))}
           </select>
         </label>
-        <form className="flex items-end gap-2" onSubmit={createProject}>
-          <input aria-label="New project name" className={input} placeholder="New project name" value={projectName}
+        <form className="flex items-center gap-1" onSubmit={createProject}>
+          <input aria-label="New project name" className="field w-44 py-0.5" placeholder="New project name" value={projectName}
             onChange={(e) => setProjectName(e.target.value)} />
-          <button type="submit" className={button} disabled={pending}>Create project</button>
+          <button type="submit" className="btn py-0.5" disabled={pending}>Create project</button>
         </form>
-      </section>
+      </AppHeader>
 
-      {project !== null && (
-        <>
-          <section>
-            <h2 className="mb-2 text-sm font-semibold text-neutral-300">Classes</h2>
-            <div className="flex flex-wrap items-center gap-2">
-              {project.classes.map((c) => (
-                <span key={c.id} className="flex items-center gap-1 rounded bg-neutral-800 px-2 py-1 text-sm">
-                  <span className="inline-block h-3 w-3 rounded-full" style={{ background: c.color }} />
-                  {c.name}
-                </span>
-              ))}
-              <form className="flex items-center gap-2" onSubmit={addClass}>
-                <input aria-label="New class name" className={input} placeholder="New class name" value={className}
+      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto md:flex-row md:overflow-hidden">
+        {project !== null && (
+          <aside className="flex shrink-0 flex-col gap-5 border-b border-line bg-panel p-3 md:w-80 md:overflow-y-auto md:border-b-0 md:border-r">
+            <section className="flex flex-col gap-2">
+              <h2 className="heading">Classes</h2>
+              {project.classes.length > 0 && (
+                <ul className="flex flex-wrap gap-x-3 gap-y-1 text-sm">
+                  {project.classes.map((c) => (
+                    <li key={c.id} className="flex items-center gap-1.5">
+                      <span aria-hidden className="inline-block h-3 w-3 rounded-sm" style={{ background: c.color }} />
+                      {c.name}
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <form className="flex gap-1" onSubmit={addClass}>
+                <input aria-label="New class name" className="field flex-1" placeholder="New class name" value={className}
                   onChange={(e) => setClassName(e.target.value)} />
-                <button type="submit" className={button} disabled={pending}>Add class</button>
+                <button type="submit" className="btn" disabled={pending}>Add class</button>
               </form>
-            </div>
-          </section>
+              <p className="note">A class is what you label, such as a connector. Each gets its own mask colour.</p>
+            </section>
 
-          <section className="grid gap-4 md:grid-cols-2">
-            <form className="flex flex-col gap-2 rounded border border-neutral-700 p-3" onSubmit={importVideo}>
-              <h2 className="text-sm font-semibold text-neutral-300">Import video</h2>
-              <input key={videoInputKey} aria-label="Video file" type="file" accept="video/*,.mp4,.mov,.avi,.mkv" className="text-sm"
-                onChange={(e) => setVideo(e.target.files?.[0] ?? null)} />
-              <label className="flex items-center gap-2 text-xs text-neutral-400">
+            <form className="flex flex-col gap-2" onSubmit={importVideo}>
+              <h2 className="heading">Import a video</h2>
+              <input key={videoInputKey} aria-label="Video file" type="file" accept="video/*,.mp4,.mov,.avi,.mkv"
+                className="text-sm text-dim file:btn file:mr-2 file:border-0" onChange={(e) => setVideo(e.target.files?.[0] ?? null)} />
+              <label className="flex items-center justify-between gap-2 text-sm text-dim">
                 Keep every Nth frame
-                <input aria-label="Video stride" type="number" min={1} className={`${input} w-20`} value={videoStride}
+                <input aria-label="Video stride" type="number" min={1} className="field w-16" value={videoStride}
                   onChange={(e) => setVideoStride(Math.max(1, Number(e.target.value) || 1))} />
               </label>
-              <button type="submit" className={button} disabled={video === null || pending}>Import video</button>
+              <button type="submit" className="btn" disabled={video === null || pending}>Import video</button>
             </form>
 
-            <form className="flex flex-col gap-2 rounded border border-neutral-700 p-3" onSubmit={importFrames}>
-              <h2 className="text-sm font-semibold text-neutral-300">Import frame directory</h2>
-              <input aria-label="Frame directory" className={input} placeholder="~/footage/run1 (a path on the server)"
-                value={dirPath} onChange={(e) => setDirPath(e.target.value)} />
-              <div className="flex gap-4 text-xs text-neutral-400">
-                <label className="flex items-center gap-2">
-                  fps
-                  <input aria-label="Frame directory fps" type="number" min={1} step="any" className={`${input} w-20`}
-                    value={dirFps} onChange={(e) => setDirFps(Math.max(1, Number(e.target.value) || 30))} />
-                </label>
-                <label className="flex items-center gap-2">
-                  Keep every Nth frame
-                  <input aria-label="Frame directory stride" type="number" min={1} className={`${input} w-20`}
-                    value={dirStride} onChange={(e) => setDirStride(Math.max(1, Number(e.target.value) || 1))} />
-                </label>
-              </div>
-              <button type="submit" className={button} disabled={dirPath.trim() === "" || pending}>Import frames</button>
+            <form className="flex flex-col gap-2" onSubmit={importFrames}>
+              <h2 className="heading">Import a folder of frames</h2>
+              <input aria-label="Frame directory" className="field" placeholder="~/footage/run1" value={dirPath}
+                onChange={(e) => setDirPath(e.target.value)} />
+              <p className="note">A path on the server. Frames are read in numeric file-name order.</p>
+              <label className="flex items-center justify-between gap-2 text-sm text-dim">
+                Frames per second
+                <input aria-label="Frame directory fps" type="number" min={1} step="any" className="field w-16"
+                  value={dirFps} onChange={(e) => setDirFps(Math.max(1, Number(e.target.value) || 30))} />
+              </label>
+              <label className="flex items-center justify-between gap-2 text-sm text-dim">
+                Keep every Nth frame
+                <input aria-label="Frame directory stride" type="number" min={1} className="field w-16"
+                  value={dirStride} onChange={(e) => setDirStride(Math.max(1, Number(e.target.value) || 1))} />
+              </label>
+              <button type="submit" className="btn" disabled={dirPath.trim() === "" || pending}>Import frames</button>
             </form>
-          </section>
+          </aside>
+        )}
+
+        <div className="flex min-w-0 flex-1 flex-col gap-4 p-4 md:overflow-y-auto">
+          {error !== null && (
+            <p role="alert" className="alert">
+              {error}
+            </p>
+          )}
+          {project === null && <p className="text-sm text-dim">Name a project in the bar above to start labelling.</p>}
 
           {imports.length > 0 && (
-            <ul className="flex flex-col gap-2">
+            <ul className="flex flex-col gap-1">
               {imports.map((j) => (
                 <ImportJobRow key={j.id} jobId={j.id} label={j.label} onFinished={finished} onDismiss={dismiss} />
               ))}
             </ul>
           )}
 
-          <section>
-            <h2 className="mb-2 text-sm font-semibold text-neutral-300">Clips</h2>
-            {clips.length === 0 && <p className="text-sm text-neutral-400">No clips yet — import a video or a frame directory.</p>}
-            <ul className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-              {clips.map((c) => (
-                <li key={c.id} className="overflow-hidden rounded border border-neutral-700 bg-neutral-800">
-                  <img src={thumbUrl(c.id, 0)} alt="" className="aspect-video w-full bg-black object-contain" />
-                  <div className="flex flex-col gap-1 p-3 text-sm">
-                    <span className="truncate font-medium">{c.source.name}</span>
-                    <span className="text-xs text-neutral-400">
-                      {c.frame_count} frames · {c.width}×{c.height} · {c.fps} fps · {percentLabeled(c)}% labeled
-                    </span>
-                    <div className="mt-1 flex gap-2">
-                      <Link to={`/clips/${c.id}`} className={button}>Open</Link>
-                      <button type="button" aria-label="Delete clip" disabled={pending}
-                        className="rounded bg-neutral-700 px-3 py-1 text-sm hover:bg-red-800 disabled:opacity-40"
-                        onClick={() => deleteClip(c)}>
-                        Delete
-                      </button>
+          {project !== null && (
+            <section>
+              <h1 className="mb-3 font-cond text-xl font-semibold">Clips</h1>
+              {clips.length === 0 && (
+                <p className="text-sm text-dim">This project has no clips yet. Import a video or a folder of frames to add one.</p>
+              )}
+              <ul className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+                {clips.map((c) => (
+                  <li key={c.id} className="overflow-hidden rounded border border-line bg-panel">
+                    <img src={thumbUrl(c.id, 0)} alt="" className="aspect-video w-full bg-well object-contain" />
+                    <progress aria-label="Labeled" className="block h-0.5 rounded-none" value={percentLabeled(c)} max={100} />
+                    <div className="flex flex-col gap-1 p-3 text-sm">
+                      <span className="truncate font-medium">{c.source.name}</span>
+                      <span className="font-cond text-dim">
+                        {c.frame_count} frames, {c.width}×{c.height}, {c.fps} fps, {percentLabeled(c)}% labeled
+                      </span>
+                      <div className="mt-1 flex gap-1">
+                        <Link to={`/clips/${c.id}`} className="btn btn-on flex-1">Open</Link>
+                        <button type="button" aria-label="Delete clip" disabled={pending} className="btn hover:text-danger"
+                          onClick={() => deleteClip(c)}>
+                          Delete
+                        </button>
+                      </div>
                     </div>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          </section>
-        </>
-      )}
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

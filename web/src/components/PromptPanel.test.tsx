@@ -11,14 +11,8 @@ const prompting = (over: Partial<Prompting> = {}): Prompting => ({
 });
 afterEach(cleanup);
 
+// The tool buttons (and their assertions) live in ToolRail.
 describe("PromptPanel", () => {
-  it("switches tools", () => {
-    const p = prompting();
-    render(<PromptPanel prompting={p} disabledReason={null} />);
-    expect(screen.getByRole("button", { name: "Click" }).getAttribute("aria-pressed")).toBe("true");
-    fireEvent.click(screen.getByRole("button", { name: "Box" }));
-    expect(p.dispatch).toHaveBeenCalledWith({ type: "tool", tool: "box" });
-  });
   it("submits a text phrase with the form", () => {
     const p = prompting({ draft: { ...emptyDraft("text"), phrase: "bolt" } });
     render(<PromptPanel prompting={p} disabledReason={null} />);
@@ -31,7 +25,7 @@ describe("PromptPanel", () => {
     const c = { score: 0.91, bbox: [0, 0, 9, 9] as [number, number, number, number], area: 1234, phrase: "bolt", mask_png_b64: "" };
     const p = prompting({ draft: { ...emptyDraft("text"), query: "bolt" }, candidates: [c, { ...c, score: 0.5 }], canAccept: true });
     render(<PromptPanel prompting={p} disabledReason={null} />);
-    fireEvent.click(screen.getByRole("button", { name: /^2 ·/ }));
+    fireEvent.click(screen.getByRole("button", { name: /^2 score/ }));
     expect(p.dispatch).toHaveBeenCalledWith({ type: "candidate", index: 1 });
   });
   it("enables Accept only when there is something to accept, and wires Accept / Clear / Undo", () => {
@@ -51,6 +45,5 @@ describe("PromptPanel", () => {
     render(<PromptPanel prompting={prompting({ error: "No usable mask" })} disabledReason="This frame is deleted." />);
     expect(screen.getByText("This frame is deleted.")).toBeTruthy();
     expect(screen.getByRole("alert").textContent).toBe("No usable mask");
-    expect((screen.getByRole("button", { name: "Click" }) as HTMLButtonElement).disabled).toBe(true);
   });
 });

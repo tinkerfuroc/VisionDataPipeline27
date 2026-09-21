@@ -19,7 +19,7 @@ afterEach(() => {
 describe("Timeline", () => {
   it("seeks on click and while dragging with the left button held", () => {
     const onSeek = vi.fn();
-    render(<Timeline states={states} frame={0} onSeek={onSeek} />);
+    render(<Timeline states={states} frame={0} color="#e6194b" onSeek={onSeek} />);
     const strip = screen.getByLabelText("Timeline");
     fireEvent.mouseDown(strip, { clientX: 65, button: 0, buttons: 1 });
     expect(onSeek).toHaveBeenLastCalledWith(5);
@@ -28,8 +28,20 @@ describe("Timeline", () => {
     fireEvent.mouseMove(strip, { clientX: 20, buttons: 0 });
     expect(onSeek).toHaveBeenCalledTimes(2);
   });
+  it("shows the hovered frame, its state and its thumbnail, and hides them again on leave", () => {
+    const { container } = render(
+      <Timeline states={states} frame={0} color="#e6194b" thumb={{ url: (i) => `/thumb/${i}`, aspect: 4 / 3 }} onSeek={() => {}} />,
+    );
+    const strip = screen.getByLabelText("Timeline");
+    fireEvent.mouseMove(strip, { clientX: 75, buttons: 0 });
+    expect(screen.getByText("frame 6")).toBeTruthy();
+    expect(screen.getByText("deleted")).toBeTruthy();
+    expect(container.querySelector("img")?.getAttribute("src")).toBe("/thumb/6");
+    fireEvent.mouseLeave(strip);
+    expect(screen.queryByText("frame 6")).toBeNull();
+  });
   it("is found by its label (it cannot be operated by keyboard — the global arrow-key shortcuts cover seeking)", () => {
-    render(<Timeline states={states} frame={4} onSeek={() => {}} />);
+    render(<Timeline states={states} frame={4} color="#e6194b" onSeek={() => {}} />);
     expect(screen.getByLabelText("Timeline")).toBeTruthy();
   });
 });

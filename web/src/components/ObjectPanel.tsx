@@ -8,8 +8,6 @@ type Props = {
   onAddClass: (name: string) => Promise<void>;
 };
 
-const field = "min-w-0 flex-1 rounded border border-neutral-600 bg-neutral-800 px-2 py-1";
-
 export function ObjectPanel({ detail, classId, onClassId, onAddClass }: Props) {
   const [name, setName] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -24,22 +22,27 @@ export function ObjectPanel({ detail, classId, onClassId, onAddClass }: Props) {
     onAddClass(trimmed).then(() => setName(""), (err: unknown) => setError(err instanceof Error ? err.message : String(err)));
   };
 
+  const color = detail.classes.find((c) => c.id === classId)?.color ?? null;
+
   return (
-    <section className="flex flex-col gap-2 text-sm">
-      <h2 className="font-semibold">Object</h2>
-      <select aria-label="Class" className={field} value={classId ?? ""} onChange={(e) => onClassId(Number(e.target.value))}>
-        {classId === null && <option value="">(choose a class)</option>}
-        {detail.classes.map((c) => (
-          <option key={c.id} value={c.id}>{c.name}</option>
-        ))}
-      </select>
+    <section className="flex flex-col gap-2">
+      <h2 className="heading">Object</h2>
+      <div className="flex items-center gap-2">
+        <span aria-hidden className="h-4 w-4 shrink-0 rounded-sm border border-line" style={{ background: color ?? "transparent" }} />
+        <select aria-label="Class" className="field flex-1" value={classId ?? ""} onChange={(e) => onClassId(Number(e.target.value))}>
+          {classId === null && <option value="">Choose a class</option>}
+          {detail.classes.map((c) => (
+            <option key={c.id} value={c.id}>{c.name}</option>
+          ))}
+        </select>
+      </div>
       <form className="flex gap-1" onSubmit={add}>
-        <input aria-label="New class" className={field} placeholder="New class" value={name} onChange={(e) => setName(e.target.value)} />
-        <button type="submit" className="rounded bg-neutral-700 px-3 py-1">Add</button>
+        <input aria-label="New class" className="field flex-1" placeholder="New class" value={name} onChange={(e) => setName(e.target.value)} />
+        <button type="submit" className="btn">Add</button>
       </form>
-      {pending && <p className="text-xs text-amber-400">The new class is applied with the next Accept.</p>}
-      {object === null && <p className="text-xs text-neutral-400">No object yet — prompt on any frame and accept the mask.</p>}
-      {error !== null && <p role="alert" className="text-xs text-red-400">{error}</p>}
+      {pending && <p className="note text-ink">The object changes class when you next accept a mask.</p>}
+      {object === null && <p className="note">Nothing is labelled yet. Prompt on any frame, then accept the mask.</p>}
+      {error !== null && <p role="alert" className="text-xs text-danger">{error}</p>}
     </section>
   );
 }
