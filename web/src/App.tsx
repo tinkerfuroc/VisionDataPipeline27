@@ -1,6 +1,7 @@
 import { Link, Route, Routes } from "react-router-dom";
 import { EngineBanner } from "./components/EngineBanner";
 import { HealthContext, useHealth } from "./hooks/useHealth";
+import { Clips } from "./pages/Clips";
 
 export function App() {
   const health = useHealth();
@@ -18,7 +19,7 @@ export function App() {
         <EngineBanner {...health} />
         <main className="min-h-0 flex-1">
           <Routes>
-            <Route path="/" element={<p className="p-4">Clips</p>} />
+            <Route path="/" element={<Clips />} />
             <Route path="/clips/:clipId" element={<p className="p-4">Label</p>} />
           </Routes>
         </main>
