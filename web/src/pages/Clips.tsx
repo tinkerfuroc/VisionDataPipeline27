@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 import { api, thumbUrl } from "../api/rest";
 import type { ClipSummary, Project } from "../api/types";
@@ -19,10 +19,12 @@ export function Clips() {
   const [clips, setClips] = useState<ClipSummary[]>([]);
   const [imports, setImports] = useState<{ id: string; label: string }[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [pending, setPending] = useState(false);
 
   const [projectName, setProjectName] = useState("");
   const [className, setClassName] = useState("");
   const [video, setVideo] = useState<File | null>(null);
+  const [videoInputKey, setVideoInputKey] = useState(0);
   const [videoStride, setVideoStride] = useState(1);
   const [dirPath, setDirPath] = useState("");
   const [dirFps, setDirFps] = useState(30);
@@ -36,10 +38,18 @@ export function Clips() {
     setProjectId((current) => (list.some((p) => p.id === current) ? current : (list[0]?.id ?? null)));
   }, []);
 
-  const loadClips = useCallback(async (pid: string) => setClips(await api.listClips(pid)), []);
+  // F1: a request counter guards against a slow response from a project we have since navigated away from.
+  const clipsSeq = useRef(0);
+  const loadClips = useCallback(async (pid: string) => {
+    const seq = ++clipsSeq.current;
+    const list = await api.listClips(pid);
+    if (seq === clipsSeq.current) setClips(list);
+  }, []);
 
   useEffect(() => {
-    loadProjects().catch(fail);
+    loadProjects()
+      .then(() => setError(null))
+      .catch(fail);
   }, [loadProjects, fail]);
 
   useEffect(() => {
@@ -48,15 +58,23 @@ export function Clips() {
       return;
     }
     localStorage.setItem(PROJECT_KEY, projectId);
-    loadClips(projectId).catch(fail);
+    setClips([]);
+    loadClips(projectId)
+      .then(() => setError(null))
+      .catch(fail);
   }, [projectId, loadClips, fail]);
 
   const project = projects.find((p) => p.id === projectId) ?? null;
 
+  // F2: a single in-flight flag stops a double click (or click-while-pending) from starting a second request.
   const guarded = (fn: () => Promise<void>) => (e?: FormEvent) => {
     e?.preventDefault();
+    if (pending) return;
     setError(null);
-    fn().catch(fail);
+    setPending(true);
+    fn()
+      .catch(fail)
+      .finally(() => setPending(false));
   };
 
   const createProject = guarded(async () => {
@@ -81,6 +99,7 @@ export function Clips() {
     const { job_id } = await api.importVideo(project.id, video, videoStride);
     setImports((list) => [...list, { id: job_id, label: video.name }]);
     setVideo(null);
+    setVideoInputKey((k) => k + 1);
   });
 
   const importFrames = guarded(async () => {
@@ -88,6 +107,7 @@ export function Clips() {
     if (path === "" || project === null) return;
     const { job_id } = await api.importFrames(project.id, { path, fps: dirFps, stride: dirStride });
     setImports((list) => [...list, { id: job_id, label: path }]);
+    setDirPath("");
   });
 
   const dismiss = useCallback((jobId: string) => setImports((list) => list.filter((j) => j.id !== jobId)), []);
@@ -100,12 +120,16 @@ export function Clips() {
     [dismiss, projectId, loadClips, fail],
   );
 
-  const deleteClip = (clip: ClipSummary) =>
+  // window.confirm runs before guarded() touches `pending`, so a declined confirm never sets the
+  // in-flight lock (which, being cleared via a promise `finally`, could not clear in time for a second,
+  // synchronous click on the same button — e.g. decline once, then confirm).
+  const deleteClip = (clip: ClipSummary) => {
+    if (!window.confirm(`Delete "${clip.source.name}" and all of its masks?`)) return;
     guarded(async () => {
-      if (!window.confirm(`Delete "${clip.source.name}" and all of its masks?`)) return;
       await api.deleteClip(clip.id);
       if (projectId !== null) await loadClips(projectId);
     })();
+  };
 
   return (
     <div className="mx-auto flex h-full max-w-6xl flex-col gap-6 overflow-y-auto p-4">
@@ -130,7 +154,7 @@ export function Clips() {
         <form className="flex items-end gap-2" onSubmit={createProject}>
           <input aria-label="New project name" className={input} placeholder="New project name" value={projectName}
             onChange={(e) => setProjectName(e.target.value)} />
-          <button type="submit" className={button}>Create project</button>
+          <button type="submit" className={button} disabled={pending}>Create project</button>
         </form>
       </section>
 
@@ -148,7 +172,7 @@ export function Clips() {
               <form className="flex items-center gap-2" onSubmit={addClass}>
                 <input aria-label="New class name" className={input} placeholder="New class name" value={className}
                   onChange={(e) => setClassName(e.target.value)} />
-                <button type="submit" className={button}>Add class</button>
+                <button type="submit" className={button} disabled={pending}>Add class</button>
               </form>
             </div>
           </section>
@@ -156,14 +180,14 @@ export function Clips() {
           <section className="grid gap-4 md:grid-cols-2">
             <form className="flex flex-col gap-2 rounded border border-neutral-700 p-3" onSubmit={importVideo}>
               <h2 className="text-sm font-semibold text-neutral-300">Import video</h2>
-              <input aria-label="Video file" type="file" accept="video/*,.mp4,.mov,.avi,.mkv" className="text-sm"
+              <input key={videoInputKey} aria-label="Video file" type="file" accept="video/*,.mp4,.mov,.avi,.mkv" className="text-sm"
                 onChange={(e) => setVideo(e.target.files?.[0] ?? null)} />
               <label className="flex items-center gap-2 text-xs text-neutral-400">
                 Keep every Nth frame
                 <input aria-label="Video stride" type="number" min={1} className={`${input} w-20`} value={videoStride}
                   onChange={(e) => setVideoStride(Math.max(1, Number(e.target.value) || 1))} />
               </label>
-              <button type="submit" className={button} disabled={video === null}>Import video</button>
+              <button type="submit" className={button} disabled={video === null || pending}>Import video</button>
             </form>
 
             <form className="flex flex-col gap-2 rounded border border-neutral-700 p-3" onSubmit={importFrames}>
@@ -182,7 +206,7 @@ export function Clips() {
                     value={dirStride} onChange={(e) => setDirStride(Math.max(1, Number(e.target.value) || 1))} />
                 </label>
               </div>
-              <button type="submit" className={button} disabled={dirPath.trim() === ""}>Import frames</button>
+              <button type="submit" className={button} disabled={dirPath.trim() === "" || pending}>Import frames</button>
             </form>
           </section>
 
