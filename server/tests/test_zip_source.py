@@ -43,6 +43,11 @@ def test_frames_come_out_in_natural_order_across_folders(tmp_path):
     assert frames[0].image[0, 0, 0] == 1 and frames[0].src_path is None
 
 
+def test_an_explicit_name_overrides_the_temp_file_stem(tmp_path):
+    path = _zip(tmp_path / "5e1543bd_run.zip", {"frame_1.png": _png()})
+    assert ZipFrameSource(path, name="run").name == "run"
+
+
 def test_archive_junk_is_skipped(tmp_path):
     path = _zip(tmp_path / "run.zip", {
         "run/frame_1.png": _png(), "run/notes.txt": b"x", "run/": b"",

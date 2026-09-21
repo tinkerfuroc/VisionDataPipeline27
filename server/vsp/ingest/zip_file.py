@@ -46,10 +46,12 @@ class ZipFrameSource:
     type = "frame_dir"  # a zip is a directory of frames: same clip layout and semantics
 
     def __init__(
-        self, path: Path, fps: float = 30.0, *, max_entries: int = MAX_ENTRIES, max_bytes: int = MAX_BYTES
+        self, path: Path, fps: float = 30.0, *, name: str | None = None,
+        max_entries: int = MAX_ENTRIES, max_bytes: int = MAX_BYTES,
     ) -> None:
         self.path = Path(path)
-        self.name = self.path.stem or self.path.name
+        # `name` matters when the caller's file is a temp copy (`<uuid>_run.zip`); default to the stem.
+        self.name = name or self.path.stem or self.path.name
         self.fps = float(fps)
         try:
             with zipfile.ZipFile(self.path) as archive:
