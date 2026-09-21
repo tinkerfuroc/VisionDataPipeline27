@@ -24,7 +24,12 @@ dependencies = [
 ]
 
 [dependency-groups]
-dev = ["httpx>=0.27", "pytest>=8", "ruff>=0.6"]
+dev = [
+    "httpx>=0.27",
+    "pycocotools>=2.0.11",
+    "pytest>=8",
+    "ruff>=0.6",
+]
 
 [project.scripts]
 vsp = "vsp.cli:main"
