@@ -76,4 +76,6 @@ export type Health = {
   status: string;
   version: string;
   engine: { loaded: boolean; device: string | null; error: string | null };
+  /** Absent on an older server: the GUI then skips its own size check and lets the server refuse. */
+  upload?: { max_bytes: number };
 };

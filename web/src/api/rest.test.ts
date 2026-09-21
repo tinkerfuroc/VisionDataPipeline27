@@ -1,5 +1,5 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiError, api, detailText, maskUrl, request, retryInteractive } from "./rest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError, UploadCancelled, api, detailText, maskUrl, request, retryInteractive } from "./rest";
 import type { ExportRequest } from "./types";
 
 function mockFetch(...responses: Response[]) {
@@ -136,5 +136,66 @@ describe("api", () => {
     expect(url).toBe("/api/projects/p1/export");
     expect(init.method).toBe("POST");
     expect(JSON.parse(init.body)).toEqual(body);
+  });
+});
+
+class FakeXhr {
+  static last: FakeXhr | null = null;
+  upload: { onprogress: ((e: { lengthComputable: boolean; loaded: number; total: number }) => void) | null } = { onprogress: null };
+  onload: (() => void) | null = null;
+  onerror: (() => void) | null = null;
+  onabort: (() => void) | null = null;
+  status = 0;
+  statusText = "";
+  responseText = "";
+  method = "";
+  url = "";
+  headers: Record<string, string> = {};
+  sent: unknown = null;
+  aborted = false;
+  constructor() { FakeXhr.last = this; }
+  open(method: string, url: string) { this.method = method; this.url = url; }
+  setRequestHeader(k: string, v: string) { this.headers[k] = v; }
+  send(body: unknown) { this.sent = body; }
+  abort() { this.aborted = true; this.onabort?.(); }
+}
+
+describe("uploadClip", () => {
+  beforeEach(() => vi.stubGlobal("XMLHttpRequest", FakeXhr));
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("posts the raw file with the name, stride and fps in the query, and reports progress", async () => {
+    const progress: number[] = [];
+    const file = new File(["abc"], "bench footage.mp4");
+    const handle = api.uploadClip("p1", file, { stride: 2, fps: 30 }, (sent) => progress.push(sent));
+    const xhr = FakeXhr.last!;
+    expect(xhr.method).toBe("POST");
+    expect(xhr.url).toBe("/api/projects/p1/clips/upload?name=bench%20footage.mp4&stride=2&fps=30");
+    expect(xhr.headers["Content-Type"]).toBe("application/octet-stream");
+    expect(xhr.sent).toBe(file);
+    xhr.upload.onprogress!({ lengthComputable: true, loaded: 5, total: 10 });
+    xhr.status = 202;
+    xhr.responseText = JSON.stringify({ job_id: "j1" });
+    xhr.onload!();
+    expect(await handle.promise).toEqual({ job_id: "j1" });
+    expect(progress).toEqual([5]);
+  });
+
+  it("rejects with the server's detail and status", async () => {
+    const handle = api.uploadClip("p1", new File(["abc"], "x.mp4"), { stride: 1, fps: 30 });
+    const xhr = FakeXhr.last!;
+    xhr.status = 413;
+    xhr.statusText = "Payload Too Large";
+    xhr.responseText = JSON.stringify({ detail: "the upload is 100 bytes; the limit is 10" });
+    xhr.onload!();
+    await expect(handle.promise).rejects.toMatchObject({ status: 413, message: "the upload is 100 bytes; the limit is 10" });
+  });
+
+  it("rejects an aborted upload with UploadCancelled", async () => {
+    const handle = api.uploadClip("p1", new File(["abc"], "x.mp4"), { stride: 1, fps: 30 });
+    const xhr = FakeXhr.last!;
+    handle.abort();
+    expect(xhr.aborted).toBe(true);
+    await expect(handle.promise).rejects.toBeInstanceOf(UploadCancelled);
   });
 });
