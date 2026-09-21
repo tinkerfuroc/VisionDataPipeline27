@@ -1,0 +1,72 @@
+import { useEffect, useReducer, useRef, useState } from "react";
+import { ApiError, api, wsUrl } from "../api/rest";
+import type { JobEvent } from "../api/types";
+import { idleJob, isTerminal, jobReducer, type JobView } from "../lib/jobReducer";
+
+export type JobHandle = JobView & { transport: "ws" | "poll" };
+
+const POLL_MS = 1000;
+
+/** Follow one job: WebSocket events while the socket lives, status polling if it drops before the job ends. */
+export function useJob(jobId: string | null, onEvent?: (event: JobEvent) => void): JobHandle {
+  const [view, dispatch] = useReducer(jobReducer, idleJob);
+  const [transport, setTransport] = useState<"ws" | "poll">("ws");
+  const callback = useRef(onEvent);
+  callback.current = onEvent;
+
+  useEffect(() => {
+    dispatch({ type: "reset" });
+    setTransport("ws");
+    if (jobId === null) return;
+
+    let closed = false;
+    let finished = false;
+    let nextSeq = 0;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    const poll = async (): Promise<void> => {
+      if (closed || finished) return;
+      try {
+        const snapshot = await api.getJob(jobId);
+        if (closed) return;
+        dispatch({ type: "snapshot", snapshot });
+        if (isTerminal(snapshot.status)) {
+          finished = true;
+          return;
+        }
+      } catch (e) {
+        if (closed) return;
+        if (e instanceof ApiError && e.status === 404) {
+          finished = true;
+          const message = "the job no longer exists (was the server restarted?)";
+          dispatch({ type: "event", event: { seq: nextSeq, type: "error", message } });
+          return;
+        }
+      }
+      timer = setTimeout(() => void poll(), POLL_MS);
+    };
+
+    const ws = new WebSocket(wsUrl(`/ws/jobs/${jobId}`));
+    ws.onmessage = (m: MessageEvent) => {
+      const event = JSON.parse(String(m.data)) as JobEvent;
+      if (event.seq < nextSeq) return;
+      nextSeq = event.seq + 1;
+      if (event.type === "done" || event.type === "cancelled" || event.type === "error") finished = true;
+      dispatch({ type: "event", event });
+      callback.current?.(event);
+    };
+    ws.onclose = () => {
+      if (closed || finished) return;
+      setTransport("poll");
+      void poll();
+    };
+
+    return () => {
+      closed = true;
+      if (timer !== undefined) clearTimeout(timer);
+      ws.close();
+    };
+  }, [jobId]);
+
+  return { ...view, transport };
+}
