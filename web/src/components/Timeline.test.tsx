@@ -43,6 +43,20 @@ describe("Timeline", () => {
     expect(onSeek).toHaveBeenLastCalledWith(8);
     expect(onRange).toHaveBeenCalledTimes(2);
   });
+  it("scrubs normally after a Shift-drag that was released outside the strip", () => {
+    const onSeek = vi.fn();
+    const onRange = vi.fn();
+    render(<Timeline states={states} frame={0} color="#e6194b" onSeek={onSeek} onRange={onRange} />);
+    const strip = screen.getByLabelText("Timeline");
+    fireEvent.mouseDown(strip, { clientX: 65, button: 0, buttons: 1, shiftKey: true });
+    fireEvent.mouseLeave(strip); // the button is let go somewhere else: the strip never sees a mouseup
+    fireEvent.mouseUp(window);
+    onRange.mockClear();
+    fireEvent.mouseDown(strip, { clientX: 25, button: 0, buttons: 1 });
+    fireEvent.mouseMove(strip, { clientX: 95, buttons: 1 });
+    expect(onRange).not.toHaveBeenCalled();
+    expect(onSeek).toHaveBeenLastCalledWith(8);
+  });
   it("shows the hovered frame, its state and its thumbnail, and hides them again on leave", () => {
     const { container } = render(
       <Timeline states={states} frame={0} color="#e6194b" thumb={{ url: (i) => `/thumb/${i}`, aspect: 4 / 3 }} onSeek={() => {}} />,

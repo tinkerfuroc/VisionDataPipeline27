@@ -371,7 +371,21 @@ describe("Label page (propagation, cleanup, keyboard)", () => {
     expect(screen.getByText(/Removes 11 propagated masks/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Clear masks in frames 1 to 11" }));
     await waitFor(() => expect(api.clearRange).toHaveBeenCalledWith("c1", 1, 11));
-    expect(screen.getByRole("button", { name: "Clear masks in frame 11" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Clear masks in frame 11" })).toBeTruthy(); // unmarked on success
+  });
+
+  it("keeps the mark when clearing fails, so it can be retried", async () => {
+    vi.mocked(api.getClip).mockResolvedValue(detail);
+    vi.mocked(api.clearRange).mockRejectedValue(new Error("disk full"));
+    renderLabel();
+    await screen.findByText("bench.mp4");
+    fireEvent.keyDown(window, { key: "ArrowRight" });
+    fireEvent.keyDown(window, { key: "[" });
+    fireEvent.keyDown(window, { key: "ArrowRight" });
+    fireEvent.keyDown(window, { key: "]" });
+    fireEvent.click(screen.getByRole("button", { name: "Clear masks in frames 1 to 2" }));
+    expect(await screen.findByText(/disk full/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Clear masks in frames 1 to 2" })).toBeTruthy();
   });
 
   it("prunes after confirmation and clears a range", async () => {

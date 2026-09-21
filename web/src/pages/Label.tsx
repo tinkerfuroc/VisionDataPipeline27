@@ -194,8 +194,12 @@ export function Label() {
   }, [cleanup, clipId, frame]);
   const clearRange = useCallback(
     (start: number, end: number) => {
-      setRange(null); // the mark has done its job; the timeline shows the result
-      cleanup(api.clearRange(clipId, start, end), true);
+      // the mark goes only once the masks are gone, so a failed request can be retried without marking again
+      const cleared = api.clearRange(clipId, start, end).then((next) => {
+        setRange(null);
+        return next;
+      });
+      cleanup(cleared, true);
     },
     [cleanup, clipId],
   );

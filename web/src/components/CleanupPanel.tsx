@@ -22,14 +22,19 @@ export function CleanupPanel({ frame, states, range, clearBlockedReason, error, 
   const clampIndex = (v: string) => Math.max(0, Math.min(last, Math.floor(Number(v)) || 0));
   const [start, end] = range ?? [frame, frame];
   const valid = start <= end;
-  // what the button would actually remove: keyframes are kept, so only propagated masks count
-  const masks = valid ? states.slice(start, end + 1).filter((s) => s === "masked").length : 0;
+  // What the button would actually remove: keyframes are kept, so only propagated masks count. A deleted frame may
+  // still hold a mask (deleting only flags the frame) and the server clears those too, so they keep the button live.
+  const marked = valid ? states.slice(start, end + 1) : [];
+  const masks = marked.filter((s) => s === "masked").length;
+  const deleted = marked.filter((s) => s === "deleted").length;
   const where = start === end ? `frame ${start}` : `frames ${start} to ${end}`;
   const outcome = !valid
     ? "The first frame must not come after the last."
-    : masks === 0
+    : masks + deleted === 0
       ? `There are no propagated masks in ${where}.`
-      : `Removes ${masks} propagated ${masks === 1 ? "mask" : "masks"}. Keyframes are kept.`;
+      : `Removes ${masks} propagated ${masks === 1 ? "mask" : "masks"}${
+          deleted > 0 ? `, and any mask under the ${deleted} deleted ${deleted === 1 ? "frame" : "frames"}` : ""
+        }. Keyframes are kept.`;
 
   // The error sits outside the fold, because Del works (and can fail) while the panel is closed.
   return (
@@ -54,7 +59,7 @@ export function CleanupPanel({ frame, states, range, clearBlockedReason, error, 
               onChange={(e) => onRange([start, clampIndex(e.target.value)])} />
             {range !== null && <button type="button" className="btn ml-auto" onClick={() => onRange(null)}>Unmark</button>}
           </div>
-          <button type="button" className="btn" disabled={!valid || masks === 0 || clearBlockedReason !== null}
+          <button type="button" className="btn" disabled={!valid || masks + deleted === 0 || clearBlockedReason !== null}
             onClick={() => onClearRange(start, end)}>
             Clear masks in {where}
           </button>

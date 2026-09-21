@@ -53,6 +53,15 @@ export function Timeline({ states, frame, color, thumb, range = null, onSeek, on
   }, []);
 
   useEffect(() => {
+    // on the window, because a Shift-drag usually ends with the pointer off this narrow strip
+    const release = () => {
+      anchor.current = null;
+    };
+    window.addEventListener("mouseup", release);
+    return () => window.removeEventListener("mouseup", release);
+  }, []);
+
+  useEffect(() => {
     let closed = false;
     void document.fonts?.ready.then(() => {
       if (!closed) setFontsReady(true); // the ruler labels were drawn in the fallback face until now
@@ -197,6 +206,7 @@ export function Timeline({ states, frame, color, thumb, range = null, onSeek, on
         onMouseDown={(e) => {
           if (e.button !== 0) return;
           const f = at(e);
+          anchor.current = null; // never inherit a drag whose release this strip did not see
           if (e.shiftKey && onRange !== undefined) {
             anchor.current = f;
             onRange([f, f]);
@@ -210,9 +220,6 @@ export function Timeline({ states, frame, color, thumb, range = null, onSeek, on
           if (!(e.buttons & 1)) anchor.current = null; // the button was released outside the strip
           else if (anchor.current !== null) onRange?.([Math.min(anchor.current, f), Math.max(anchor.current, f)]);
           else onSeek(f);
-        }}
-        onMouseUp={() => {
-          anchor.current = null;
         }}
         onMouseLeave={() => setHover(null)}
       />
