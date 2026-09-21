@@ -4644,7 +4644,7 @@ middle-drag pan · right click = negative point.
 - [ ] **Step 6: Run everything**
 
 Run: `bash -c 'source ~/.nvm/nvm.sh && cd web && npx vitest run && npm run build'`
-Expected: `119 passed` (108 + 5 keyboard + 6 label); no warnings; build succeeds.
+Expected: `122 passed` (111 after the Task 6 review fix, + 5 keyboard + 6 label); no warnings; build succeeds.
 
 Run: `uv run ruff check server && HF_HUB_OFFLINE=1 uv run pytest -q`
 Expected: clean; `167 passed` (no Python change in this plan).
@@ -4673,7 +4673,7 @@ git commit -m "feat(web): propagation with live progress, frame cleanup, keyboar
 
 ## Final verification (after all tasks)
 
-- `bash -c 'source ~/.nvm/nvm.sh && cd web && npx vitest run && npm run build'` → 119 passed, build succeeds, no warnings.
+- `bash -c 'source ~/.nvm/nvm.sh && cd web && npx vitest run && npm run build'` → 122 passed, build succeeds, no warnings.
 - `uv run ruff check server && HF_HUB_OFFLINE=1 uv run pytest -q` → clean, 167 passed.
 - `git status --short` is empty; `git ls-files | grep -c -E "vision_train|node_modules|web/dist"` prints `0`.
 - Best-effort visual check (Firefox 111 is installed; it has no "wait for network idle", so a blank or "Loading…" capture is not a failure): with the server running and seeded, `firefox --headless --window-size 1500,950 --screenshot /tmp/vsp-label.png 'http://127.0.0.1:28000/#/clips/<id>'`.
