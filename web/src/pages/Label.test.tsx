@@ -204,6 +204,9 @@ describe("Label page (propagation, cleanup, keyboard)", () => {
     expect(await screen.findByText("frame 20 / 39")).toBeTruthy();
     expect((screen.getByRole("button", { name: "Forward ▶" }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByText(/This frame has no mask/)).toBeTruthy();
+    for (let i = 0; i < 10; i++) fireEvent.keyDown(window, { key: "ArrowRight" }); // frame 30 is deleted
+    expect(await screen.findByText("frame 30 / 39")).toBeTruthy();
+    expect(screen.getByText(/Restore it, or go to a masked frame/)).toBeTruthy();
     fireEvent.keyDown(window, { key: "K", shiftKey: true }); // back to frame 0, the keyframe
     fireEvent.click(screen.getByRole("button", { name: "Both" }));
     await waitFor(() => expect(FakeSocket.last?.url).toMatch(/j2$/));
