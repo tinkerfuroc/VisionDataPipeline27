@@ -22,19 +22,25 @@ export function CleanupPanel({ frame, states, range, clearBlockedReason, error, 
   const clampIndex = (v: string) => Math.max(0, Math.min(last, Math.floor(Number(v)) || 0));
   const [start, end] = range ?? [frame, frame];
   const valid = start <= end;
-  // What the button would actually remove: keyframes are kept, so only propagated masks count. A deleted frame may
-  // still hold a mask (deleting only flags the frame) and the server clears those too, so they keep the button live.
+  // What the button would actually remove. Keyframes go too (clearing is the only way to remove one), so they are
+  // counted out loud. A deleted frame may still hold a mask (deleting only flags the frame) and the server clears
+  // those too, so they keep the button live.
   const marked = valid ? states.slice(start, end + 1) : [];
   const masks = marked.filter((s) => s === "masked").length;
+  const keyframes = marked.filter((s) => s === "keyframe").length;
   const deleted = marked.filter((s) => s === "deleted").length;
   const where = start === end ? `frame ${start}` : `frames ${start} to ${end}`;
+  const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+  const parts = [
+    ...(masks > 0 ? [`${plural(masks, "propagated mask", "propagated masks")}`] : []),
+    ...(keyframes > 0 ? [plural(keyframes, "keyframe", "keyframes")] : []),
+    ...(deleted > 0 ? [`any mask under the ${plural(deleted, "deleted frame", "deleted frames")}`] : []),
+  ];
   const outcome = !valid
     ? "The first frame must not come after the last."
-    : masks + deleted === 0
-      ? `There are no propagated masks in ${where}.`
-      : `Removes ${masks} propagated ${masks === 1 ? "mask" : "masks"}${
-          deleted > 0 ? `, and any mask under the ${deleted} deleted ${deleted === 1 ? "frame" : "frames"}` : ""
-        }. Keyframes are kept.`;
+    : parts.length === 0
+      ? `There is nothing to clear in ${where}.`
+      : `Removes ${parts.length === 1 ? parts[0] : `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`}.`;
 
   // The error sits outside the fold, because Del works (and can fail) while the panel is closed.
   return (
@@ -59,7 +65,7 @@ export function CleanupPanel({ frame, states, range, clearBlockedReason, error, 
               onChange={(e) => onRange([start, clampIndex(e.target.value)])} />
             {range !== null && <button type="button" className="btn ml-auto" onClick={() => onRange(null)}>Unmark</button>}
           </div>
-          <button type="button" className="btn" disabled={!valid || masks + deleted === 0 || clearBlockedReason !== null}
+          <button type="button" className="btn" disabled={!valid || parts.length === 0 || clearBlockedReason !== null}
             onClick={() => onClearRange(start, end)}>
             Clear masks in {where}
           </button>

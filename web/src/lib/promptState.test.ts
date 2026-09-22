@@ -57,4 +57,22 @@ describe("draftReducer", () => {
     expect(draftReducer(d, { type: "tool", tool: "text" })).toBe(d);
     expect(run(d, { type: "submit" }, { type: "clear" })).toEqual(emptyDraft("text"));
   });
+
+  it("remove drops one click by index and renumbers the rest; out of range is a no-op", () => {
+    let d = emptyDraft("clicks");
+    d = draftReducer(d, { type: "point", x: 1, y: 1, label: 1 });
+    d = draftReducer(d, { type: "point", x: 2, y: 2, label: 0 });
+    d = draftReducer(d, { type: "point", x: 3, y: 3, label: 1 });
+    d = draftReducer(d, { type: "candidate", index: 1 });
+    const after = draftReducer(d, { type: "remove", index: 1 });
+    expect(after.points).toEqual([[1, 1, 1], [3, 3, 1]]);
+    expect(after.candidate).toBe(0); // the prompt changed, so the chosen candidate resets
+    expect(draftReducer(after, { type: "remove", index: 5 })).toBe(after);
+    // in box mode the refinement clicks are removable too, and the box stays
+    let b = draftReducer(emptyDraft("box"), { type: "box", box: [0, 0, 10, 10] });
+    b = draftReducer(b, { type: "point", x: 4, y: 4, label: 0 });
+    b = draftReducer(b, { type: "remove", index: 0 });
+    expect(b.points).toEqual([]);
+    expect(b.box).toEqual([0, 0, 10, 10]);
+  });
 });

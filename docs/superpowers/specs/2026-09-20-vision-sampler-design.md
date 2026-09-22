@@ -314,8 +314,10 @@ resumed from its last masked frame); a frame without one is a 400.
 
 Delete/restore frame; prune from frame N to the end (bulk delete); clear the
 object's masks in a frame range (for tracker hallucinations after the object
-leaves view — removes PNGs for non-keyframes in the range and trims
-`propagated_ranges`).
+leaves view — removes every mask PNG in the range, keyframes included, drops
+those keyframes from the object and trims `propagated_ranges`; the object and
+its class remain. *Revised 2026-09-22: originally keyframes were spared, which
+left no way to remove one.*)
 
 ## 6. Ingest
 

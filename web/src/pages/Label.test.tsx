@@ -86,7 +86,7 @@ describe("Label page (viewer)", () => {
     renderLabel();
     expect(await screen.findByText("bench.mp4")).toBeTruthy();
     expect(screen.getByText("frame 0 / 39")).toBeTruthy();
-    expect(screen.getByText(/1 keyframe/)).toBeTruthy();
+    expect(screen.getByText("1 keyframe")).toBeTruthy(); // the statistics; the Cleanup panel also mentions it
     expect(screen.getByText(/51% labeled/)).toBeTruthy();
   });
   it("steps with the transport buttons, clamps at the ends and shows original file names", async () => {
@@ -369,8 +369,16 @@ describe("Label page (propagation, cleanup, keyboard)", () => {
     vi.mocked(api.clearRange).mockResolvedValue(detail);
     renderLabel();
     await screen.findByText("bench.mp4");
-    // nothing marked: the button acts on the current frame, and frame 0 is a keyframe with nothing to clear
-    expect((screen.getByRole("button", { name: "Clear masks in frame 0" }) as HTMLButtonElement).disabled).toBe(true);
+    // nothing marked: the button acts on the current frame; frame 0 is a keyframe, and keyframes are cleared too
+    expect((screen.getByRole("button", { name: "Clear masks in frame 0" }) as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.getByText("Removes 1 keyframe.")).toBeTruthy();
+    fireEvent.keyDown(window, { key: "ArrowRight" });
+    fireEvent.keyDown(window, { key: "ArrowRight" });
+    fireEvent.keyDown(window, { key: "ArrowRight", shiftKey: true }); // frame 12 (Shift = 10 frames)
+    fireEvent.keyDown(window, { key: "ArrowRight", shiftKey: true }); // frame 22: empty
+    expect((screen.getByRole("button", { name: "Clear masks in frame 22" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText("There is nothing to clear in frame 22.")).toBeTruthy();
+    fireEvent.keyDown(window, { key: "K", shiftKey: true });
     fireEvent.keyDown(window, { key: "ArrowRight" });
     fireEvent.keyDown(window, { key: "[" });
     fireEvent.keyDown(window, { key: "ArrowRight", shiftKey: true });

@@ -41,6 +41,22 @@ describe("PromptPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: /Undo/ }));
     expect(ready.dispatch).toHaveBeenCalledWith({ type: "undo" });
   });
+  it("lists the clicks by number, with their kind and position, and removes one on request", () => {
+    const draft = { ...emptyDraft("clicks"), points: [[412, 288, 1], [50, 60, 0]] as [number, number, 0 | 1][] };
+    const p = prompting({ draft, canAccept: true });
+    render(<PromptPanel prompting={p} disabledReason={null} />);
+    const rows = screen.getAllByRole("listitem");
+    expect(rows.map((r) => r.textContent)).toEqual(["1Include412, 288Remove", "2Exclude50, 60Remove"]);
+    fireEvent.click(screen.getByRole("button", { name: "Remove click 2" }));
+    expect(p.dispatch).toHaveBeenCalledWith({ type: "remove", index: 1 });
+    // the list also serves the box tool's refinement clicks, and is absent when there are none
+    cleanup();
+    render(<PromptPanel prompting={prompting({ draft: { ...emptyDraft("box"), box: [0, 0, 9, 9], points: [[3, 3, 0]] } })} disabledReason={null} />);
+    expect(screen.getAllByRole("listitem")).toHaveLength(1);
+    cleanup();
+    render(<PromptPanel prompting={prompting()} disabledReason={null} />);
+    expect(screen.queryByRole("listitem")).toBeNull();
+  });
   it("shows why prompting is disabled, and the last error", () => {
     render(<PromptPanel prompting={prompting({ error: "No usable mask" })} disabledReason="This frame is deleted." />);
     expect(screen.getByText("This frame is deleted.")).toBeTruthy();
