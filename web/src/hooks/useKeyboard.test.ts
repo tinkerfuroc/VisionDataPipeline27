@@ -38,6 +38,11 @@ describe("keyAction", () => {
     expect(key("k", { metaKey: true })).toBeNull();
     expect(key("ArrowRight", { altKey: true })).toBeNull();
   });
+  it("resizes the brush with - and =", () => {
+    expect(key("-")).toEqual({ type: "brushSize", dir: -1 });
+    expect(key("=")).toEqual({ type: "brushSize", dir: 1 });
+    expect(key("+", { shiftKey: true })).toEqual({ type: "brushSize", dir: 1 });
+  });
 });
 
 describe("isField", () => {

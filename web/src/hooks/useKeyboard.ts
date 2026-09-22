@@ -11,7 +11,9 @@ export type KeyAction =
   | { type: "delete" }
   | { type: "overlay" }
   /** mark the current frame as the first / last frame of the range to clear */
-  | { type: "mark"; edge: "start" | "end" };
+  | { type: "mark"; edge: "start" | "end" }
+  /** `-` shrinks, `=` grows the brush */
+  | { type: "brushSize"; dir: 1 | -1 };
 
 type KeyLike = { key: string; shiftKey: boolean; ctrlKey: boolean; metaKey: boolean; altKey: boolean };
 
@@ -35,6 +37,11 @@ export function keyAction(e: KeyLike): KeyAction | null {
       return { type: "mark", edge: "start" };
     case "]":
       return { type: "mark", edge: "end" };
+    case "-":
+      return { type: "brushSize", dir: -1 };
+    case "=":
+    case "+":
+      return { type: "brushSize", dir: 1 };
   }
   switch (e.key.toLowerCase()) {
     case "z":

@@ -108,6 +108,15 @@ describe("api", () => {
     });
   });
 
+  it("sends setMask with class_id only when given", async () => {
+    const fetchMock = mockFetch(jsonResponse({}), jsonResponse({}));
+    await api.setMask("c1", 3, "abc==", { classId: 2 });
+    await api.setMask("c1", 3, "abc==");
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/clips/c1/mask");
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ frame: 3, mask_png_b64: "abc==", class_id: 2 });
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ frame: 3, mask_png_b64: "abc==" });
+  });
+
   it("uses `from` as the prune field name", async () => {
     const fetchMock = mockFetch(jsonResponse({}));
     await api.prune("c1", 12);
