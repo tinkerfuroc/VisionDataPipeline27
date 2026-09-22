@@ -11,9 +11,10 @@ proves (most importantly: Plan 1 Task 6 is the first time SAM3 inference runs on
 | 1 | `2026-09-20-vsp-plan1-backend-core.md` | uv project, settings, `vsp doctor`, store, ingest, weights tooling, `Engine` protocol, `FakeEngine`, `Sam3Engine` verified on GPU | Task 6 only | **Done** (branch `plan1-backend-core`, 71 tests, 10 on GPU) |
 | 2 | `2026-09-20-vsp-plan2-labeling-api.md` — labeling, jobs, HTTP API | Everything the GUI calls, fully testable with `FakeEngine` and `TestClient` | Two added GPU tests | **Done** (branch `plan2-labeling-api`, 167 tests, 12 on GPU) |
 | 3 | `2026-09-20-vsp-plan3-web-gui.md` — web GUI | React SPA: Clips page, Label page, served by `vsp serve`; no Python changes | For the end-to-end smoke and manual QA | **Done** (branch `plan3-web-gui`, 134 web tests; Python suite unchanged at 167) |
-| 4 | Export | `ExportPlan` + YOLO-seg, YOLO-det, COCO, mask PNG exporters, Export dialog | No | Outline below |
+| 4 | Export | `ExportPlan` + YOLO-seg, YOLO-det, COCO, mask PNG exporters, Export dialog | No | **Done** (branch `plan4-exporters`; see the Plan 4 section below) |
+| 5 | `2026-09-21-vsp-plan5-uploads.md` — web uploads | Streaming video and image-zip uploads from the Clips page, with progress and cancel, over the SSH-forwarded GUI | No | **Done** (branch `plan5-uploads`, 204 Python tests, 167 web tests) |
 
-Plans 3 and 4 are independent of each other once Plan 2 is done and can run in either order.
+Plans 3, 4 and 5 are independent of each other once Plan 2 is done and can run in any order.
 
 ## Carried forward from Plan 1 (executed 2026-09-20, branch `plan1-backend-core`)
 
@@ -93,7 +94,7 @@ API behaviours the GUI (Plan 3) must design around:
 Deferred minors (none blocking): `_record_range` uses `next()` without a default; `store.clip_dir` globs per call
 (µs against a ms-scale GPU step); `_effective_box` is computed twice per accept; `JobManager` never evicts finished jobs
 or their events; `Job.status` is written without the manager lock (GIL-dependent); lease starvation is possible under an
-unbroken stream of interactive calls; no upload size limit; the upload-write cleanup and the WebSocket close
+unbroken stream of interactive calls; no upload size limit (closed by Plan 5); the upload-write cleanup and the WebSocket close
 suppression have no test; `PromptSpec.box` accepts floats (truncated to int when clamped); a text prompt carrying a stray
 `box` is validated in `accept` but not in `preview`; `delete_clip` takes the GPU lease but not the clip lock, so it can
 still interleave with delete/restore/prune on the same clip; `ProjectStore.lock`'s parameter is named `clip_id` although
@@ -201,3 +202,23 @@ Known cost, measured in the scoped re-review of the final fix: each mask is deco
 1920x1080, so roughly a minute of redundant work for an 1800-frame, four-format export. The fix when it matters is a
 frame-major loop (read and clean each mask once, hand it to all writers); a cache cannot help in format-major order.
 `clean_mask` uses 8-connectivity, so a diagonal staircase of single pixels counts as one blob.
+
+## Plan 5 — web uploads (done, 2026-09-21, branch `plan5-uploads`)
+
+Plan and "As executed" notes: `docs/superpowers/plans/2026-09-21-vsp-plan5-uploads.md`. One streaming upload route
+replaces the multipart `import-video`: `POST /api/projects/{p}/clips/upload?name=&stride=&fps=` takes the file as the raw
+request body, streams it once into `data/uploads/` under `ingest.max_upload_bytes` (413 over the cap), and hands the temp
+file to `VideoFileSource` or the new `ZipFrameSource` inside the ordinary import job, which deletes it. `ZipFrameSource`
+reads `.jpg/.jpeg/.png` entries straight out of the archive (nothing extracted), in natural order across folders, with
+entry and uncompressed-size caps and `__MACOSX`/dotfile/traversal names refused. The Clips page uploads with
+`XMLHttpRequest` (the only browser API with request progress and a real abort) and shows percentage progress plus Cancel;
+`/api/health` advertises the cap so an over-size file is refused before the transfer starts. The old multipart route,
+`api.importVideo` and their tests are gone, so there is exactly one import path per source kind.
+
+This plan supersedes the spec's §4 `import-video` row and the §6 "multipart upload to a temp file" clause, and it closes
+the Plan 2 deferred minor "no upload size limit".
+
+Still deferred (designed, not built): resumable chunked uploads (tus-style sessions with an offset, so a dropped SSH
+link resumes instead of restarting); the transfer needs the browser tab to stay open; a `.zip` is the only archive
+format; one file per request, no client-side queue. A real `ssh -L` tunnel could not be exercised on this box (no sshd);
+a byte-copying TCP relay stood in for the forwarded stream, which is all the server ever sees.

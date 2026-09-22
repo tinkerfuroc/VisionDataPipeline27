@@ -33,6 +33,11 @@ export function detailText(body: unknown, fallback: string): string {
   return fallback;
 }
 
+/** The one place a failed response becomes an ApiError; `request` and `uploadClip` both use it. */
+export function apiError(status: number, body: unknown, statusText: string, jobId: string | null = null): ApiError {
+  return new ApiError(status, detailText(body, `${status} ${statusText}`), jobId);
+}
+
 export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const r = await fetch(path, init);
   if (r.status === 204) return undefined as T;
@@ -47,9 +52,62 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
       body !== null && typeof body === "object" && typeof (body as { job_id?: unknown }).job_id === "string"
         ? (body as { job_id: string }).job_id
         : null;
-    throw new ApiError(r.status, detailText(body, `${r.status} ${r.statusText}`), jobId);
+    throw apiError(r.status, body, r.statusText, jobId);
   }
   return body as T;
+}
+
+export class UploadCancelled extends Error {
+  constructor() {
+    super("upload cancelled");
+    this.name = "UploadCancelled";
+  }
+}
+
+export type UploadHandle = { promise: Promise<{ job_id: string }>; abort: () => void };
+
+/**
+ * Upload one file as the raw request body. XHR, not fetch: only XHR reports upload progress and can abort a
+ * request that is still being sent, which is the whole point of this path over an SSH tunnel.
+ */
+export function uploadClip(
+  projectId: string,
+  file: File,
+  options: { stride: number; fps: number },
+  onProgress?: (sent: number, total: number) => void,
+): UploadHandle {
+  const url =
+    `/api/projects/${projectId}/clips/upload` +
+    `?name=${encodeURIComponent(file.name)}&stride=${options.stride}&fps=${options.fps}`;
+  const xhr = new XMLHttpRequest();
+  const promise = new Promise<{ job_id: string }>((resolve, reject) => {
+    xhr.open("POST", url);
+    xhr.setRequestHeader("Content-Type", "application/octet-stream");
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) onProgress?.(e.loaded, e.total);
+    };
+    xhr.onload = () => {
+      let body: unknown = null;
+      try {
+        body = JSON.parse(xhr.responseText);
+      } catch {
+        /* not JSON: keep null */
+      }
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(body as { job_id: string });
+        return;
+      }
+      const jobId =
+        body !== null && typeof body === "object" && typeof (body as { job_id?: unknown }).job_id === "string"
+          ? (body as { job_id: string }).job_id
+          : null;
+      reject(apiError(xhr.status, body, xhr.statusText, jobId));
+    };
+    xhr.onerror = () => reject(new Error("The upload failed. Check that the connection is still up."));
+    xhr.onabort = () => reject(new UploadCancelled());
+    xhr.send(file);
+  });
+  return { promise, abort: () => xhr.abort() };
 }
 
 const defaultSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -94,13 +152,7 @@ export const api = {
 
   importFrames: (projectId: string, body: { path: string; fps: number; stride: number }) =>
     request<{ job_id: string }>(`/api/projects/${projectId}/clips/import-frames`, post(body)),
-  importVideo: (projectId: string, file: File, stride: number) => {
-    const form = new FormData();
-    form.append("file", file);
-    form.append("stride", String(stride));
-    // no Content-Type header: the browser must add the multipart boundary itself
-    return request<{ job_id: string }>(`/api/projects/${projectId}/clips/import-video`, { method: "POST", body: form });
-  },
+  uploadClip,
 
   getClip: (id: string) => request<ClipDetail>(`/api/clips/${id}`),
   deleteClip: (id: string) => request<void>(`/api/clips/${id}`, { method: "DELETE" }),

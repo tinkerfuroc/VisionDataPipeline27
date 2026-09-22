@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import { useCallback, useContext, useEffect, useRef, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
-import { ApiError, api, thumbUrl } from "../api/rest";
+import { ApiError, UploadCancelled, api, thumbUrl, type UploadHandle } from "../api/rest";
 import type { ClipSummary, Project } from "../api/types";
 import { AppHeader } from "../components/AppHeader";
 import { ImportJobRow } from "../components/ImportJobRow";
+import { HealthContext } from "../hooks/useHealth";
 import { percentLabeled } from "../lib/timeline";
+import { formatBytes, importKind, uploadPercent, uploadProblem } from "../lib/upload";
 
 const PROJECT_KEY = "vsp.project";
 
@@ -16,11 +18,19 @@ export function Clips() {
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
 
+  const { health } = useContext(HealthContext);
+  const maxBytes = health?.upload?.max_bytes ?? null;
+
   const [projectName, setProjectName] = useState("");
   const [className, setClassName] = useState("");
-  const [video, setVideo] = useState<File | null>(null);
-  const [videoInputKey, setVideoInputKey] = useState(0);
-  const [videoStride, setVideoStride] = useState(1);
+  const [file, setFile] = useState<File | null>(null);
+  const [fileInputKey, setFileInputKey] = useState(0);
+  const [stride, setStride] = useState(1);
+  const [fps, setFps] = useState(30);
+  const [dragging, setDragging] = useState(false);
+  const [upload, setUpload] = useState<{ sent: number; total: number } | null>(null);
+  const uploadRef = useRef<UploadHandle | null>(null);
+  const uploadIssue = uploadProblem({ name: file?.name ?? null, size: file?.size ?? 0, stride, fps, maxBytes });
   const [dirPath, setDirPath] = useState("");
   const [dirFps, setDirFps] = useState(30);
   const [dirStride, setDirStride] = useState(1);
@@ -89,13 +99,47 @@ export function Clips() {
     await loadProjects();
   });
 
-  const importVideo = guarded(async () => {
-    if (video === null || project === null) return;
-    const { job_id } = await api.importVideo(project.id, video, videoStride);
-    setImports((list) => [...list, { id: job_id, label: video.name }]);
-    setVideo(null);
-    setVideoInputKey((k) => k + 1);
-  });
+  // Not `guarded`: an upload lasts minutes, and the in-flight lock would disable the rest of the page for its
+  // whole duration. One upload at a time is enough, so `uploadRef` is the guard instead of `pending`.
+  const pickFile = (next: File | null) => {
+    setFile(next); // a new choice replaces the old one
+    setUpload(null);
+  };
+
+  const startUpload = () => {
+    if (file === null || project === null || uploadRef.current !== null || uploadIssue !== null) return;
+    setError(null);
+    const handle = api.uploadClip(project.id, file, { stride, fps }, (sent, total) => {
+      if (uploadRef.current === handle) setUpload({ sent, total });
+    });
+    uploadRef.current = handle;
+    setUpload({ sent: 0, total: file.size });
+    handle.promise.then(
+      ({ job_id }) => {
+        if (uploadRef.current !== handle) return;
+        uploadRef.current = null;
+        setUpload(null);
+        setImports((list) => [...list, { id: job_id, label: file.name }]);
+        setFile(null);
+        setFileInputKey((k) => k + 1);
+      },
+      (e: unknown) => {
+        if (uploadRef.current !== handle) return;
+        uploadRef.current = null;
+        setUpload(null);
+        if (e instanceof UploadCancelled) return; // the user asked for it
+        fail(e);
+      },
+    );
+  };
+
+  const cancelUpload = () => {
+    const handle = uploadRef.current;
+    if (handle === null) return;
+    uploadRef.current = null; // the abort's rejection is ignored by the identity guard above
+    handle.abort();
+    setUpload(null);
+  };
 
   const importFrames = guarded(async () => {
     const path = dirPath.trim();
@@ -175,7 +219,7 @@ export function Clips() {
             <section>
               <h1 className="mb-3 font-cond text-xl font-semibold">Clips</h1>
               {clips.length === 0 && (
-                <p className="text-sm text-dim">This project has no clips yet. Import a video or a folder of frames to add one.</p>
+                <p className="text-sm text-dim">This project has no clips yet. Upload a video or a zip of images, or import a folder of frames.</p>
               )}
               <ul className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
                 {clips.map((c) => (
@@ -229,17 +273,82 @@ export function Clips() {
               <p className="note">A class is what you label, such as a connector. Each gets its own mask colour.</p>
             </section>
 
-            <form className="flex flex-col gap-2" onSubmit={importVideo}>
-              <h2 className="heading">Import a video</h2>
-              <input key={videoInputKey} aria-label="Video file" type="file" accept="video/*,.mp4,.mov,.avi,.mkv"
-                className="text-sm text-dim file:btn file:mr-2 file:border-0" onChange={(e) => setVideo(e.target.files?.[0] ?? null)} />
+            <section
+              className={`flex flex-col gap-2 rounded border p-2 ${dragging ? "border-ink" : "border-transparent"}`}
+              onDragOver={(e) => {
+                e.preventDefault();
+                setDragging(true);
+              }}
+              onDragLeave={() => setDragging(false)}
+              onDrop={(e) => {
+                e.preventDefault();
+                setDragging(false);
+                pickFile(e.dataTransfer.files?.[0] ?? null);
+              }}
+            >
+              <h2 className="heading">Upload footage</h2>
+              <input
+                key={fileInputKey}
+                aria-label="Footage file"
+                type="file"
+                accept="video/*,.zip,application/zip"
+                className="text-sm text-dim file:btn file:mr-2 file:border-0"
+                onChange={(e) => pickFile(e.target.files?.[0] ?? null)}
+              />
+              {file === null ? (
+                <p className="note">Drop a video or a zip of images here, or choose one above.</p>
+              ) : (
+                <p className="note text-ink">
+                  {importKind(file.name) === "zip" ? "Image folder" : "Video"}, {formatBytes(file.size)}
+                </p>
+              )}
               <label className="flex items-center justify-between gap-2 text-sm text-dim">
                 Keep every Nth frame
-                <input aria-label="Video stride" type="number" min={1} className="field w-16" value={videoStride}
-                  onChange={(e) => setVideoStride(Math.max(1, Number(e.target.value) || 1))} />
+                <input
+                  aria-label="Upload stride"
+                  type="number"
+                  min={1}
+                  className="field w-16"
+                  value={stride}
+                  onChange={(e) => setStride(Math.max(1, Number(e.target.value) || 1))}
+                />
               </label>
-              <button type="submit" className="btn" disabled={video === null || pending}>Import video</button>
-            </form>
+              {file !== null && importKind(file.name) === "zip" && (
+                <label className="flex items-center justify-between gap-2 text-sm text-dim">
+                  Frames per second
+                  <input
+                    aria-label="Zip frames per second"
+                    type="number"
+                    min={1}
+                    step="any"
+                    className="field w-16"
+                    value={fps}
+                    onChange={(e) => setFps(Math.max(1, Number(e.target.value) || 30))}
+                  />
+                </label>
+              )}
+              {file !== null && uploadIssue !== null && <p className="note text-ink">{uploadIssue}</p>}
+              {upload === null ? (
+                <button
+                  type="button"
+                  className="btn btn-on"
+                  disabled={file === null || pending || uploadIssue !== null}
+                  onClick={startUpload}
+                >
+                  Upload and import
+                </button>
+              ) : (
+                <>
+                  <progress value={upload.sent} max={upload.total || undefined} />
+                  <p className="note">
+                    {uploadPercent(upload.sent, upload.total) ?? 0}% of {formatBytes(upload.total)}
+                  </p>
+                  <button type="button" className="btn" onClick={cancelUpload}>
+                    Cancel upload
+                  </button>
+                </>
+              )}
+            </section>
 
             <form className="flex flex-col gap-2" onSubmit={importFrames}>
               <h2 className="heading">Import a folder of frames</h2>

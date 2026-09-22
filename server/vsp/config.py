@@ -36,6 +36,9 @@ class IngestCfg(_Cfg):
     default_stride: int = 1
     jpeg_quality: int = 95
     thumb_width: int = 160
+    max_upload_bytes: int = 8 * 2**30  # refuse a larger body before/while it arrives
+    max_zip_entries: int = 100_000
+    max_zip_bytes: int = 64 * 2**30  # uncompressed total inside one zip
 
 
 class Sam3Cfg(_Cfg):

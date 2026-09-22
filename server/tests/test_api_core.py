@@ -56,6 +56,7 @@ def _project(client, classes=("part",)):
 def test_health_with_a_loaded_engine(client):
     body = client.get("/api/health").json()
     assert body["status"] == "ok" and body["engine"] == {"loaded": True, "device": None, "error": None}
+    assert body["upload"] == {"max_bytes": 8 * 2**30}
 
 
 def test_health_reports_a_background_load_failure(tmp_path):
@@ -125,30 +126,11 @@ def test_import_frames_is_confined_to_allowed_roots(client, tmp_path):
     assert client.post("/api/projects/nope-000000/clips/import-frames", json={"path": str(tmp_path)}).status_code == 404
 
 
-def test_import_video_upload(client, tmp_path):
+def test_the_multipart_import_video_route_is_gone(client, tmp_path):
+    """Uploads are one raw-body route now (see test_api_upload.py); a second import path must not creep back."""
     pid = _project(client)
-    path = tmp_path / "v.avi"
-    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"MJPG"), 15.0, (120, 60))
-    for _ in range(10):
-        writer.write(np.full((60, 120, 3), 90, np.uint8))
-    writer.release()
-    with path.open("rb") as fh:
-        r = client.post(
-            f"/api/projects/{pid}/clips/import-video", files={"file": ("bench.avi", fh, "video/avi")}, data={"stride": "2"}
-        )
-    assert r.status_code == 202
-    snap = wait_job(client, r.json()["job_id"])
-    assert snap["status"] == "done"
-    detail = client.get(f"/api/clips/{snap['result']['clip_id']}").json()
-    assert detail["clip"]["frame_count"] == 5 and detail["clip"]["source"] == {"type": "video", "name": "bench.avi"}
-    assert list((tmp_path / "data" / "tmp").iterdir()) == []  # the upload was removed after import
-
-
-def test_a_bad_upload_becomes_a_job_error(client):
-    pid = _project(client)
-    r = client.post(f"/api/projects/{pid}/clips/import-video", files={"file": ("x.mp4", b"not a video", "video/mp4")})
-    snap = wait_job(client, r.json()["job_id"])
-    assert snap["status"] == "error" and "cannot open" in snap["error"]
+    r = client.post(f"/api/projects/{pid}/clips/import-video", files={"file": ("x.mp4", b"x", "video/mp4")})
+    assert r.status_code in (404, 405)
 
 
 def test_import_job_cancelled_mid_way_ends_cancelled_with_no_clip(client, tmp_path, monkeypatch):
