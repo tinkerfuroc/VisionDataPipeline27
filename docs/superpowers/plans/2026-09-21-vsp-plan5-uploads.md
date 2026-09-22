@@ -1286,21 +1286,19 @@ Why it is not in this plan: it adds server-side session state and GC plus a seco
 
 ## As executed
 
-Executed 2026-09-21 on branch `plan5-uploads` (from `main` at `eba777f`). Tasks 1, 2, 3 and 5 by the controller;
-Task 4 delegated to one subagent and reviewed by the controller. Commits, in order:
+Executed 2026-09-21 on branch `plan5-uploads`, from `main`. Tasks 1, 2, 3 and 5 by the controller; Task 4 delegated
+to one subagent and reviewed by the controller. The commits, in order (no SHAs: a history rewrite would stale them):
 
-| Commit | Task |
-|---|---|
-| `6ce5ec8` | 1 — `save_stream`, `clear_uploads` |
-| `9fe8401` | 2 — `ZipFrameSource` |
-| `fdc0702` | fix — a zip source is named after the upload, not its temp file |
-| `6f860c2` | 4 — the XHR upload client and the upload helpers |
-| `99cc569` | 3 — the upload route, the cap, the health key, the sweep |
-| `d3f9eb2` | 5 — the Clips page section, and the multipart route removed |
+1. `feat(ingest)` — `save_stream`, `clear_uploads`
+2. `feat(ingest)` — `ZipFrameSource`
+3. `fix(ingest)` — a zip source is named after the upload, not its temp file
+4. `feat(web)` — the XHR upload client and the upload helpers
+5. `feat(api)` — the upload route, the cap, the health key, the sweep
+6. `feat(web)` — the Clips page section, and the multipart route removed
 
 ### What changed against the text above
 
-- **`ZipFrameSource` gained an optional `name` (fix `fdc0702`).** The plan derived the clip's name from
+- **`ZipFrameSource` gained an optional `name` (the `fix(ingest)` commit).** The plan derived the clip's name from
   `path.stem`, which is right for `run.zip` and wrong for the route's temp copy (`<uuid>_run.zip`), so an uploaded zip
   produced a clip named `5e1543bd9d3245818ccd9169a53f93b3_run`. The Task 3 API test
   `test_a_zip_upload_becomes_a_frame_directory_clip` caught it; the constructor now takes `name: str | None = None`
