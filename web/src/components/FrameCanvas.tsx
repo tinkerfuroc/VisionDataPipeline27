@@ -28,8 +28,13 @@ type Props = {
   onPickCandidate: (index: number) => void;
   /** bump to fit the frame to the view again (the Fit button lives in the tool rail) */
   fitSignal?: number;
-  /** brush mode: left/right drags paint/erase on `brush.layer`, which is drawn in place of the stored mask */
-  brush: { size: number; layer: HTMLCanvasElement | null; onStart: (mode: BrushMode, x: number, y: number) => void; onExtend: (x: number, y: number) => void; onEnd: () => void } | null;
+  /** brush mode: left/right drags paint/erase on `brush.layer`, which is drawn in place of the stored mask.
+   * `baseVersion` carries no value the draw effect reads; it only exists so a base-mask load (which mutates
+   * `layer`'s pixels in place, not its identity) still triggers `useEffect(draw)` below. */
+  brush: {
+    size: number; layer: HTMLCanvasElement | null; baseVersion: number;
+    onStart: (mode: BrushMode, x: number, y: number) => void; onExtend: (x: number, y: number) => void; onEnd: () => void;
+  } | null;
 };
 
 const DRAG_PX = 4;
@@ -269,8 +274,8 @@ export function FrameCanvas(props: Props) {
     const d: Drag = { button: e.button, sx, sy, ix, iy, lastX: sx, lastY: sy, moved: false };
     drag.current = d;
     if (brush !== null && (e.button === 0 || e.button === 2)) {
-      const bx = Number.isFinite(ix) ? Math.round(ix) : 0;
-      const by = Number.isFinite(iy) ? Math.round(iy) : 0;
+      const bx = Number.isFinite(ix) ? Math.floor(ix) : 0;
+      const by = Number.isFinite(iy) ? Math.floor(iy) : 0;
       brush.onStart(e.button === 2 ? "erase" : "paint", bx, by);
       d.painting = true;
       draw();
@@ -287,9 +292,15 @@ export function FrameCanvas(props: Props) {
     if (d === null) return;
     if (Math.hypot(sx - d.sx, sy - d.sy) > DRAG_PX) d.moved = true;
     if (d.painting) {
+      // A mouseup outside the window (alt-tab mid-drag) never reaches us, so the drag looks unfinished; when the
+      // pointer comes back with no button held, end it here instead of continuing to paint with a phantom drag.
+      if (e.buttons === 0) {
+        endDrag(false);
+        return;
+      }
       const [ix, iy] = toImage(view.current, sx, sy);
-      const bx = Number.isFinite(ix) ? Math.round(ix) : 0;
-      const by = Number.isFinite(iy) ? Math.round(iy) : 0;
+      const bx = Number.isFinite(ix) ? Math.floor(ix) : 0;
+      const by = Number.isFinite(iy) ? Math.floor(iy) : 0;
       brush?.onExtend(bx, by);
       draw();
       return;
@@ -345,6 +356,7 @@ export function FrameCanvas(props: Props) {
         onMouseUp={() => endDrag(true)}
         onMouseLeave={() => {
           pointer.current = null;
+          draw(); // without this, the brush footprint circle lingers at its last position when no drag is in progress
           endDrag(false);
         }}
         onContextMenu={(e) => e.preventDefault()}

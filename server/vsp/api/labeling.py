@@ -30,7 +30,7 @@ class AcceptBody(PromptBody):
 
 
 class MaskBody(BaseModel):
-    frame: int
+    frame: int = Field(ge=0)
     mask_png_b64: str
     class_id: int | None = None
 

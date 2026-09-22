@@ -254,6 +254,7 @@ def test_paint_route_writes_a_keyframe_and_is_refused_while_a_propagation_runs(t
         assert r.json()["clip"]["objects"][0]["keyframes"][0]["prompt"] == {"type": "paint", "payload": {}}
         assert client.post(f"/api/clips/{cid}/mask", json={"frame": 2, "mask_png_b64": "nope"}).status_code == 400
         assert client.post(f"/api/clips/{cid}/mask", json={"frame": 99, "mask_png_b64": b64}).status_code == 400
+        assert client.post(f"/api/clips/{cid}/mask", json={"frame": -1, "mask_png_b64": b64}).status_code == 422
         job_id = client.post(f"/api/clips/{cid}/propagate", json={"from_frame": 2, "direction": "forward"}).json()["job_id"]
         busy = client.post(f"/api/clips/{cid}/mask", json={"frame": 3, "mask_png_b64": b64})
         assert busy.status_code == 409 and busy.json()["job_id"] == job_id  # it replaces what the runner writes

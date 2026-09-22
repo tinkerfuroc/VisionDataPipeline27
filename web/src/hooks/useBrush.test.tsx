@@ -3,6 +3,7 @@ import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "../api/rest";
 import type { ClipDetail } from "../api/types";
+import { loadBase } from "../lib/brushCanvas";
 import type { FrameStore } from "../lib/frameCache";
 import type { Rgb } from "../lib/mask";
 import { useBrush, type Brush } from "./useBrush";
@@ -14,7 +15,7 @@ vi.mock("../api/rest", async (original) => ({
 
 vi.mock("../lib/brushCanvas", () => ({
   createLayer: () => ({ canvas: document.createElement("canvas"), ctx: null }),
-  loadBase: async () => null,
+  loadBase: vi.fn(async () => null),
   encodeLayer: () => ({ pngB64: "UE5H", any: true }),
 }));
 
@@ -86,6 +87,40 @@ describe("useBrush", () => {
     act(() => result.current.discard());
     expect(result.current.draft.strokes).toHaveLength(0);
     rerender({ active: false, classId: null, needsClass: false });
+    expect(result.current.draft.strokes).toHaveLength(0);
+  });
+
+  it("notifies the canvas once the base mask finishes loading, and start() refuses to paint until then", async () => {
+    vi.mocked(loadBase).mockImplementation(async () => {
+      await Promise.resolve();
+      return { fake: true } as unknown as ImageData;
+    });
+    const { result } = renderHook(() =>
+      useBrush({
+        clipId: "c1", frame: 3, width: 4, height: 4, rgb, store, maskUrl: "http://x/mask.png",
+        active: true, classId: null, needsClass: false, apply: vi.fn(),
+      }),
+    );
+    expect(result.current.loading).toBe(true);
+    act(() => result.current.start("paint", 0, 0));
+    expect(result.current.dirty).toBe(false); // start() was refused: no stroke began
+
+    const before = result.current.baseVersion;
+    await act(async () => {
+      await new Promise((r) => setTimeout(r)); // flush the microtask queue past loadBase's await tick
+    });
+    expect(result.current.loading).toBe(false);
+    expect(result.current.baseVersion).toBe(before + 1);
+  });
+
+  it("ignores undo while a stroke is in progress, so the in-progress stroke is not lost", () => {
+    const { result } = setup();
+    act(() => result.current.start("paint", 0, 0));
+    act(() => result.current.undo()); // must be a no-op: a stroke is in progress
+    act(() => result.current.end());
+    expect(result.current.draft.strokes).toHaveLength(1);
+
+    act(() => result.current.undo()); // now that the stroke is committed, undo removes it
     expect(result.current.draft.strokes).toHaveLength(0);
   });
 });

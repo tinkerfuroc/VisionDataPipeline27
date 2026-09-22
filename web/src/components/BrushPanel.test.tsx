@@ -6,7 +6,8 @@ import { emptyBrush } from "../lib/brush";
 import { BrushPanel } from "./BrushPanel";
 
 const brush = (over: Partial<Brush> = {}): Brush => ({
-  draft: emptyBrush(), dirty: false, layer: null, busy: false, error: null, canSave: false, saveBlockedReason: null,
+  draft: emptyBrush(), dirty: false, layer: null, busy: false, loading: false, baseVersion: 0, error: null,
+  canSave: false, saveBlockedReason: null,
   setSize: vi.fn(), grow: vi.fn(), start: vi.fn(), extend: vi.fn(), end: vi.fn(), undo: vi.fn(), discard: vi.fn(),
   save: vi.fn(async () => {}), ...over,
 });

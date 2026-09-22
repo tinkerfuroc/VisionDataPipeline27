@@ -170,6 +170,9 @@ export function Label() {
           : null;
   const shownClass = classId ?? object?.class_id ?? null;
   const color = detail?.classes.find((c) => c.id === shownClass)?.color ?? "#22c55e";
+  // hexToRgb allocates a new array every call: memoised so its identity is stable across renders that don't
+  // change `color` (e.g. a health poll), since it feeds effect dependency arrays (useBrush's re-base effect).
+  const rgb = useMemo(() => hexToRgb(color), [color]);
   const hasMask = (i: number) => detail !== null && (detail.states[i] === "masked" || detail.states[i] === "keyframe");
   const maskVersion = clip.maskVersion;
   const prompting = usePrompting({ clipId, frame, enabled: disabledReason === null && detail !== null && mode === "prompt", clip, classId });
@@ -182,7 +185,7 @@ export function Label() {
         ? "Pause playback to paint."
         : null;
   const brush = useBrush({
-    clipId, frame, width: detail?.clip.width ?? 1, height: detail?.clip.height ?? 1, rgb: hexToRgb(color), store,
+    clipId, frame, width: detail?.clip.width ?? 1, height: detail?.clip.height ?? 1, rgb, store,
     maskUrl: hasMask(frame) ? maskUrl(clipId, frame, maskVersion(frame)) : null,
     active: mode === "brush" && brushReason === null && detail !== null,
     classId, needsClass: object === null, apply,
@@ -282,14 +285,13 @@ export function Label() {
   // ---- prefetch --------------------------------------------------------------------------------------------------
   useEffect(() => {
     if (detail === null || running) return; // during a job the view follows the stream; nothing to look ahead for
-    const rgb = hexToRgb(color);
     const ahead = playing ? 30 : 4;
     for (let i = frame + 1; i <= Math.min(frame + ahead, frameCount - 1); i++) {
       void store.image(frameUrl(clipId, i));
       if (overlay && hasMask(i)) void store.layer(maskUrl(clipId, i, maskVersion(i)), rgb, MASK_ALPHA);
     }
     // hasMask is derived from detail
-  }, [store, clipId, frame, playing, overlay, detail, color, frameCount, maskVersion, running]);
+  }, [store, clipId, frame, playing, overlay, detail, rgb, frameCount, maskVersion, running]);
 
   const addClass = useCallback(
     async (name: string) => {
@@ -372,7 +374,10 @@ export function Label() {
             fitSignal={fitSignal}
             brush={
               mode === "brush" && brushReason === null
-                ? { size: brush.draft.size, layer: brush.layer, onStart: brush.start, onExtend: brush.extend, onEnd: brush.end }
+                ? {
+                    size: brush.draft.size, layer: brush.layer, baseVersion: brush.baseVersion,
+                    onStart: brush.start, onExtend: brush.extend, onEnd: brush.end,
+                  }
                 : null
             }
           />

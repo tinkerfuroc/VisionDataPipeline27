@@ -434,9 +434,12 @@ describe("Label page (brush)", () => {
   const paintOnce = () => {
     const canvas = screen.getByLabelText("Frame");
     fireEvent.mouseDown(canvas, { button: 0, clientX: 40, clientY: 40 });
-    fireEvent.mouseMove(canvas, { button: 0, clientX: 60, clientY: 60 });
+    fireEvent.mouseMove(canvas, { button: 0, buttons: 1, clientX: 60, clientY: 60 });
     fireEvent.mouseUp(canvas, { button: 0, clientX: 60, clientY: 60 });
   };
+  // Switching to Brush mode kicks off useBrush's async base-mask load (F1); flush it before painting so start()
+  // isn't refused as "still loading" — a real drag could never begin before the browser's next tick either.
+  const flushBaseLoad = () => act(() => new Promise((r) => setTimeout(r, 0)));
 
   it("switches to the Brush panel, locks the page while strokes are unsaved, and saves the mask", async () => {
     vi.mocked(api.getClip).mockResolvedValue(detail);
@@ -447,6 +450,7 @@ describe("Label page (brush)", () => {
     expect(screen.getByRole("heading", { name: "Brush" })).toBeTruthy();
     expect(screen.queryByRole("heading", { name: "Prompt" })).toBeNull();
     expect(screen.getByText("No strokes yet on frame 0.")).toBeTruthy();
+    await flushBaseLoad();
 
     paintOnce();
     expect(screen.getByText("1 stroke on frame 0, not saved.")).toBeTruthy();
@@ -472,6 +476,7 @@ describe("Label page (brush)", () => {
     renderLabel();
     await screen.findByText("bench.mp4");
     fireEvent.click(screen.getByRole("button", { name: "Brush" }));
+    await flushBaseLoad();
     paintOnce();
     paintOnce();
     expect(screen.getByText("2 strokes on frame 0, not saved.")).toBeTruthy();
