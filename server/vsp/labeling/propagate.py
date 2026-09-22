@@ -34,14 +34,29 @@ class PropagateResult:
 
 
 def plan_indices(clip: Clip, obj: LabelObject, from_frame: int, direction: Literal["forward", "backward"]) -> list[int]:
+    """Frames a run from `from_frame` covers: up to, not including, the next keyframe in `direction`.
+
+    Any frame may be a start (a keyframe, or a propagated frame when a stopped run is resumed); whether it
+    has a mask to seed from is checked by `check_seed`. Keyframes are never overwritten, so they bound the run.
+    """
+    if not 0 <= from_frame < clip.frame_count:
+        raise BadRequest(f"frame {from_frame} is out of range 0..{clip.frame_count - 1}")
     keyframes = sorted(k.frame_idx for k in obj.keyframes)
-    if from_frame not in keyframes:
-        raise BadRequest(f"frame {from_frame} is not a keyframe; accept a prompt there first")
     if direction == "forward":
         stop = min((k for k in keyframes if k > from_frame), default=clip.frame_count)
         return list(range(from_frame + 1, stop))
     stop = max((k for k in keyframes if k < from_frame), default=-1)
     return list(range(from_frame - 1, stop, -1))
+
+
+def check_seed(store: ProjectStore, clip: Clip, obj: LabelObject, from_frame: int) -> np.ndarray:
+    """The mask a run from `from_frame` seeds with, or BadRequest when there is none to seed from."""
+    if from_frame in clip.deleted_frames:
+        raise BadRequest(f"frame {from_frame} is deleted; restore it or propagate from another frame")
+    seed = store.read_mask(clip.id, obj.id, from_frame)
+    if seed is None:
+        raise BadRequest(f"frame {from_frame} has no mask; propagate from a masked frame or prompt here first")
+    return seed
 
 
 def _record_range(store: ProjectStore, clip_id: str, object_id: int, indices: list[int]) -> None:
@@ -206,9 +221,7 @@ def run_propagation(
     obj = clip.objects[0]
     directions = ["forward", "backward"] if direction == "both" else [direction]
     plans = [plan_indices(clip, obj, from_frame, d) for d in directions]
-    seed = store.read_mask(clip_id, obj.id, from_frame)
-    if seed is None:
-        raise BadRequest(f"keyframe {from_frame} has no mask on disk")
+    seed = check_seed(store, clip, obj, from_frame)
 
     result = PropagateResult()
     total = sum(len(p) for p in plans)

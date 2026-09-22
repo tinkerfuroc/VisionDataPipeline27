@@ -11,7 +11,7 @@ from ..jobs import Job
 from ..labeling import frames as frame_ops
 from ..labeling.errors import BadRequest
 from ..labeling.prompts import PromptSpec, accept, preview
-from ..labeling.propagate import plan_indices, run_propagation
+from ..labeling.propagate import check_seed, plan_indices, run_propagation
 from .deps import GPU, State, gpu_lease, require_engine
 from .views import candidate_view, clip_detail
 
@@ -71,6 +71,7 @@ def propagate(clip_id: str, body: PropagateBody, state: State) -> dict:
     directions = ["forward", "backward"] if body.direction == "both" else [body.direction]
     for d in directions:  # validate now so a bad request is a 400, not a failed job
         plan_indices(clip, clip.objects[0], body.from_frame, d)
+    check_seed(state.store, clip, clip.objects[0], body.from_frame)
     cfg = state.settings.propagate
 
     def work(job: Job) -> dict:

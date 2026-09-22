@@ -304,9 +304,11 @@ export function Label() {
 
   const propagateBlocked = !engineReady(health)
     ? "The SAM3 engine is not loaded."
-    : state !== "keyframe"
-      ? "Go to a keyframe (press K) to propagate from it."
-      : null;
+    : state === "deleted"
+      ? "This frame is deleted. Restore it, or go to a masked frame, to propagate from it."
+      : state !== "keyframe" && state !== "masked"
+        ? "This frame has no mask. Go to a masked frame, or prompt here, to propagate from it."
+        : null;
   const { draft, dispatch } = prompting;
   const { source, width, height, stride } = detail.clip;
 

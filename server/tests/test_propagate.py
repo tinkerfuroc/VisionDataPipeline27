@@ -35,8 +35,13 @@ def test_plan_indices_are_capped_at_neighbouring_keyframes(store, make_clip):
     assert plan_indices(clip, obj, 12, "forward") == list(range(13, 20))
     assert plan_indices(clip, obj, 12, "backward") == list(range(11, 5, -1))
     assert plan_indices(clip, obj, 5, "backward") == [4, 3, 2, 1, 0]
-    with pytest.raises(BadRequest, match="not a keyframe"):
-        plan_indices(clip, obj, 7, "forward")
+    # any frame may be a start: the range still runs up to the neighbouring keyframes
+    assert plan_indices(clip, obj, 7, "forward") == list(range(8, 12))
+    assert plan_indices(clip, obj, 7, "backward") == [6]
+    assert plan_indices(clip, obj, 15, "backward") == [14, 13]
+    for bad in (-1, 20):
+        with pytest.raises(BadRequest, match="out of range"):
+            plan_indices(clip, obj, bad, "forward")
 
 
 def test_forward_writes_every_frame_in_anchor_prepended_chunks(store, make_clip):
@@ -78,14 +83,42 @@ def test_backward_and_both(store, make_clip):
     assert store.read_clip(clip.id).objects[0].propagated_ranges == [(0, 7), (9, 15)]
 
 
-def test_not_a_keyframe_and_nothing_to_propagate(store, make_clip):
+def test_no_mask_at_the_start_frame_and_nothing_to_propagate(store, make_clip):
     eng = FakeEngine()
     _, empty = make_clip()
     with pytest.raises(BadRequest, match="accept a prompt"):
         run_propagation(store, eng, empty.id, 0, "forward", **KW)
     clip = _seeded(store, make_clip, eng)
-    with pytest.raises(BadRequest, match="not a keyframe"):
+    with pytest.raises(BadRequest, match="frame 3 has no mask"):
         run_propagation(store, eng, clip.id, 3, "forward", **KW)
+    assert eng.propagate_calls == []
+
+
+def test_resumes_from_a_propagated_frame_and_still_stops_at_the_next_keyframe(store, make_clip):
+    """Stop mid-run, then continue from the last masked frame: the resumed run seeds from that frame's
+    propagated mask (not the keyframe's) and stops before the next keyframe like any other run."""
+    eng = FakeEngine()
+    clip = _seeded(store, make_clip, eng, n_frames=30, keyframes=(0, 20))
+    seen = []
+    res = run_propagation(store, eng, clip.id, 0, "forward", emit=seen.append, cancel=lambda: len(seen) >= 6, **KW)
+    assert res.cancelled and store.mask_indices(clip.id, OBJECT_ID) == [0, 1, 2, 3, 4, 5, 20]
+
+    res = run_propagation(store, eng, clip.id, 5, "forward", **KW)
+    assert (res.processed, res.written, res.cancelled) == (14, 14, False)  # frames 6..19; keyframe 20 untouched
+    assert store.mask_indices(clip.id, OBJECT_ID) == [*range(21)]
+    assert _x0(store, clip.id, 6) == 20 + 2 * 6  # continuous with the first run: seeded by frame 5's mask
+    assert store.read_clip(clip.id).objects[0].propagated_ranges == [(1, 19)]
+
+    with pytest.raises(BadRequest, match="frame 25 has no mask"):
+        run_propagation(store, eng, clip.id, 25, "backward", **KW)
+
+    # "both" from a propagated frame: forward to the next keyframe, backward to the previous one, neither touched
+    store.write_mask(clip.id, OBJECT_ID, 25, store.read_mask(clip.id, OBJECT_ID, 20))
+    res = run_propagation(store, eng, clip.id, 25, "both", **KW)
+    assert (res.processed, res.written) == (8, 8)  # 26..29 forward, 24..21 backward
+    assert store.mask_indices(clip.id, OBJECT_ID) == [*range(30)]
+    # 25 itself was written by hand above, not by a run, so it is not a propagated frame
+    assert store.read_clip(clip.id).objects[0].propagated_ranges == [(1, 19), (21, 24), (26, 29)]
 
 
 def test_deleted_frames_feed_the_tracker_but_are_not_written(store, make_clip):

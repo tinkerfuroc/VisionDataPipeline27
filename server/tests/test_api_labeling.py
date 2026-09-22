@@ -78,7 +78,7 @@ def test_validation_errors_are_400_not_failed_jobs(tmp_path):
         assert client.post(f"/api/clips/{cid}/propagate", json={"from_frame": 0, "direction": "forward"}).status_code == 400
         client.post(f"/api/clips/{cid}/accept", json={"frame": 0, "prompt": CLICK, "class_id": 0})
         nk = client.post(f"/api/clips/{cid}/propagate", json={"from_frame": 3, "direction": "forward"})
-        assert nk.status_code == 400 and "not a keyframe" in nk.json()["detail"]
+        assert nk.status_code == 400 and "frame 3 has no mask" in nk.json()["detail"]
         assert client.post(f"/api/clips/{cid}/accept", json={"frame": 1, "prompt": CLICK, "class_id": 9}).status_code == 400
         tiny = {"type": "box", "box": [1, 1, 4, 4]}
         assert client.post(f"/api/clips/{cid}/prompt", json={"frame": 0, "prompt": tiny}).json() == {"candidates": []}
