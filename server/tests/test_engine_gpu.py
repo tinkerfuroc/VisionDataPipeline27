@@ -124,6 +124,26 @@ def test_backward_propagation_is_just_a_reversed_list(engine, video):
     assert _track(engine, frames[::-1], truth[::-1]) >= 18
 
 
+def test_propagation_streams_masks_instead_of_encoding_the_whole_chunk_first(engine, video, monkeypatch):
+    """Frame k's mask must reach the caller before frame k+1 is encoded, so the GUI sees a steady
+    stream of frames rather than a long silence followed by a burst of the whole chunk."""
+    frames, truth = video
+    order: list[str] = []
+    real = engine._cache_tracker_features
+
+    def spy(session, frame_idx, embeds):
+        order.append(f"encode {frame_idx}")
+        real(session, frame_idx, embeds)
+
+    monkeypatch.setattr(engine, "_cache_tracker_features", spy)
+    with contextlib.closing(engine.propagate(frames, truth[0])) as masks:
+        for offset, _ in masks:
+            order.append(f"yield {offset}")
+    n = len(frames)
+    expected = ["encode 0"] + [s for k in range(n) for s in (f"yield {k}", f"encode {k + 1}")][:-1]
+    assert order == expected
+
+
 def test_end_to_end_store_ingest_engine_store(engine, video, tmp_path):
     """store -> ingest -> real engine -> store, run together for the first time."""
     frames, truth = video

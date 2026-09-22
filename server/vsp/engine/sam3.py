@@ -316,13 +316,19 @@ class Sam3Engine:
         finally:
             torch.cuda.empty_cache()
 
+    def _encode_frame(self, session, frame_idx: int) -> None:
+        px = session.get_frame(frame_idx).unsqueeze(0)
+        embeds = self._model.detector_model.get_vision_features(pixel_values=px)
+        self._cache_tracker_features(session, frame_idx, embeds)
+
     def _propagate_locked(self, video, seed_mask, h, w, cancel_cb):
         n = int(video.shape[0])
         session = self._new_session(video, h, w)
-        for fr in range(n):
-            px = session.get_frame(fr).unsqueeze(0)
-            embeds = self._model.detector_model.get_vision_features(pixel_values=px)
-            self._cache_tracker_features(session, fr, embeds)
+        # The image encoder is where the time goes; the tracker head is cheap and causal, reading
+        # only the current frame's cached features. Encoding one frame ahead of the tracker (instead
+        # of the whole chunk up front) lets each mask reach the caller as soon as it is ready, so the
+        # GUI sees a steady stream of frames rather than a long silence and then the whole chunk.
+        self._encode_frame(session, 0)
         obj_idx = session.obj_id_to_idx(_OBJ_ID)
         seed = torch.from_numpy(seed_mask.astype(np.float32))[None, None].to(self.device, dtype=self.torch_dtype)
         session.add_mask_inputs(obj_idx, 0, seed)
@@ -337,4 +343,7 @@ class Sam3Engine:
                 m = self._binarize(out.pred_masks, h, w)
                 if not is_degenerate_mask(m, max_area_frac=self.MAX_MASK_AREA_FRAC, min_area_px=self.MIN_MASK_AREA_PX):
                     mask = m
-            yield int(out.frame_idx), mask
+            fr = int(out.frame_idx)
+            yield fr, mask
+            if fr + 1 < n:
+                self._encode_frame(session, fr + 1)
