@@ -7,6 +7,8 @@ type Props = {
   overlay: boolean;
   /** original file name of this frame, for frame-directory clips */
   name: string | null;
+  /** disables the step and play buttons (not the overlay toggle); default false */
+  disabled?: boolean;
   onStep: (delta: number) => void;
   onTogglePlay: () => void;
   onToggleOverlay: () => void;
@@ -28,16 +30,16 @@ const GLYPHS = {
 };
 const button = "btn h-7 w-8 px-0";
 
-export function Transport({ frame, frameCount, playing, overlay, name, onStep, onTogglePlay, onToggleOverlay }: Props) {
+export function Transport({ frame, frameCount, playing, overlay, name, disabled = false, onStep, onTogglePlay, onToggleOverlay }: Props) {
   return (
     <div className="flex flex-wrap items-center gap-1 text-sm">
-      <button type="button" className={button} aria-label="Back 10 frames" onClick={() => onStep(-10)}>{GLYPHS.back10}</button>
-      <button type="button" className={button} aria-label="Previous frame" onClick={() => onStep(-1)}>{GLYPHS.prev}</button>
-      <button type="button" className={`${button} ${playing ? "btn-on" : ""}`} aria-label={playing ? "Pause" : "Play"} onClick={onTogglePlay}>
+      <button type="button" className={button} disabled={disabled} aria-label="Back 10 frames" onClick={() => onStep(-10)}>{GLYPHS.back10}</button>
+      <button type="button" className={button} disabled={disabled} aria-label="Previous frame" onClick={() => onStep(-1)}>{GLYPHS.prev}</button>
+      <button type="button" className={`${button} ${playing ? "btn-on" : ""}`} disabled={disabled} aria-label={playing ? "Pause" : "Play"} onClick={onTogglePlay}>
         {playing ? GLYPHS.pause : GLYPHS.play}
       </button>
-      <button type="button" className={button} aria-label="Next frame" onClick={() => onStep(1)}>{GLYPHS.next}</button>
-      <button type="button" className={button} aria-label="Forward 10 frames" onClick={() => onStep(10)}>{GLYPHS.forward10}</button>
+      <button type="button" className={button} disabled={disabled} aria-label="Next frame" onClick={() => onStep(1)}>{GLYPHS.next}</button>
+      <button type="button" className={button} disabled={disabled} aria-label="Forward 10 frames" onClick={() => onStep(10)}>{GLYPHS.forward10}</button>
       <span className="ml-3 min-w-[7.5rem] text-base font-medium">{`frame ${frame} / ${Math.max(0, frameCount - 1)}`}</span>
       {name !== null && <span className="font-cond text-dim">{name}</span>}
       <label className="ml-3 flex items-center gap-1.5 font-cond text-dim">

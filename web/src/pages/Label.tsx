@@ -3,6 +3,7 @@ import { Link, useParams } from "react-router-dom";
 import { ApiError, INTERACTIVE, api, frameUrl, maskUrl, retryInteractive, thumbUrl } from "../api/rest";
 import type { ClipDetail, Direction, JobEvent } from "../api/types";
 import { AppHeader } from "../components/AppHeader";
+import { BrushPanel } from "../components/BrushPanel";
 import { CleanupPanel, type Range } from "../components/CleanupPanel";
 import { ClipStats } from "../components/ClipStats";
 import { FrameCanvas } from "../components/FrameCanvas";
@@ -10,8 +11,9 @@ import { ObjectPanel } from "../components/ObjectPanel";
 import { PromptPanel } from "../components/PromptPanel";
 import { PropagatePanel } from "../components/PropagatePanel";
 import { Timeline } from "../components/Timeline";
-import { ToolRail } from "../components/ToolRail";
+import { ToolRail, type RailTool } from "../components/ToolRail";
 import { Transport } from "../components/Transport";
+import { useBrush } from "../hooks/useBrush";
 import { useClip } from "../hooks/useClip";
 import { HealthContext, engineReady } from "../hooks/useHealth";
 import { useJob } from "../hooks/useJob";
@@ -41,6 +43,7 @@ export function Label() {
   const [follow, setFollow] = useState(true);
   const [propagateError, setPropagateError] = useState<string | null>(null);
   const [cleanupError, setCleanupError] = useState<string | null>(null);
+  const [mode, setMode] = useState<"prompt" | "brush">("prompt");
 
   const detail = clip.detail;
   const frameCount = detail?.clip.frame_count ?? 0;
@@ -165,7 +168,26 @@ export function Label() {
         : playing
           ? "Pause playback to prompt."
           : null;
-  const prompting = usePrompting({ clipId, frame, enabled: disabledReason === null && detail !== null, clip, classId });
+  const shownClass = classId ?? object?.class_id ?? null;
+  const color = detail?.classes.find((c) => c.id === shownClass)?.color ?? "#22c55e";
+  const hasMask = (i: number) => detail !== null && (detail.states[i] === "masked" || detail.states[i] === "keyframe");
+  const maskVersion = clip.maskVersion;
+  const prompting = usePrompting({ clipId, frame, enabled: disabledReason === null && detail !== null && mode === "prompt", clip, classId });
+
+  const brushReason = running
+    ? "A propagation is running. Stop it to paint."
+    : state === "deleted"
+      ? "This frame is deleted. Restore it to paint on it."
+      : playing
+        ? "Pause playback to paint."
+        : null;
+  const brush = useBrush({
+    clipId, frame, width: detail?.clip.width ?? 1, height: detail?.clip.height ?? 1, rgb: hexToRgb(color), store,
+    maskUrl: hasMask(frame) ? maskUrl(clipId, frame, maskVersion(frame)) : null,
+    active: mode === "brush" && brushReason === null && detail !== null,
+    classId, needsClass: object === null, apply,
+  });
+  const lockReason = brush.dirty ? `Save or discard the brush strokes on frame ${frame} first.` : null;
 
   // `busyJobId` outlives the 409 that produced it (only a later preview clears it), so each id is handled once;
   // otherwise the page would re-attach to that long-finished job every time a job of its own ends.
@@ -213,15 +235,22 @@ export function Label() {
 
   useKeyboard((action: KeyAction) => {
     if (detail === null) return;
+    if (lockReason !== null && !["accept", "clear", "undo", "brushSize", "overlay"].includes(action.type)) return;
     switch (action.type) {
       case "accept":
-        if (prompting.canAccept) void prompting.accept();
+        if (mode === "brush") void brush.save();
+        else if (prompting.canAccept) void prompting.accept();
         break;
       case "clear":
-        prompting.clear();
+        if (mode === "brush") brush.discard();
+        else prompting.clear();
         break;
       case "undo":
-        prompting.dispatch({ type: "undo" });
+        if (mode === "brush") brush.undo();
+        else prompting.dispatch({ type: "undo" });
+        break;
+      case "brushSize":
+        if (mode === "brush") brush.grow(action.dir);
         break;
       case "step":
         step(action.delta);
@@ -251,11 +280,6 @@ export function Label() {
   });
 
   // ---- prefetch --------------------------------------------------------------------------------------------------
-  const shownClass = classId ?? object?.class_id ?? null;
-  const color = detail?.classes.find((c) => c.id === shownClass)?.color ?? "#22c55e";
-  const hasMask = (i: number) => detail !== null && (detail.states[i] === "masked" || detail.states[i] === "keyframe");
-  const maskVersion = clip.maskVersion;
-
   useEffect(() => {
     if (detail === null || running) return; // during a job the view follows the stream; nothing to look ahead for
     const rgb = hexToRgb(color);
@@ -311,6 +335,15 @@ export function Label() {
         : null;
   const { draft, dispatch } = prompting;
   const { source, width, height, stride } = detail.clip;
+  const onTool = (t: RailTool) => {
+    if (t === "brush") {
+      prompting.clear();
+      setMode("brush");
+    } else {
+      setMode("prompt");
+      dispatch({ type: "tool", tool: t });
+    }
+  };
 
   return (
     <div className="flex h-full flex-col">
@@ -330,30 +363,40 @@ export function Label() {
             frameUrl={frameUrl(clipId, frame)}
             maskUrl={overlay && hasMask(frame) ? maskUrl(clipId, frame, maskVersion(frame)) : null}
             color={color}
-            tool={disabledReason === null ? draft.tool : null}
+            tool={mode === "prompt" && disabledReason === null ? draft.tool : null}
             draft={draft}
             candidates={prompting.candidates}
             onPoint={(x, y, label) => dispatch({ type: "point", x, y, label })}
             onBox={(box) => dispatch({ type: "box", box })}
             onPickCandidate={(index) => dispatch({ type: "candidate", index })}
             fitSignal={fitSignal}
+            brush={
+              mode === "brush" && brushReason === null
+                ? { size: brush.draft.size, layer: brush.layer, onStart: brush.start, onExtend: brush.extend, onEnd: brush.end }
+                : null
+            }
           />
         </div>
         {/* every control sits to the right of the frame: the tools first, then the inspector */}
-        <ToolRail tool={draft.tool} disabled={disabledReason !== null} onTool={(tool) => dispatch({ type: "tool", tool })}
+        <ToolRail tool={mode === "brush" ? "brush" : draft.tool} disabled={disabledReason !== null}
+          brushDisabled={brushReason !== null || detail === null} locked={lockReason !== null} onTool={onTool}
           onFit={() => setFitSignal((n) => n + 1)} />
         <aside className="flex w-80 shrink-0 flex-col gap-5 overflow-y-auto border-l border-line bg-panel p-3">
           {clip.refreshError !== null && (
             <p role="alert" className="alert text-xs">Could not refresh the clip: {clip.refreshError}</p>
           )}
           <ObjectPanel detail={detail} classId={classId} onClassId={setClassId} onAddClass={addClass} />
-          <PromptPanel prompting={prompting} disabledReason={disabledReason} />
+          {mode === "brush" ? (
+            <BrushPanel brush={brush} frame={frame} disabledReason={brushReason} />
+          ) : (
+            <PromptPanel prompting={prompting} disabledReason={disabledReason} />
+          )}
           <PropagatePanel
             job={job}
             running={running}
             foreign={foreign}
             starting={starting}
-            blockedReason={propagateBlocked}
+            blockedReason={lockReason ?? propagateBlocked}
             follow={follow}
             error={propagateError}
             onStart={startPropagation}
@@ -365,6 +408,7 @@ export function Label() {
             states={detail.states}
             range={range}
             clearBlockedReason={running ? "Masks cannot be cleared while a propagation runs." : null}
+            lockReason={lockReason}
             error={cleanupError}
             onRange={setRange}
             onToggleDelete={toggleDelete}
@@ -381,6 +425,7 @@ export function Label() {
             playing={playing}
             overlay={overlay}
             name={detail.clip.original_names?.[String(frame)] ?? null}
+            disabled={lockReason !== null}
             onStep={step}
             onTogglePlay={() => {
               if (!running) setPlaying((p) => !p);
@@ -395,7 +440,7 @@ export function Label() {
           color={color}
           thumb={{ url: (i) => thumbUrl(clipId, i), aspect: width / height }}
           range={range}
-          onSeek={seek}
+          onSeek={lockReason === null ? seek : () => {}}
           onRange={setRange}
         />
       </footer>

@@ -22,7 +22,14 @@ vi.mock("../api/rest", async (original) => ({
     prune: vi.fn(),
     clearRange: vi.fn(),
     getJob: vi.fn(),
+    setMask: vi.fn(),
   },
+}));
+
+vi.mock("../lib/brushCanvas", () => ({
+  createLayer: () => ({ canvas: document.createElement("canvas"), ctx: null }),
+  loadBase: async () => null,
+  encodeLayer: () => ({ pngB64: "UE5H", any: true }),
 }));
 
 class FakeSocket {
@@ -420,5 +427,61 @@ describe("Label page (propagation, cleanup, keyboard)", () => {
     fireEvent.change(screen.getByLabelText("Range end"), { target: { value: "9" } });
     fireEvent.click(screen.getByRole("button", { name: /Clear masks/ }));
     await waitFor(() => expect(api.clearRange).toHaveBeenCalledWith("c1", 5, 9));
+  });
+});
+
+describe("Label page (brush)", () => {
+  const paintOnce = () => {
+    const canvas = screen.getByLabelText("Frame");
+    fireEvent.mouseDown(canvas, { button: 0, clientX: 40, clientY: 40 });
+    fireEvent.mouseMove(canvas, { button: 0, clientX: 60, clientY: 60 });
+    fireEvent.mouseUp(canvas, { button: 0, clientX: 60, clientY: 60 });
+  };
+
+  it("switches to the Brush panel, locks the page while strokes are unsaved, and saves the mask", async () => {
+    vi.mocked(api.getClip).mockResolvedValue(detail);
+    vi.mocked(api.setMask).mockResolvedValue(detail);
+    renderLabel();
+    await screen.findByText("bench.mp4");
+    fireEvent.click(screen.getByRole("button", { name: "Brush" }));
+    expect(screen.getByRole("heading", { name: "Brush" })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Prompt" })).toBeNull();
+    expect(screen.getByText("No strokes yet on frame 0.")).toBeTruthy();
+
+    paintOnce();
+    expect(screen.getByText("1 stroke on frame 0, not saved.")).toBeTruthy();
+    const lock = /Save or discard the brush strokes on frame 0 first/;
+    expect(screen.getAllByText(lock).length).toBeGreaterThan(0);
+    expect((screen.getByRole("button", { name: "Next frame" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Forward ▶" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Clear masks in frame 0" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Click" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.keyDown(window, { key: "ArrowRight" });
+    expect(screen.getByText("frame 0 / 39")).toBeTruthy(); // the step key is ignored while locked
+    fireEvent.keyDown(window, { key: "=" });
+    expect((screen.getByLabelText("Brush size") as HTMLInputElement).value).toBe("29"); // 24 * 1.2
+
+    fireEvent.keyDown(window, { key: "Enter" });
+    await waitFor(() => expect(api.setMask).toHaveBeenCalledWith("c1", 0, "UE5H", { classId: undefined }));
+    expect(await screen.findByText("No strokes yet on frame 0.")).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Next frame" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("discards with Escape and undoes with Z; Brush is unavailable on a deleted frame", async () => {
+    vi.mocked(api.getClip).mockResolvedValue(detail);
+    renderLabel();
+    await screen.findByText("bench.mp4");
+    fireEvent.click(screen.getByRole("button", { name: "Brush" }));
+    paintOnce();
+    paintOnce();
+    expect(screen.getByText("2 strokes on frame 0, not saved.")).toBeTruthy();
+    fireEvent.keyDown(window, { key: "z" });
+    expect(screen.getByText("1 stroke on frame 0, not saved.")).toBeTruthy();
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(screen.getByText("No strokes yet on frame 0.")).toBeTruthy();
+    for (let i = 0; i < 3; i++) fireEvent.keyDown(window, { key: "ArrowRight", shiftKey: true });
+    expect(await screen.findByText("frame 30 / 39")).toBeTruthy(); // deleted in the fixture
+    expect(screen.getByText("This frame is deleted. Restore it to paint on it.")).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Brush" }) as HTMLButtonElement).disabled).toBe(true);
   });
 });
