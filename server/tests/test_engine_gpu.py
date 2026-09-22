@@ -4,6 +4,7 @@ The scene is synthetic (a bright disc moving over a noise background) so ground 
 """
 
 import contextlib
+import threading
 from pathlib import Path
 
 import cv2
@@ -236,3 +237,33 @@ def test_many_clicks_without_a_box_stay_accurate(engine, video):
     det = engine.predict_prompt(frames[0], points=points, frame_key=("t", 0))
     assert det is not None
     assert _iou(det.mask, truth[0]) > 0.85
+
+
+def test_a_prepared_chunk_propagates_like_raw_frames(engine, video):
+    frames, truth = video
+    raw = dict(engine.propagate(frames, truth[0]))
+    got = dict(engine.propagate(engine.prepare(frames), truth[0]))
+    assert sorted(got) == sorted(raw) == list(range(len(frames)))
+    for i, r in raw.items():
+        assert (r is None) == (got[i] is None)
+        if r is not None:
+            assert _iou(r, got[i]) > 0.98
+
+
+def test_prepare_runs_on_another_thread_while_a_propagation_is_open(engine, video):
+    """prepare() must not take the GPU lock: the chunk loop calls it from a worker thread while
+    the current chunk's generator (which holds the lock) is open."""
+    frames, truth = video
+    with contextlib.closing(engine.propagate(frames[:4], truth[0])) as masks:
+        next(masks)  # the lock is now held by this thread
+        done = threading.Event()
+        out = {}
+
+        def worker():
+            out["prepared"] = engine.prepare(frames[:3])
+            done.set()
+
+        threading.Thread(target=worker, daemon=True).start()
+        assert done.wait(15), "prepare() blocked behind the GPU lock"
+    assert out["prepared"].pixel_values.shape[0] == 3
+    assert out["prepared"].pixel_values.device.type == "cpu"
