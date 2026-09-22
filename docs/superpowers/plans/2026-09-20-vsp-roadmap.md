@@ -222,3 +222,29 @@ Still deferred (designed, not built): resumable chunked uploads (tus-style sessi
 link resumes instead of restarting); the transfer needs the browser tab to stay open; a `.zip` is the only archive
 format; one file per request, no client-side queue. A real `ssh -L` tunnel could not be exercised on this box (no sshd);
 a byte-copying TCP relay stood in for the forwarded stream, which is all the server ever sees.
+
+## Propagation streaming (done, 2026-09-21, on `main`)
+
+The user saw propagation land in bursts: nothing for seconds, then a whole 24-frame chunk at once. The job stream, the
+WebSocket relay (50 ms) and the page's per-animation-frame flush were not the cause; the engine encoded every frame of a
+chunk with the image encoder before the tracker produced its first mask. `Sam3Engine._propagate_locked` now encodes one
+frame ahead of the tracker (`_encode_frame(session, k + 1)` right after yielding frame `k`), which is safe because the
+tracker is causal and reads only the current frame's cached features. Same total work; measured on the demo clip, frames
+now arrive one at a time every ~0.2 s, largest burst 2 events. A GPU test asserts the encode/yield interleaving.
+
+Still visible: ~1.3 s before the first frame (session setup) and ~0.5 s at each chunk boundary (reading and preprocessing
+the next chunk's frames, re-encoding the anchor). Deferred: prefetch the next chunk's frames on a CPU thread while the
+current chunk propagates, which would remove the boundary pause.
+
+## Chunk prefetch (done, 2026-09-22, branch `prefetch-chunks`)
+
+Closes the deferred item under "Propagation streaming": the next chunk's frames are read and preprocessed on a worker
+thread while the current chunk is on the GPU. `Engine.prepare()` is the CPU-only, lock-free half of `propagate()`;
+`ChunkPrefetcher` (`server/vsp/labeling/prefetch.py`) owns one worker and a cache of raw frames that, after `take()`,
+holds only the current chunk, and after `schedule()` holds the current chunk plus the one loading in the background,
+so anchors are never re-read and a wrong prediction (OOM back-off, an anchor that is not the chunk's last frame) only
+redoes the preprocessing. Measured on the demo clip: chunk-boundary gap 0.46 s against a median frame step of 0.25 s
+(was 0.56 s against 0.22 s).
+
+Still deferred: the anchor is re-encoded in every new tracker session (~one frame step per chunk); the second
+direction of a "both" run starts with a synchronous chunk; one chunk of look-ahead only.

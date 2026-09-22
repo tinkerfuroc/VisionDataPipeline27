@@ -15,6 +15,7 @@ import collections
 import logging
 import threading
 from collections.abc import Callable, Iterator, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -22,13 +23,22 @@ import torch
 
 from .device import cuda_capabilities, pick_device
 from .masks import bbox_of, is_degenerate_mask
-from .types import ChunkOOMError, Detection, EngineNotLoaded, Point
+from .types import ChunkOOMError, Detection, EngineNotLoaded, Point, PreparedChunk
 
 log = logging.getLogger(__name__)
 
 _FRAME_CACHE_CAPACITY = 8
 _DTYPES = {"bfloat16": torch.bfloat16, "float16": torch.float16, "float32": torch.float32}
 _OBJ_ID = 1
+
+
+@dataclass
+class _Prepared:
+    """A chunk after the processor: the tensor `propagate()` builds its tracker session from, still on the CPU."""
+
+    pixel_values: torch.Tensor  # (n, 3, S, S)
+    h: int
+    w: int
 
 
 class Sam3Engine:
@@ -272,16 +282,30 @@ class Sam3Engine:
         return Detection(mask=mask, bbox=bbox_of(mask), score=score)
 
     # ------------------------------------------------------------- propagate
+    def prepare(self, frames: list[np.ndarray]) -> _Prepared:
+        """Resize and normalise a chunk on the CPU. Lock-free, so the chunk loop can run it on a
+        worker thread while the previous chunk's `propagate()` generator holds the GPU lock."""
+        processor = self._processor  # a local: release() may null the attribute concurrently
+        if processor is None:
+            raise EngineNotLoaded(self.load_error or "Sam3Engine.load() has not been called")
+        if not frames:
+            raise ValueError("cannot prepare an empty chunk")
+        h, w = frames[0].shape[:2]
+        rgb = [np.ascontiguousarray(f[:, :, ::-1]) for f in frames]
+        return _Prepared(processor(images=rgb, return_tensors="pt")["pixel_values"], h, w)
+
     def propagate(
         self,
-        frames: list[np.ndarray],
+        frames: list[np.ndarray] | PreparedChunk,
         seed_mask: np.ndarray,
         cancel_cb: Callable[[], bool] | None = None,
     ) -> Iterator[tuple[int, np.ndarray | None]]:
         """Track `seed_mask` (given for `frames[0]`) forward through `frames`.
 
         This is a generator: argument validation and all GPU work happen lazily, starting on the
-        first `next()` call, not when `propagate()` is called.
+        first `next()` call, not when `propagate()` is called. `frames` is either the raw BGR
+        frames or the result of `prepare()` on them; the preprocessing happens here in the former
+        case.
 
         The GPU lock (`self._lock`) is acquired on that first `next()` and held until the
         generator is exhausted or closed. Callers MUST either exhaust it or call `.close()`
@@ -295,15 +319,18 @@ class Sam3Engine:
         iteration) and releases the lock, instead of raising.
         """
         self._require_loaded()
-        if not frames:
-            return
-        h, w = frames[0].shape[:2]
+        if isinstance(frames, _Prepared):
+            prepared = frames
+        else:
+            if not frames:
+                return
+            prepared = self.prepare(frames)
+        h, w = prepared.h, prepared.w
         if seed_mask.shape != (h, w):
             raise ValueError(f"seed_mask shape {seed_mask.shape} does not match frames {(h, w)}")
         if not seed_mask.any():
             raise ValueError("seed_mask must be non-empty")
-        rgb = [np.ascontiguousarray(f[:, :, ::-1]) for f in frames]
-        video = self._processor(images=rgb, return_tensors="pt")["pixel_values"]
+        video = prepared.pixel_values
         try:
             with self._lock, torch.inference_mode(), self._autocast():
                 yield from self._propagate_locked(video, seed_mask, h, w, cancel_cb)
@@ -316,13 +343,19 @@ class Sam3Engine:
         finally:
             torch.cuda.empty_cache()
 
+    def _encode_frame(self, session, frame_idx: int) -> None:
+        px = session.get_frame(frame_idx).unsqueeze(0)
+        embeds = self._model.detector_model.get_vision_features(pixel_values=px)
+        self._cache_tracker_features(session, frame_idx, embeds)
+
     def _propagate_locked(self, video, seed_mask, h, w, cancel_cb):
         n = int(video.shape[0])
         session = self._new_session(video, h, w)
-        for fr in range(n):
-            px = session.get_frame(fr).unsqueeze(0)
-            embeds = self._model.detector_model.get_vision_features(pixel_values=px)
-            self._cache_tracker_features(session, fr, embeds)
+        # The image encoder is where the time goes; the tracker head is cheap and causal, reading
+        # only the current frame's cached features. Encoding one frame ahead of the tracker (instead
+        # of the whole chunk up front) lets each mask reach the caller as soon as it is ready, so the
+        # GUI sees a steady stream of frames rather than a long silence and then the whole chunk.
+        self._encode_frame(session, 0)
         obj_idx = session.obj_id_to_idx(_OBJ_ID)
         seed = torch.from_numpy(seed_mask.astype(np.float32))[None, None].to(self.device, dtype=self.torch_dtype)
         session.add_mask_inputs(obj_idx, 0, seed)
@@ -337,4 +370,7 @@ class Sam3Engine:
                 m = self._binarize(out.pred_masks, h, w)
                 if not is_degenerate_mask(m, max_area_frac=self.MAX_MASK_AREA_FRAC, min_area_px=self.MIN_MASK_AREA_PX):
                     mask = m
-            yield int(out.frame_idx), mask
+            fr = int(out.frame_idx)
+            yield fr, mask
+            if fr + 1 < n:
+                self._encode_frame(session, fr + 1)

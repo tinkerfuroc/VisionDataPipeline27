@@ -1,5 +1,8 @@
+import threading
+
 import numpy as np
 import pytest
+import vsp.labeling.prefetch as prefetch_mod
 from conftest import is_white
 from vsp.engine.fake import FakeEngine
 from vsp.engine.types import ChunkOOMError
@@ -404,3 +407,38 @@ def test_propagated_ranges_after_a_lost_stop_cover_the_processed_frames(store, m
     store.write_mask(clip.id, OBJECT_ID, 7, stale)
     run_propagation(store, eng, clip.id, 0, "forward", **KW)
     assert store.read_clip(clip.id).objects[0].propagated_ranges == [(1, 8)]
+
+
+def test_each_frame_is_read_from_disk_once_per_run(store, make_clip, monkeypatch):
+    reads: list[int] = []
+    real = prefetch_mod.load_frame
+
+    def counting(store_, clip_, idx):
+        reads.append(idx)
+        return real(store_, clip_, idx)
+
+    monkeypatch.setattr(prefetch_mod, "load_frame", counting)
+    eng = FakeEngine()
+    clip = _seeded(store, make_clip, eng)
+    res = run_propagation(store, eng, clip.id, 0, "forward", **KW)
+    assert res.written == 29
+    assert sorted(reads) == list(range(30))  # anchors are not re-read at chunk seams
+    assert eng.prepare_calls == [9, 9, 9, 6] and eng.propagate_calls == [9, 9, 9, 6]
+
+
+def test_no_prefetch_thread_survives_the_run(store, make_clip):
+    eng = FakeEngine()
+    clip = _seeded(store, make_clip, eng)
+    seen = []
+
+    def cancel():
+        return len(seen) >= 3
+
+    run_propagation(store, eng, clip.id, 0, "forward", emit=seen.append, cancel=cancel, **KW)
+    assert not [t for t in threading.enumerate() if t.name.startswith("vsp-prefetch")]
+
+    eng = FakeEngine(oom_if_more_than=2)
+    clip = _seeded(store, make_clip, eng)
+    with pytest.raises(PropagationFailed):
+        run_propagation(store, eng, clip.id, 0, "forward", **KW)
+    assert not [t for t in threading.enumerate() if t.name.startswith("vsp-prefetch")]

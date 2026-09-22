@@ -105,3 +105,21 @@ def test_fake_engine_knobs_accept_the_speck_box():
     img = _frames(1)[0]
     det = eng.predict_prompt(img, box=(10, 20, 15, 25))
     assert det is not None and det.bbox == (10, 20, 15, 25)
+
+
+def test_prepare_returns_the_frames_and_propagate_accepts_them():
+    eng = FakeEngine()
+    frames = [np.full((40, 60, 3), 90, dtype=np.uint8) for _ in range(4)]
+    seed = np.zeros((40, 60), dtype=bool)
+    seed[10:20, 5:15] = True
+    prepared = eng.prepare(frames)
+    assert isinstance(prepared, list) and len(prepared) == 4 and prepared is not frames
+    assert eng.prepare_calls == [4]
+    raw = [(o, None if m is None else m.copy()) for o, m in eng.propagate(frames, seed)]
+    via_prepared = list(eng.propagate(prepared, seed))
+    assert [o for o, _ in raw] == [o for o, _ in via_prepared]
+    for (_, a), (_, b) in zip(raw, via_prepared):
+        assert (a is None) == (b is None)
+        if a is not None:
+            assert np.array_equal(a, b)
+    assert eng.propagate_calls == [4, 4]

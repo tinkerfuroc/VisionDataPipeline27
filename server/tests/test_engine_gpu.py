@@ -4,6 +4,7 @@ The scene is synthetic (a bright disc moving over a noise background) so ground 
 """
 
 import contextlib
+import threading
 from pathlib import Path
 
 import cv2
@@ -124,6 +125,26 @@ def test_backward_propagation_is_just_a_reversed_list(engine, video):
     assert _track(engine, frames[::-1], truth[::-1]) >= 18
 
 
+def test_propagation_streams_masks_instead_of_encoding_the_whole_chunk_first(engine, video, monkeypatch):
+    """Frame k's mask must reach the caller before frame k+1 is encoded, so the GUI sees a steady
+    stream of frames rather than a long silence followed by a burst of the whole chunk."""
+    frames, truth = video
+    order: list[str] = []
+    real = engine._cache_tracker_features
+
+    def spy(session, frame_idx, embeds):
+        order.append(f"encode {frame_idx}")
+        real(session, frame_idx, embeds)
+
+    monkeypatch.setattr(engine, "_cache_tracker_features", spy)
+    with contextlib.closing(engine.propagate(frames, truth[0])) as masks:
+        for offset, _ in masks:
+            order.append(f"yield {offset}")
+    n = len(frames)
+    expected = ["encode 0"] + [s for k in range(n) for s in (f"yield {k}", f"encode {k + 1}")][:-1]
+    assert order == expected
+
+
 def test_end_to_end_store_ingest_engine_store(engine, video, tmp_path):
     """store -> ingest -> real engine -> store, run together for the first time."""
     frames, truth = video
@@ -216,3 +237,33 @@ def test_many_clicks_without_a_box_stay_accurate(engine, video):
     det = engine.predict_prompt(frames[0], points=points, frame_key=("t", 0))
     assert det is not None
     assert _iou(det.mask, truth[0]) > 0.85
+
+
+def test_a_prepared_chunk_propagates_like_raw_frames(engine, video):
+    frames, truth = video
+    raw = dict(engine.propagate(frames, truth[0]))
+    got = dict(engine.propagate(engine.prepare(frames), truth[0]))
+    assert sorted(got) == sorted(raw) == list(range(len(frames)))
+    for i, r in raw.items():
+        assert (r is None) == (got[i] is None)
+        if r is not None:
+            assert _iou(r, got[i]) > 0.98
+
+
+def test_prepare_runs_on_another_thread_while_a_propagation_is_open(engine, video):
+    """prepare() must not take the GPU lock: the chunk loop calls it from a worker thread while
+    the current chunk's generator (which holds the lock) is open."""
+    frames, truth = video
+    with contextlib.closing(engine.propagate(frames[:4], truth[0])) as masks:
+        next(masks)  # the lock is now held by this thread
+        done = threading.Event()
+        out = {}
+
+        def worker():
+            out["prepared"] = engine.prepare(frames[:3])
+            done.set()
+
+        threading.Thread(target=worker, daemon=True).start()
+        assert done.wait(15), "prepare() blocked behind the GPU lock"
+    assert out["prepared"].pixel_values.shape[0] == 3
+    assert out["prepared"].pixel_values.device.type == "cpu"
