@@ -4,7 +4,7 @@ import { MAX_SIZE, MIN_SIZE } from "../lib/brush";
 type Props = { brush: Brush; frame: number; disabledReason: string | null };
 
 export function BrushPanel({ brush, frame, disabledReason }: Props) {
-  const { draft, dirty, busy, error } = brush;
+  const { draft, dirty, busy, error, canSave, saveBlockedReason } = brush;
   const disabled = disabledReason !== null;
   const n = draft.strokes.length;
   const status = busy
@@ -31,10 +31,11 @@ export function BrushPanel({ brush, frame, disabledReason }: Props) {
       </p>
       <p className="note text-ink">{status}</p>
       {dirty && !busy && <p className="note">Save or discard the brush strokes on frame {frame} first to do anything else.</p>}
+      {dirty && saveBlockedReason !== null && <p className="note text-ink">{saveBlockedReason}</p>}
       {error !== null && <p role="alert" className="text-xs text-danger">{error}</p>}
       <div className="flex gap-1">
-        <button type="button" disabled={!dirty || busy || disabled} aria-keyshortcuts="Enter"
-          className={`btn flex-1 ${dirty && !busy ? "btn-on" : ""}`} onClick={() => void brush.save()}>
+        <button type="button" disabled={!canSave || disabled} aria-keyshortcuts="Enter"
+          className={`btn flex-1 ${canSave ? "btn-on" : ""}`} onClick={() => void brush.save()}>
           Save <kbd aria-hidden>Enter</kbd>
         </button>
         <button type="button" disabled={!dirty || busy} aria-keyshortcuts="Escape" className="btn" onClick={brush.discard}>

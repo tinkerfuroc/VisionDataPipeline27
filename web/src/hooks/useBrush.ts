@@ -12,6 +12,11 @@ export type Brush = {
   layer: HTMLCanvasElement | null;
   busy: boolean;
   error: string | null;
+  /** true when save() will actually do something: dirty, not busy, no stroke in progress, and (if this is the
+   * clip's first mask) a class is chosen. */
+  canSave: boolean;
+  /** why canSave is false, when the reason is something the panel should tell the user; null otherwise. */
+  saveBlockedReason: string | null;
   setSize: (size: number) => void;
   grow: (dir: 1 | -1) => void;
   start: (mode: BrushMode, x: number, y: number) => void;
@@ -120,8 +125,17 @@ export function useBrush(o: Options): Brush {
   const setSize = useCallback((size: number) => setDraft((d) => brushReducer(d, { type: "size", size })), []);
   const grow = useCallback((dir: 1 | -1) => setDraft((d) => brushReducer(d, { type: "grow", dir })), []);
 
+  // Mirrors usePrompting's canAccept: the first save on an unlabeled clip needs a class, same as accept.
+  const needsClassNow = needsClass && classId === null;
+  const saveBlockedReason = dirty && needsClassNow ? "Choose a class before saving the first mask." : null;
+  const canSave = dirty && !busy && !live && !needsClassNow;
+
   const save = useCallback(async () => {
-    if (!dirty || busy) return;
+    // A stroke in progress (stroke.current !== null) must not be saved: encoding the layer now and clearing the
+    // draft, only to have the in-flight end() commit the whole stroke into the emptied draft, would leave a stuck
+    // "not saved" state. Likewise, the first save on an unlabeled clip needs a class (canSave already reflects
+    // both, but save() guards itself too so it is safe to call directly).
+    if (!dirty || busy || stroke.current !== null || (needsClass && classId === null)) return;
     const encoded = encodeLayer(layer.canvas);
     if (encoded === null) {
       setError("This browser cannot export the painted mask.");
@@ -140,14 +154,19 @@ export function useBrush(o: Options): Brush {
     }
   }, [dirty, busy, layer, clipId, frame, needsClass, classId, apply]);
 
-  // Leaving brush mode with nothing painted drops the base so the next activation re-fetches it.
+  // Leaving brush mode drops the draft: clear only when there is nothing painted (!dirty, i.e. no committed
+  // strokes and no stroke in progress). Strokes must never be silently lost: if `active` falls while strokes
+  // exist (the tool became unavailable because a job started or the frame was deleted), keep the strokes; the
+  // panel keeps offering Discard (and Save once the tool is available again).
   useEffect(() => {
-    if (!active) {
-      stroke.current = null;
-      setLive(false);
-      setDraft((d) => brushReducer(d, { type: "clear" }));
-    }
-  }, [active]);
+    if (active || dirty) return;
+    stroke.current = null;
+    setLive(false);
+    setDraft((d) => brushReducer(d, { type: "clear" }));
+  }, [active, dirty]);
 
-  return { draft, dirty, layer: layer.canvas, busy, error, setSize, grow, start, extend, end, undo, discard, save };
+  return {
+    draft, dirty, layer: layer.canvas, busy, error, canSave, saveBlockedReason,
+    setSize, grow, start, extend, end, undo, discard, save,
+  };
 }

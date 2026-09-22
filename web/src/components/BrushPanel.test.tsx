@@ -6,7 +6,7 @@ import { emptyBrush } from "../lib/brush";
 import { BrushPanel } from "./BrushPanel";
 
 const brush = (over: Partial<Brush> = {}): Brush => ({
-  draft: emptyBrush(), dirty: false, layer: null, busy: false, error: null,
+  draft: emptyBrush(), dirty: false, layer: null, busy: false, error: null, canSave: false, saveBlockedReason: null,
   setSize: vi.fn(), grow: vi.fn(), start: vi.fn(), extend: vi.fn(), end: vi.fn(), undo: vi.fn(), discard: vi.fn(),
   save: vi.fn(async () => {}), ...over,
 });
@@ -24,7 +24,7 @@ describe("BrushPanel", () => {
     }
   });
   it("changes the size from the slider and wires Save, Discard and Undo when dirty", () => {
-    const b = brush({ dirty: true, draft: { size: 40, strokes: [{ mode: "paint", size: 40, points: [[1, 1]] }, { mode: "erase", size: 40, points: [[2, 2]] }, { mode: "paint", size: 40, points: [[3, 3]] }] } });
+    const b = brush({ dirty: true, canSave: true, draft: { size: 40, strokes: [{ mode: "paint", size: 40, points: [[1, 1]] }, { mode: "erase", size: 40, points: [[2, 2]] }, { mode: "paint", size: 40, points: [[3, 3]] }] } });
     render(<BrushPanel brush={b} frame={3} disabledReason={null} />);
     fireEvent.change(screen.getByLabelText("Brush size"), { target: { value: "55" } });
     expect(b.setSize).toHaveBeenCalledWith(55);
@@ -45,5 +45,13 @@ describe("BrushPanel", () => {
     expect(screen.getByText("Saving…")).toBeTruthy();
     expect(screen.getByRole("alert").textContent).toBe("mask is 640×480, the clip is 1920×1080");
     expect((screen.getByRole("button", { name: /Save/ }) as HTMLButtonElement).disabled).toBe(true); // while saving
+  });
+  it("shows a note and disables Save when a class is needed for the first save, keeping Discard and Undo enabled", () => {
+    const b = brush({ dirty: true, canSave: false, saveBlockedReason: "Choose a class before saving the first mask." });
+    render(<BrushPanel brush={b} frame={5} disabledReason={null} />);
+    expect(screen.getByText("Choose a class before saving the first mask.")).toBeTruthy();
+    expect((screen.getByRole("button", { name: /Save/ }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: /Discard/ }) as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByRole("button", { name: /Undo stroke/ }) as HTMLButtonElement).disabled).toBe(false);
   });
 });
