@@ -1,4 +1,5 @@
-"""Keyframe-capped propagation with anchor-prepended chunks (spec 5.3)."""
+"""Keyframe-capped propagation with anchor-prepended chunks (spec 5.3); the next chunk is read and
+preprocessed while the current one runs."""
 
 from __future__ import annotations
 
@@ -12,7 +13,7 @@ import numpy as np
 from ..engine.types import ChunkOOMError, Engine
 from ..store import Clip, LabelObject, ProjectStore
 from .errors import BadRequest, PropagationFailed
-from .prompts import load_frame
+from .prefetch import ChunkPrefetcher
 from .ranges import add_range
 
 Emit = Callable[[dict], None]
@@ -68,6 +69,7 @@ def _run_direction(
     result: PropagateResult,
     emit: Emit,
     cancel: Callable[[], bool],
+    prefetch: ChunkPrefetcher,
 ) -> int:
     """Run one direction's chunk loop.
 
@@ -84,7 +86,12 @@ def _run_direction(
         # mid-run gets its mask written starting from the next chunk.
         deleted = set(store.read_clip(clip.id).deleted_frames)
         chunk = pending[:size]
-        frames = [load_frame(store, clip, anchor_idx)] + [load_frame(store, clip, i) for i in chunk]
+        frames = prefetch.take(anchor_idx, chunk)
+        # Predict the next chunk (this one completes and its last frame becomes the anchor) and start reading and
+        # preprocessing it now, so that work overlaps this chunk's GPU time instead of following it. A wrong
+        # prediction costs only the preprocessing: the prefetcher re-reads nothing it already holds.
+        if len(pending) > size:
+            prefetch.schedule(chunk[-1], pending[size:2 * size])
         done_in_chunk: list[int] = []
         oom_error: ChunkOOMError | None = None
         direction_lost_frame: int | None = None
@@ -201,14 +208,15 @@ def run_propagation(
     total = sum(len(p) for p in plans)
     emit({"type": "progress", "done": 0, "total": total})
     size = chunk_size
-    for d, indices in zip(directions, plans):
-        if result.cancelled:
-            break
-        size = _run_direction(
-            store, engine, clip, obj.id, from_frame, seed, indices, d,
-            chunk_size=size, min_chunk_size=min_chunk_size, lost_after=lost_after,
-            total=total, result=result, emit=emit, cancel=cancel,
-        )
+    with ChunkPrefetcher(store, clip, engine) as prefetch:
+        for d, indices in zip(directions, plans):
+            if result.cancelled:
+                break
+            size = _run_direction(
+                store, engine, clip, obj.id, from_frame, seed, indices, d,
+                chunk_size=size, min_chunk_size=min_chunk_size, lost_after=lost_after,
+                total=total, result=result, emit=emit, cancel=cancel, prefetch=prefetch,
+            )
     for d in directions:
         if d in result.lost_by_direction:
             result.lost_at = result.lost_by_direction[d]

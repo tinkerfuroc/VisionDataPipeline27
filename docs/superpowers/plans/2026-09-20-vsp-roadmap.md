@@ -235,3 +235,15 @@ now arrive one at a time every ~0.2 s, largest burst 2 events. A GPU test assert
 Still visible: ~1.3 s before the first frame (session setup) and ~0.5 s at each chunk boundary (reading and preprocessing
 the next chunk's frames, re-encoding the anchor). Deferred: prefetch the next chunk's frames on a CPU thread while the
 current chunk propagates, which would remove the boundary pause.
+
+## Chunk prefetch (done, 2026-09-22, branch `prefetch-chunks`)
+
+Closes the deferred item under "Propagation streaming": the next chunk's frames are read and preprocessed on a worker
+thread while the current chunk is on the GPU. `Engine.prepare()` is the CPU-only, lock-free half of `propagate()`;
+`ChunkPrefetcher` (`server/vsp/labeling/prefetch.py`) owns one worker and a cache of raw frames limited to the
+current and the scheduled chunk, so anchors are never re-read and a wrong prediction (OOM back-off, an anchor that is
+not the chunk's last frame) only redoes the preprocessing. Measured on the demo clip: chunk-boundary gap 0.46 s
+against a median frame step of 0.25 s (was 0.56 s against 0.22 s).
+
+Still deferred: the anchor is re-encoded in every new tracker session (~one frame step per chunk); the second
+direction of a "both" run starts with a synchronous chunk; one chunk of look-ahead only.
