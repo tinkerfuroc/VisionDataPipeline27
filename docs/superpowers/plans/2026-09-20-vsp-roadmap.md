@@ -248,3 +248,13 @@ redoes the preprocessing. Measured on the demo clip: chunk-boundary gap 0.46 s a
 
 Still deferred: the anchor is re-encoded in every new tracker session (~one frame step per chunk); the second
 direction of a "both" run starts with a synchronous chunk; one chunk of look-ahead only.
+
+## Brush mask editing (done, 2026-09-22, branch `brush-mask-editing`)
+
+Spec: `docs/superpowers/specs/2026-09-22-brush-mask-editing-design.md`. A Brush tool paints and erases a frame's mask on
+the canvas (strokes rasterised incrementally on an offscreen layer in the class colour); Save uploads the whole mask
+as a PNG to `POST /api/clips/{c}/mask`, which stores it as a `paint` keyframe (an empty mask removes mask and
+keyframe). Unsaved strokes lock navigation, the other tools, propagation and cleanup until saved or discarded.
+
+Deferred: brush hardness/feathering, a lasso or polygon tool, pen pressure and touch, painting across several frames,
+and an "unsaved changes" prompt on leaving the page (strokes are simply dropped).

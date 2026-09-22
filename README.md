@@ -106,8 +106,8 @@ reported as a failed job ("nothing to export"), because finding that out means r
 ### Keyboard
 
 `Enter` accept · `Esc` clear · `Z` undo click · `←/→` step · `Shift+←/→` ±10 · `Space` play/pause · `K` / `Shift+K`
-next / previous keyframe · `G` next empty frame · `Del` delete or restore frame · `[` / `]` mark the first / last frame to clear · `M` mask overlay · mouse wheel zoom ·
-middle-drag pan · right click = negative point.
+next / previous keyframe · `G` next empty frame · `Del` delete or restore frame · `[` / `]` mark the first / last frame to clear · `-` / `=` shrink / grow the brush (Brush tool) · `M` mask overlay · mouse wheel zoom ·
+middle-drag pan · right click = negative point. `Enter`, `Esc` and `Z` act on the brush while it is selected (Save, Discard, Undo stroke) instead of accept / clear / undo click.
 
 ### Manual QA checklist (run on real footage before trusting a dataset)
 
@@ -147,3 +147,7 @@ middle-drag pan · right click = negative point.
     transfer stops, no partial clip appears, and `data/uploads/` is empty.
 15. Upload a file larger than `ingest.max_upload_bytes`: the GUI must refuse it before the transfer starts, and
     `curl -X POST --data-binary @big.mp4 .../clips/upload?name=big.mp4` must answer 413.
+16. Brush: pick the Brush tool on a masked frame, paint a missing corner (left-drag) and erase a spill (right-drag);
+    the transport, the other tools, Propagate and Cleanup are disabled until you Save (Enter) or Discard (Esc). After
+    Save the frame shows a keyframe diamond; propagate from it and check the run stops at the next keyframe. Erase the
+    whole mask on another frame and Save: the frame becomes empty. The brush works with the engine unloaded.

@@ -199,6 +199,7 @@ vision-sampler-pipeline/
 | `GET /api/clips/{c}/masks/{i}` | Mask PNG (404 when absent) |
 | `POST /api/clips/{c}/prompt` `{frame, type, payload}` | Preview mask(s); nothing persisted |
 | `POST /api/clips/{c}/accept` `{frame, prompt, class_id, candidate?}` | Create object or add keyframe |
+| `POST /api/clips/{c}/mask` `{frame, mask_png_b64, class_id?}` | Store a hand-painted mask; the frame becomes a `paint` keyframe (empty mask: remove mask and keyframe). 409 while the GPU is leased. |
 | `POST /api/clips/{c}/propagate` `{from_frame, direction}` | Start job (409 if a GPU job is running) |
 | `POST /api/clips/{c}/frames/{i}/delete`, `/restore`; `POST /api/clips/{c}/prune` `{from}`; `POST /api/clips/{c}/clear-range` `{start, end}` | Cleanup |
 | `POST /api/projects/{p}/export` `{clips, formats, options}` | Start export job |
@@ -274,6 +275,9 @@ keyframe (subsequently), writes the mask, and records the prompt.
   project class or type a new name, which creates it.
 - The vision embedding for the current frame is cached by `(clip_id, idx)` so
   each additional click is a decoder-only call (sub-second).
+
+**Painted masks.** The brush tool edits a frame's mask directly in the browser and uploads the whole mask; such a
+frame is a keyframe with prompt type `paint`. See `2026-09-22-brush-mask-editing-design.md`.
 
 ### 5.3 Propagation
 
@@ -353,8 +357,9 @@ count, percent labeled, delete).
 ```
 ┌────────────────────────────────────────────────┬──────────────────────────┐
 │              frame canvas                      │ OBJECT  class, stats     │
-│   mask overlay · click dots · drag box         │ PROMPT  Click/Box/Text   │
-│   zoom (wheel) · pan (middle-drag)             │         Accept / Clear   │
+│   mask overlay · click dots · drag box         │ PROMPT  Click/Box/Text/  │
+│   zoom (wheel) · pan (middle-drag)             │         Brush            │
+│                                                │         Accept / Clear   │
 │                                                │ PROPAGATE ◀ Both ▶ Stop  │
 │                                                │ CLEANUP delete/prune/    │
 │                                                │         clear range      │
@@ -367,6 +372,9 @@ count, percent labeled, delete).
   click refreshes the preview.
 - Box mode: drag → preview → optional click refinement.
 - Text mode: phrase → numbered candidates → click one.
+- Brush mode: left-drag paints, right-drag erases; `Enter` saves the whole
+  mask as a `paint` keyframe, `Esc` discards the strokes, `Z` undoes the last
+  stroke.
 - `Enter` accept, `Esc` clear, `←/→` step, `Shift+←/→` ±10, `Space` play with
   overlay at clip fps, `K`/`Shift+K` next/previous keyframe, `G` next empty
   frame, `Del` delete frame, `M` toggle overlay.
