@@ -7,7 +7,7 @@ from collections.abc import Callable, Iterator, Sequence
 import numpy as np
 
 from .masks import bbox_of, is_degenerate_mask
-from .types import ChunkOOMError, Detection, Point
+from .types import ChunkOOMError, Detection, Point, PreparedChunk
 
 
 class FakeEngine:
@@ -26,6 +26,7 @@ class FakeEngine:
         self.is_empty = is_empty
         self.max_area_frac = max_area_frac
         self.min_area_px = min_area_px
+        self.prepare_calls: list[int] = []
         self.propagate_calls: list[int] = []
 
     def _is_degenerate(self, mask: np.ndarray) -> bool:
@@ -72,9 +73,15 @@ class FakeEngine:
             return None
         return Detection(mask=mask, bbox=bbox_of(mask), score=0.95)
 
+    def prepare(self, frames: list[np.ndarray]) -> list[np.ndarray]:
+        # The fake's "prepared chunk" is the frame list itself, so test doubles that override
+        # `propagate` and index `frames` keep working.
+        self.prepare_calls.append(len(frames))
+        return list(frames)
+
     def propagate(
         self,
-        frames: list[np.ndarray],
+        frames: list[np.ndarray] | PreparedChunk,
         seed_mask: np.ndarray,
         cancel_cb: Callable[[], bool] | None = None,
     ) -> Iterator[tuple[int, np.ndarray | None]]:

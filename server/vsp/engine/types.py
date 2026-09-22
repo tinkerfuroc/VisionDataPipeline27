@@ -27,6 +27,10 @@ class EngineNotLoaded(RuntimeError):
     pass
 
 
+PreparedChunk = object
+"""Opaque, engine-specific output of `Engine.prepare()`; only the engine that produced it reads it."""
+
+
 class Engine(Protocol):
     def is_loaded(self) -> bool: ...
 
@@ -43,9 +47,19 @@ class Engine(Protocol):
         frame_key: tuple | None = None,
     ) -> Detection | None: ...
 
+    def prepare(self, frames: list[np.ndarray]) -> PreparedChunk:
+        """CPU-only preprocessing of a chunk for `propagate()`.
+
+        Lock-free and thread-safe: it may run on another thread while a `propagate()` generator
+        from this engine is open, so a caller can prepare the next chunk while the current one is
+        on the GPU. Never touches the GPU. The result is opaque; pass it to `propagate()` in place
+        of the raw frame list.
+        """
+        ...
+
     def propagate(
         self,
-        frames: list[np.ndarray],
+        frames: list[np.ndarray] | PreparedChunk,
         seed_mask: np.ndarray,
         cancel_cb: Callable[[], bool] | None = None,
     ) -> Iterator[tuple[int, np.ndarray | None]]:
@@ -57,6 +71,6 @@ class Engine(Protocol):
         until the generator is exhausted or closed -- callers MUST exhaust it or call `.close()`
         (e.g. wrap consumption in `contextlib.closing`). While such a generator is open, calling
         another method on the same engine from the same thread can deadlock; from another thread
-        it blocks until the generator finishes or is closed.
+        it blocks until the generator finishes or is closed. `frames` is either the raw BGR frames or the result of `prepare()` on them. The one exception is `prepare()`, which never blocks on the lock.
         """
         ...
