@@ -647,3 +647,11 @@ git commit -m "Prefetch the next propagation chunk while the current one is on t
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01YKeRXoSnVkKqPgN7Pd7bSL"
 ```
+
+## As executed (2026-09-22)
+
+Four tasks, each with a spec + quality review, then an Opus whole-branch review, one fix round and a scoped re-review.
+- Task 3's implementer found a bug in this plan's reference code: `set(self._taken or ())` unpacked the `(anchor, indices)` key instead of the frame indices, so the eviction kept the wrong frames; the plan's own tests caught it. `NotFound` lives in `vsp.store`, not `vsp.labeling.errors`.
+- Task 4 measured on the demo clip (640×480): chunk-boundary gap 0.56 s → 0.46 s against a 0.25 s per-frame step. The residual is the anchor re-encode in the new tracker session, kept by design. The saving grows with resolution (reading and preprocessing a 1080p chunk is ~0.4 s).
+- Final review (approve, six minor findings, all fixed): `propagate()` docstring paragraphing; `oom_error = None` before the retry so the failed chunk's tensors are freed before the next `take()`; `take()` now evicts to its own chunk (cache = current chunk after `take()`, current + scheduled after `schedule()`), which means an OOM back-off drops the already-prefetched next chunk and reads it again later, an accepted cost; mismatch waits documented; anchor comment corrected to "last frame with a mask"; `PreparedChunk: TypeAlias = Any`.
+- Two subagent commits had their Co-Authored-By line rewritten to the required literal before the merge.
