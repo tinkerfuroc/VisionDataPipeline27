@@ -1231,3 +1231,12 @@ git commit -m "Document the brush tool and the mask route
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01YKeRXoSnVkKqPgN7Pd7bSL"
 ```
+
+## As executed (2026-09-22)
+
+Five tasks, each with a spec + quality review, then an Opus whole-branch review, two fix rounds and scoped re-reviews.
+- Task 1 review: a crafted oversized PNG raised `DecompressionBombError` past the route (500); alpha-only PNGs decoded empty. Fixed: caught, and images with alpha are flattened onto black before thresholding.
+- Task 3 review (`useBrush`): the draft was cleared on tool deactivation even when dirty; Save could run mid-stroke; a missing class was left for the server to refuse. Fixed: clear only when clean, `canSave` (no save while a stroke is in progress), `saveBlockedReason` ("Choose a class before saving the first mask.").
+- Final review (approve after fixes): the base mask loaded asynchronously without notifying the canvas, so the mask vanished on Brush select or frame change and painting could start on a stale base (fixed with `baseVersion` and `loading`; `start()` refuses while loading); `rgb` re-allocated per render; `Math.round` instead of `Math.floor` for the pointer; ghost footprint circle after mouseleave; `Z` mid-drag corrupting the layer; strokes sticking after a mouseup outside the window. All fixed with tests (`FrameCanvas.test.tsx` is new).
+- Live check on the demo clip: a painted frame reports `keyframe`, the served mask equals the uploaded rectangle, an all-black save makes the frame `empty`.
+- Known, accepted: in brush mode the overlay is a flat tint (no outline ring); the cleanup marks can still be moved while locked (the Clear button is disabled).

@@ -70,7 +70,10 @@ export function useBrush(o: Options): Brush {
   // resolving the layer must not keep showing the previous frame's mask, and start() must refuse to paint on it:
   // both would either look wrong or corrupt the new frame's mask with strokes rasterised over stale pixels.
   useEffect(() => {
-    if (!active || dirty) return;
+    if (!active || dirty) {
+      setLoading(false); // a load abandoned by deactivation must not leave the next activation refusing to paint
+      return;
+    }
     let alive = true;
     base.current = null;
     setLoading(true);
@@ -83,7 +86,7 @@ export function useBrush(o: Options): Brush {
       setBaseVersion((v) => v + 1); // notifies FrameCanvas (via the brush prop) to redraw even though layer is unchanged
     };
     if (maskUrl === null) paint(null);
-    else void loadBase(store, maskUrl, rgb, width, height).then(paint);
+    else void loadBase(store, maskUrl, rgb, width, height).then(paint, () => paint(null)); // an unreadable mask: start empty
     return () => {
       alive = false;
     };
