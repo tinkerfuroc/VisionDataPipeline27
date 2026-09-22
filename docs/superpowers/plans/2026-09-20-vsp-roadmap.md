@@ -222,3 +222,16 @@ Still deferred (designed, not built): resumable chunked uploads (tus-style sessi
 link resumes instead of restarting); the transfer needs the browser tab to stay open; a `.zip` is the only archive
 format; one file per request, no client-side queue. A real `ssh -L` tunnel could not be exercised on this box (no sshd);
 a byte-copying TCP relay stood in for the forwarded stream, which is all the server ever sees.
+
+## Propagation streaming (done, 2026-09-21, on `main`)
+
+The user saw propagation land in bursts: nothing for seconds, then a whole 24-frame chunk at once. The job stream, the
+WebSocket relay (50 ms) and the page's per-animation-frame flush were not the cause; the engine encoded every frame of a
+chunk with the image encoder before the tracker produced its first mask. `Sam3Engine._propagate_locked` now encodes one
+frame ahead of the tracker (`_encode_frame(session, k + 1)` right after yielding frame `k`), which is safe because the
+tracker is causal and reads only the current frame's cached features. Same total work; measured on the demo clip, frames
+now arrive one at a time every ~0.2 s, largest burst 2 events. A GPU test asserts the encode/yield interleaving.
+
+Still visible: ~1.3 s before the first frame (session setup) and ~0.5 s at each chunk boundary (reading and preprocessing
+the next chunk's frames, re-encoding the anchor). Deferred: prefetch the next chunk's frames on a CPU thread while the
+current chunk propagates, which would remove the boundary pause.
