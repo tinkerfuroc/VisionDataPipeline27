@@ -278,7 +278,9 @@ keyframe (subsequently), writes the mask, and records the prompt.
 ### 5.3 Propagation
 
 Request: `{from_frame, direction: forward | backward | both}`. `from_frame`
-must be a keyframe.
+must have a mask (a keyframe, or a propagated frame — so a stopped run is
+resumed from its last masked frame); a frame without one is a 400.
+*(Revised 2026-09-22: the original design required a keyframe.)*
 
 - Range is capped at the nearest neighboring keyframe (exclusive) or the clip
   boundary, so work beyond a later correction is preserved.

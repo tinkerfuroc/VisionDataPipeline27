@@ -117,6 +117,8 @@ middle-drag pan · right click = negative point.
 3. Propagate forward, backward and both from a mid-clip keyframe; press Stop during one and confirm the masks so far stay.
 4. Let the object leave the frame: propagation should stop early and seek to the "lost at" frame.
 5. Correct a bad frame mid-clip (it becomes a keyframe) and propagate again: the run must stop at the next keyframe.
+   Then Stop a run part-way and propagate again from the last masked frame: it continues from there, and the
+   buttons stay disabled on a frame that has no mask.
 6. Scrub the timeline and play at clip fps with the overlay on; delete a frame, restore it, prune the tail. Clear masks:
    Shift-drag a stretch of the timeline (or press `[` and `]`), check the button names the frames and the note counts
    the masks, clear them, and confirm the keyframes inside the stretch survive and the mark disappears.

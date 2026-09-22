@@ -191,16 +191,20 @@ describe("Label page (propagation, cleanup, keyboard)", () => {
     expect(sessionStorage.getItem("vsp.job.c1")).toBeNull();
   });
 
-  it("only offers propagation on a keyframe, and Stop cancels the job", async () => {
+  it("offers propagation on any masked frame but not on an empty one, and Stop cancels the job", async () => {
     vi.mocked(api.getClip).mockResolvedValue(detail);
     vi.mocked(api.propagate).mockResolvedValue({ job_id: "j2" });
     vi.mocked(api.cancelJob).mockResolvedValue({ id: "j2", kind: "propagate", status: "running", result: null, error: null, created_at: "", n_events: 0 });
     renderLabel();
     await screen.findByText("bench.mp4");
-    fireEvent.click(screen.getByRole("button", { name: "Next frame" }));
+    fireEvent.click(screen.getByRole("button", { name: "Next frame" })); // frame 1: masked by a propagation, not a keyframe
+    expect((screen.getByRole("button", { name: "Forward ▶" }) as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.queryByText(/has no mask/)).toBeNull();
+    fireEvent.keyDown(window, { key: "g" }); // next empty frame (20)
+    expect(await screen.findByText("frame 20 / 39")).toBeTruthy();
     expect((screen.getByRole("button", { name: "Forward ▶" }) as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.getByText(/Go to a keyframe/)).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Previous frame" }));
+    expect(screen.getByText(/This frame has no mask/)).toBeTruthy();
+    fireEvent.keyDown(window, { key: "K", shiftKey: true }); // back to frame 0, the keyframe
     fireEvent.click(screen.getByRole("button", { name: "Both" }));
     await waitFor(() => expect(FakeSocket.last?.url).toMatch(/j2$/));
     fireEvent.click(screen.getByRole("button", { name: "Stop" }));
