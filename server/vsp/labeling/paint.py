@@ -20,8 +20,11 @@ def decode_mask_png(b64: str) -> np.ndarray:
     try:
         img = Image.open(io.BytesIO(base64.b64decode(b64, validate=True)))
         img.load()
-    except (binascii.Error, ValueError, UnidentifiedImageError, OSError) as e:
+    except (binascii.Error, ValueError, UnidentifiedImageError, OSError, Image.DecompressionBombError) as e:
         raise BadRequest(f"mask_png_b64 is not a PNG image: {e}") from e
+    if "A" in img.getbands():  # flatten onto black, so a mask drawn only in the alpha channel still counts
+        rgba = img.convert("RGBA")
+        img = Image.alpha_composite(Image.new("RGBA", rgba.size, (0, 0, 0, 255)), rgba)
     return np.array(img.convert("L")) > 127
 
 

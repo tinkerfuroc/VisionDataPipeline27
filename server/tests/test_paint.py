@@ -98,3 +98,31 @@ def test_refused_saves_change_nothing(store, make_clip):
         set_mask(store, clip.id, 2, m[:-1, :], class_id=0)
     assert store.read_clip(clip.id).objects == []
     assert store.mask_indices(clip.id, OBJECT_ID) == []
+
+
+def test_decode_refuses_a_decompression_bomb_and_reads_alpha_only_masks():
+    import io
+    import struct
+    import zlib
+
+    from PIL import Image
+
+    # A PNG whose header claims 100000×100000 pixels: Pillow refuses to decode it, and so must we (a 400, not a 500).
+    def chunk(tag, data):
+        return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+
+    bomb = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 100_000, 100_000, 8, 0, 0, 0, 0))
+    bomb += chunk(b"IDAT", zlib.compress(b"\x00")) + chunk(b"IEND", b"")
+    with pytest.raises(BadRequest, match="not a PNG"):
+        decode_mask_png(base64.b64encode(bomb).decode("ascii"))
+
+    # A mask encoded only in the alpha channel (transparent background, opaque foreground): still a mask.
+    img = Image.new("RGBA", (8, 4), (255, 255, 255, 0))
+    for x in range(2, 6):
+        img.putpixel((x, 1), (255, 255, 255, 255))
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    got = decode_mask_png(base64.b64encode(buf.getvalue()).decode("ascii"))
+    expected = np.zeros((4, 8), dtype=bool)
+    expected[1, 2:6] = True
+    assert np.array_equal(got, expected)
