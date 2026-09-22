@@ -124,7 +124,10 @@ export function FrameCanvas(props: Props) {
         ctx.fillText(String(i + 1), x + 5, y - 4);
       });
     }
-    for (const [px, py, label] of p.draft.points) {
+    // Each click is numbered in click order, matching the list in the Prompt panel where it can be removed.
+    ctx.font = "bold 12px sans-serif";
+    ctx.textBaseline = "middle";
+    p.draft.points.forEach(([px, py, label], i) => {
       const [x, y] = toScreen(v, px + 0.5, py + 0.5);
       ctx.beginPath();
       ctx.arc(x, y, 5, 0, 2 * Math.PI);
@@ -133,7 +136,14 @@ export function FrameCanvas(props: Props) {
       ctx.lineWidth = 2;
       ctx.strokeStyle = "#ffffff";
       ctx.stroke();
-    }
+      const tag = String(i + 1);
+      const w = (ctx.measureText(tag)?.width ?? 8) + 6; // jsdom's canvas stub has no measureText result
+      ctx.fillStyle = "rgba(0, 0, 0, 0.7)";
+      ctx.fillRect(x + 7, y - 15, w, 15);
+      ctx.fillStyle = "#ffffff";
+      ctx.fillText(tag, x + 10, y - 7.5);
+    });
+    ctx.textBaseline = "alphabetic";
   }, []);
 
   const refit = useCallback(() => {

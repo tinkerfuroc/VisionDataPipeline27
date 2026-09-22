@@ -41,7 +41,7 @@ def test_index_validation(store, make_clip):
             call()
 
 
-def test_clear_range_spares_keyframes_and_trims_ranges(store, make_clip):
+def test_clear_range_removes_keyframes_too_and_trims_ranges(store, make_clip):
     eng = FakeEngine()
     _, clip = make_clip(n_frames=12)
     accept(store, eng, clip.id, 0, CLICK, class_id=0)
@@ -50,9 +50,14 @@ def test_clear_range_spares_keyframes_and_trims_ranges(store, make_clip):
     run_propagation(store, eng, clip.id, 6, "forward", chunk_size=8, min_chunk_size=4, lost_after=3)
     assert store.read_clip(clip.id).objects[0].propagated_ranges == [(1, 5), (7, 11)]
     out = clear_range(store, clip.id, 4, 8)
-    assert store.mask_indices(clip.id, OBJECT_ID) == [0, 1, 2, 3, 6, 9, 10, 11]  # keyframe 6 kept
+    assert store.mask_indices(clip.id, OBJECT_ID) == [0, 1, 2, 3, 9, 10, 11]  # keyframe 6 cleared with the rest
     assert out.objects[0].propagated_ranges == [(1, 3), (9, 11)]
-    assert [k.frame_idx for k in out.objects[0].keyframes] == [0, 6]
+    assert [k.frame_idx for k in out.objects[0].keyframes] == [0]
+    assert store.frame_states(out)[4:9] == ["empty"] * 5
+    # clearing the last keyframe leaves the object (and its class) in place for the next accepted prompt
+    out = clear_range(store, clip.id, 0, 0)
+    assert out.objects[0].keyframes == [] and out.objects[0].class_id == 0
+    assert store.mask_indices(clip.id, OBJECT_ID) == [1, 2, 3, 9, 10, 11]
 
 
 def test_clear_range_without_an_object_is_a_no_op(store, make_clip):

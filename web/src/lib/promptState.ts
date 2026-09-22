@@ -21,6 +21,7 @@ export type DraftAction =
   | { type: "point"; x: number; y: number; label: 0 | 1 }
   | { type: "box"; box: Box }
   | { type: "undo" }
+  | { type: "remove"; index: number }
   | { type: "phrase"; phrase: string }
   | { type: "submit" }
   | { type: "candidate"; index: number }
@@ -35,6 +36,9 @@ export function draftReducer(d: Draft, a: DraftAction): Draft {
       return { ...d, points: [...d.points, [a.x, a.y, a.label]], candidate: 0 };
     case "box":
       return d.tool === "box" ? { ...d, box: a.box, points: [], candidate: 0 } : d;
+    case "remove":
+      if (a.index < 0 || a.index >= d.points.length) return d;
+      return { ...d, points: d.points.filter((_, i) => i !== a.index), candidate: 0 };
     case "undo":
       if (d.points.length > 0) return { ...d, points: d.points.slice(0, -1), candidate: 0 };
       if (d.box !== null) return { ...d, box: null, candidate: 0 };

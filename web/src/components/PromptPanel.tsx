@@ -48,6 +48,24 @@ export function PromptPanel({ prompting, disabledReason }: Props) {
           ))}
         </ul>
       )}
+      {draft.points.length > 0 && (
+        // Numbered like the dots on the frame, so a stray click can be found and removed without undoing the rest.
+        <ul aria-label="Clicks" className="flex flex-col gap-1">
+          {draft.points.map(([x, y, label], i) => (
+            <li key={`${x},${y},${label},${i}`} className="flex items-center gap-2 text-xs">
+              <span aria-hidden className={`w-5 rounded-full text-center font-cond font-semibold text-well ${label === 1 ? "bg-[#22c55e]" : "bg-[#ef4444]"}`}>
+                {i + 1}
+              </span>
+              <span className="w-14">{label === 1 ? "Include" : "Exclude"}</span>
+              <span className="flex-1 text-dim">{x}, {y}</span>
+              <button type="button" className="btn" aria-label={`Remove click ${i + 1}`} disabled={disabled}
+                onClick={() => dispatch({ type: "remove", index: i })}>
+                Remove
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
       {candidates.length === 1 && (
         <p className="note">Preview covers {candidates[0].area} px, score {candidates[0].score.toFixed(2)}.</p>
       )}

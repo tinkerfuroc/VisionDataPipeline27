@@ -48,10 +48,11 @@ def clear_range(store: ProjectStore, clip_id: str, start: int, end: int) -> Clip
         if start > end:
             raise BadRequest(f"start {start} is after end {end}")
         for obj in clip.objects:
-            keyframes = {k.frame_idx for k in obj.keyframes}
+            # Keyframes in the range go too (mask and keyframe entry): clearing is the only way to remove one. The
+            # object itself stays, class included, so the next accepted prompt adds a keyframe to it as usual.
             for idx in range(start, end + 1):
-                if idx not in keyframes:
-                    store.delete_mask(clip.id, obj.id, idx)
+                store.delete_mask(clip.id, obj.id, idx)
+            obj.keyframes = [k for k in obj.keyframes if not start <= k.frame_idx <= end]
             obj.propagated_ranges = subtract_range(obj.propagated_ranges, start, end)
         store.write_clip(clip)
         return clip

@@ -69,7 +69,8 @@ def test_full_labeling_flow(tmp_path):
         assert client.post(f"/api/clips/{cid}/frames/3/restore").json()["states"][3] == "masked"
         assert client.post(f"/api/clips/{cid}/prune", json={"from": 18}).json()["states"][18:] == ["deleted"] * 2
         cleared = client.post(f"/api/clips/{cid}/clear-range", json={"start": 10, "end": 14}).json()
-        assert cleared["states"][10:15] == ["empty", "empty", "keyframe", "empty", "empty"]
+        assert cleared["states"][10:15] == ["empty"] * 5  # the keyframe at 12 goes too
+        assert [k["frame_idx"] for k in cleared["clip"]["objects"][0]["keyframes"]] == [5]
 
 
 def test_validation_errors_are_400_not_failed_jobs(tmp_path):
