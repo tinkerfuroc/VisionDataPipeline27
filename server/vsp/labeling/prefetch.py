@@ -19,10 +19,14 @@ Key = tuple[int, tuple[int, ...]]  # (anchor frame, chunk frames)
 class ChunkPrefetcher:
     """One chunk ahead: `schedule()` the chunk the loop expects to need next, `take()` the one it actually needs.
 
-    Raw frames are cached for the current and the scheduled chunk only. A request that differs from the
-    schedule (an OOM retry on a prefix of the same frames, an anchor that is not the chunk's last frame) is
-    built synchronously and reads only the frames it does not hold; only the preprocessing is redone. Frames
-    on disk never change while a clip exists (deletion is soft), so cached pixels cannot go stale.
+    After `take()` the cache holds only the chunk just taken; after `schedule()` it holds that chunk
+    plus the one now loading in the background. A request that does not match the schedule (an OOM
+    retry on a prefix of the same frames, an anchor that is not the chunk's last frame) first waits
+    for the in-flight schedule to finish -- there is one worker and the cache must be quiescent --
+    so a mispredicted chunk costs one extra chunk read and prepare before its own; it is then built
+    synchronously, reading only the frames it does not already hold, so only the preprocessing is
+    redone. Frames on disk never change while a clip exists (deletion is soft), so cached pixels
+    cannot go stale.
 
     Use as a context manager: `close()` joins the worker, so no thread outlives the propagation run.
     """
@@ -58,7 +62,9 @@ class ChunkPrefetcher:
                     scheduled[1].result()
             future = None
         self._taken = key
-        return future.result() if future is not None else self._build(key)
+        result = future.result() if future is not None else self._build(key)
+        self._retain({anchor_idx, *indices})  # keep only this chunk: take() owns the cache until scheduled
+        return result
 
     def close(self) -> None:
         self._settle()

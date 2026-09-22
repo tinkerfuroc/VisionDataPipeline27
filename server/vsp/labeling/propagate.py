@@ -87,9 +87,10 @@ def _run_direction(
         deleted = set(store.read_clip(clip.id).deleted_frames)
         chunk = pending[:size]
         frames = prefetch.take(anchor_idx, chunk)
-        # Predict the next chunk (this one completes and its last frame becomes the anchor) and start reading and
-        # preprocessing it now, so that work overlaps this chunk's GPU time instead of following it. A wrong
-        # prediction costs only the preprocessing: the prefetcher re-reads nothing it already holds.
+        # Predict the next chunk (this one completes and its last frame with a mask becomes the anchor) and
+        # start reading and preprocessing it now, so that work overlaps this chunk's GPU time instead of
+        # following it. A wrong prediction costs only the preprocessing: the prefetcher re-reads nothing it
+        # already holds.
         if len(pending) > size:
             prefetch.schedule(chunk[-1], pending[size:2 * size])
         done_in_chunk: list[int] = []
@@ -147,6 +148,10 @@ def _run_direction(
             else:
                 size = max(min_chunk_size, size // 2)
             emit({"type": "log", "message": f"out of memory; retrying with chunk size {size}"})
+            # Drop the traceback so the failed chunk's prepared tensors are freed before the retry
+            # reads the next one -- it would otherwise keep the generator frame (and everything it
+            # held) alive through prefetch.take().
+            oom_error = None
             continue
 
         if direction_lost_frame is not None:

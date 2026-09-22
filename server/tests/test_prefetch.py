@@ -30,10 +30,13 @@ def test_a_request_that_differs_from_the_schedule_reads_only_what_is_missing(sto
         assert len(pf.take(0, [1, 2, 3, 4])) == 5  # nothing scheduled: built synchronously
         assert pf.reads == 5 and eng.prepare_calls == [5]
         pf.schedule(4, [5, 6, 7, 8])
-        chunk = pf.take(4, [5, 6])  # an OOM back-off retries a prefix of the same frames
+        chunk = pf.take(0, [1, 2])  # an OOM back-off retries a prefix of the same frames with the same anchor
         assert len(chunk) == 3 and pf.reads == 9 and eng.prepare_calls == [5, 5, 3]
-        chunk = pf.take(3, [5, 6])  # the anchor is not the previous chunk's last frame
-        assert len(chunk) == 3 and pf.reads == 9
+        assert pf.cached == [0, 1, 2]  # take() keeps only its own chunk
+        pf.schedule(2, [3, 4])
+        chunk = pf.take(1, [3, 4])  # the anchor is the last frame WITH A MASK, not the chunk's last frame
+        # take() had evicted 3 and 4 down to [0, 1, 2] above, so this mismatch re-reads both of them.
+        assert len(chunk) == 3 and pf.reads == 11
 
 
 def test_only_the_current_and_the_scheduled_chunk_are_kept(store, make_clip):
@@ -44,7 +47,11 @@ def test_only_the_current_and_the_scheduled_chunk_are_kept(store, make_clip):
         pf.take(2, [3, 4])
         pf.schedule(4, [5, 6])
         pf.take(4, [5, 6])
-        assert pf.cached == [2, 3, 4, 5, 6]
+        assert pf.cached == [4, 5, 6]
+        pf.schedule(6, [7, 8])
+        assert set(pf.cached) >= {4, 5, 6}  # the union moment: take()'s chunk plus whatever the worker added
+        pf.take(6, [7, 8])
+        assert pf.cached == [6, 7, 8]
 
 
 def test_a_missing_frame_surfaces_at_take(store, make_clip):

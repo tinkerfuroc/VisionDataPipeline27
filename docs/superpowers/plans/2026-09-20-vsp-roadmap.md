@@ -240,10 +240,11 @@ current chunk propagates, which would remove the boundary pause.
 
 Closes the deferred item under "Propagation streaming": the next chunk's frames are read and preprocessed on a worker
 thread while the current chunk is on the GPU. `Engine.prepare()` is the CPU-only, lock-free half of `propagate()`;
-`ChunkPrefetcher` (`server/vsp/labeling/prefetch.py`) owns one worker and a cache of raw frames limited to the
-current and the scheduled chunk, so anchors are never re-read and a wrong prediction (OOM back-off, an anchor that is
-not the chunk's last frame) only redoes the preprocessing. Measured on the demo clip: chunk-boundary gap 0.46 s
-against a median frame step of 0.25 s (was 0.56 s against 0.22 s).
+`ChunkPrefetcher` (`server/vsp/labeling/prefetch.py`) owns one worker and a cache of raw frames that, after `take()`,
+holds only the current chunk, and after `schedule()` holds the current chunk plus the one loading in the background,
+so anchors are never re-read and a wrong prediction (OOM back-off, an anchor that is not the chunk's last frame) only
+redoes the preprocessing. Measured on the demo clip: chunk-boundary gap 0.46 s against a median frame step of 0.25 s
+(was 0.56 s against 0.22 s).
 
 Still deferred: the anchor is re-encoded in every new tracker session (~one frame step per chunk); the second
 direction of a "both" run starts with a synchronous chunk; one chunk of look-ahead only.
