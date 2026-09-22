@@ -89,8 +89,9 @@ def _run_direction(
         frames = prefetch.take(anchor_idx, chunk)
         # Predict the next chunk (this one completes and its last frame with a mask becomes the anchor) and
         # start reading and preprocessing it now, so that work overlaps this chunk's GPU time instead of
-        # following it. A wrong prediction costs only the preprocessing: the prefetcher re-reads nothing it
-        # already holds.
+        # following it. A wrong prediction (an OOM back-off, an anchor that is not the chunk's last frame) is
+        # rebuilt from the frames the prefetcher still holds; the abandoned prediction is dropped and read
+        # again if it is needed later.
         if len(pending) > size:
             prefetch.schedule(chunk[-1], pending[size:2 * size])
         done_in_chunk: list[int] = []
