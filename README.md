@@ -121,7 +121,8 @@ middle-drag pan · right click = negative point.
    buttons stay disabled on a frame that has no mask.
 6. Scrub the timeline and play at clip fps with the overlay on; delete a frame, restore it, prune the tail. Clear masks:
    Shift-drag a stretch of the timeline (or press `[` and `]`), check the button names the frames and the note counts
-   the masks, clear them, and confirm the keyframes inside the stretch survive and the mark disappears.
+   the masks and keyframes, clear them, and confirm the keyframes inside the stretch are gone from the timeline too,
+   the mark disappears, and a new prompt on the clip still lands on the same object and class.
 7. Reload the page during a propagation: the panel should re-attach to the running job.
 8. Stop the server: the banner says it is unreachable; start it without weights: the banner shows the reason and
    importing / cleanup still work.

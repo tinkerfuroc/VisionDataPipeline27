@@ -69,3 +69,14 @@ def test_unknown_clip_does_not_grow_the_lock_table(store):
     with pytest.raises(NotFound):
         delete_frame(store, "nope", 0)
     assert "nope" not in store._locks
+
+
+def test_a_prompt_accepted_after_the_last_keyframe_was_cleared_lands_on_the_same_object(store, make_clip):
+    eng = FakeEngine()
+    _, clip = make_clip(n_frames=6)
+    accept(store, eng, clip.id, 0, CLICK, class_id=0)
+    clear_range(store, clip.id, 0, 0)
+    out = accept(store, eng, clip.id, 3, CLICK)  # no class_id: the object, and its class, are still there
+    assert [o.id for o in out.objects] == [OBJECT_ID] and out.objects[0].class_id == 0
+    assert [k.frame_idx for k in out.objects[0].keyframes] == [3]
+    assert store.mask_indices(clip.id, OBJECT_ID) == [3]

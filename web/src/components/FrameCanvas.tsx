@@ -138,10 +138,13 @@ export function FrameCanvas(props: Props) {
       ctx.stroke();
       const tag = String(i + 1);
       const w = (ctx.measureText(tag)?.width ?? 8) + 6; // jsdom's canvas stub has no measureText result
+      // Up and to the right of the dot, pulled back inside the canvas for clicks near its top or right edge.
+      const tx = Math.min(x + 7, size.current.w - w);
+      const ty = Math.max(y - 15, 0);
       ctx.fillStyle = "rgba(0, 0, 0, 0.7)";
-      ctx.fillRect(x + 7, y - 15, w, 15);
+      ctx.fillRect(tx, ty, w, 15);
       ctx.fillStyle = "#ffffff";
-      ctx.fillText(tag, x + 10, y - 7.5);
+      ctx.fillText(tag, tx + 3, ty + 7.5);
     });
     ctx.textBaseline = "alphabetic";
   }, []);
