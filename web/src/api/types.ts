@@ -1,7 +1,7 @@
 export type ClassDef = { id: number; name: string; color: string };
 export type Project = { id: string; name: string; created_at: string; classes: ClassDef[] };
 
-export type PromptType = "text" | "clicks" | "box";
+export type PromptType = "text" | "clicks" | "box" | "paint";
 /** [x, y, label] — label 1 = positive, 0 = negative */
 export type Point = [number, number, 0 | 1];
 /** [x1, y1, x2, y2] in image pixels */

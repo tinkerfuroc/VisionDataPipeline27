@@ -21,7 +21,7 @@ class Project(BaseModel):
 
 
 class Prompt(BaseModel):
-    type: Literal["text", "clicks", "box"]
+    type: Literal["text", "clicks", "box", "paint"]
     payload: dict
 
 

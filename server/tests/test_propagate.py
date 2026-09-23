@@ -8,6 +8,7 @@ from vsp.engine.fake import FakeEngine
 from vsp.engine.types import ChunkOOMError
 from vsp.labeling.errors import BadRequest, PropagationFailed
 from vsp.labeling.frames import restore_frame
+from vsp.labeling.paint import set_mask
 from vsp.labeling.prompts import OBJECT_ID, PromptSpec, accept
 from vsp.labeling.propagate import plan_indices, run_propagation
 
@@ -475,3 +476,16 @@ def test_no_prefetch_thread_survives_the_run(store, make_clip):
     with pytest.raises(PropagationFailed):
         run_propagation(store, eng, clip.id, 0, "forward", **KW)
     assert not [t for t in threading.enumerate() if t.name.startswith("vsp-prefetch")]
+
+
+def test_propagation_seeds_from_a_painted_keyframe_and_stops_at_it(store, make_clip):
+    eng = FakeEngine()
+    clip = _seeded(store, make_clip, eng, n_frames=20)
+    painted = np.zeros((clip.height, clip.width), dtype=bool)
+    painted[20:40, 60:80] = True  # x0 = 60, well away from the click seed's x0 = 20
+    set_mask(store, clip.id, 10, painted)
+    res = run_propagation(store, eng, clip.id, 0, "forward", **KW)
+    assert res.processed == 9  # frames 1..9: the painted keyframe bounds the run
+    assert _x0(store, clip.id, 10) == 60  # and is untouched
+    res = run_propagation(store, eng, clip.id, 10, "forward", **KW)
+    assert res.processed == 9 and _x0(store, clip.id, 11) == 62  # seeded by the painted mask, shifted once

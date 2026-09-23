@@ -169,6 +169,11 @@ export const api = {
         candidate: opts.candidate ?? 0,
       }),
     ),
+  setMask: (clipId: string, frame: number, maskPngB64: string, opts: { classId?: number } = {}) =>
+    request<ClipDetail>(
+      `/api/clips/${clipId}/mask`,
+      post({ frame, mask_png_b64: maskPngB64, ...(opts.classId === undefined ? {} : { class_id: opts.classId }) }),
+    ),
   propagate: (clipId: string, fromFrame: number, direction: Direction) =>
     request<{ job_id: string }>(`/api/clips/${clipId}/propagate`, post({ from_frame: fromFrame, direction })),
 

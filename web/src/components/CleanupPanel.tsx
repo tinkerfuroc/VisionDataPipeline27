@@ -10,6 +10,8 @@ type Props = {
   range: Range | null;
   /** why clearing is unavailable (a job is running), or null */
   clearBlockedReason: string | null;
+  /** unsaved brush strokes: Clear, Delete/Restore and Prune are all disabled with this reason */
+  lockReason: string | null;
   error: string | null;
   onRange: (range: Range | null) => void;
   onToggleDelete: () => void;
@@ -17,7 +19,7 @@ type Props = {
   onClearRange: (start: number, end: number) => void;
 };
 
-export function CleanupPanel({ frame, states, range, clearBlockedReason, error, onRange, onToggleDelete, onPrune, onClearRange }: Props) {
+export function CleanupPanel({ frame, states, range, clearBlockedReason, lockReason, error, onRange, onToggleDelete, onPrune, onClearRange }: Props) {
   const last = Math.max(0, states.length - 1);
   const clampIndex = (v: string) => Math.max(0, Math.min(last, Math.floor(Number(v)) || 0));
   const [start, end] = range ?? [frame, frame];
@@ -65,17 +67,17 @@ export function CleanupPanel({ frame, states, range, clearBlockedReason, error, 
               onChange={(e) => onRange([start, clampIndex(e.target.value)])} />
             {range !== null && <button type="button" className="btn ml-auto" onClick={() => onRange(null)}>Unmark</button>}
           </div>
-          <button type="button" className="btn" disabled={!valid || parts.length === 0 || clearBlockedReason !== null}
+          <button type="button" className="btn" disabled={!valid || parts.length === 0 || clearBlockedReason !== null || lockReason !== null}
             onClick={() => onClearRange(start, end)}>
             Clear masks in {where}
           </button>
-          <p className="note">{clearBlockedReason ?? outcome}</p>
+          <p className="note">{lockReason ?? clearBlockedReason ?? outcome}</p>
 
           <div className="mt-1 flex gap-1">
-            <button type="button" aria-keyshortcuts="Delete" className="btn flex-1" onClick={onToggleDelete}>
+            <button type="button" aria-keyshortcuts="Delete" className="btn flex-1" disabled={lockReason !== null} onClick={onToggleDelete}>
               {states[frame] === "deleted" ? "Restore frame" : "Delete frame"} <kbd aria-hidden>Del</kbd>
             </button>
-            <button type="button" className="btn flex-1" onClick={onPrune}>Prune from here</button>
+            <button type="button" className="btn flex-1" disabled={lockReason !== null} onClick={onPrune}>Prune from here</button>
           </div>
           <p className="note">Deleted frames are left out of the export. Prune deletes frame {frame} and every frame after it.</p>
         </div>

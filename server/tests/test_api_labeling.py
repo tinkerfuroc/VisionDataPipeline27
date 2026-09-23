@@ -11,6 +11,7 @@ from starlette.websockets import WebSocketDisconnect
 from test_api_core import _frames_dir, _project, _settings, wait_job
 from vsp.api.app import create_app
 from vsp.engine.fake import FakeEngine
+from vsp.store.project import encode_mask_png
 
 CLICK = {"type": "clicks", "points": [[30, 30, 1]]}
 
@@ -238,3 +239,23 @@ def test_propagate_body_validation(tmp_path, body):
     with _client(tmp_path, FakeEngine()) as client:
         cid = _clip(client, tmp_path, n=4)
         assert client.post(f"/api/clips/{cid}/propagate", json=body).status_code == 422
+
+
+def test_paint_route_writes_a_keyframe_and_is_refused_while_a_propagation_runs(tmp_path):
+    with _client(tmp_path, SlowEngine()) as client:
+        cid = _clip(client, tmp_path, n=40)
+        info = client.get(f"/api/clips/{cid}").json()["clip"]
+        m = np.zeros((info["height"], info["width"]), dtype=bool)
+        m[5:15, 5:25] = True
+        b64 = base64.b64encode(encode_mask_png(m)).decode("ascii")
+        assert client.post(f"/api/clips/{cid}/mask", json={"frame": 2, "mask_png_b64": b64}).status_code == 400
+        r = client.post(f"/api/clips/{cid}/mask", json={"frame": 2, "mask_png_b64": b64, "class_id": 0})
+        assert r.status_code == 200 and r.json()["states"][2] == "keyframe"
+        assert r.json()["clip"]["objects"][0]["keyframes"][0]["prompt"] == {"type": "paint", "payload": {}}
+        assert client.post(f"/api/clips/{cid}/mask", json={"frame": 2, "mask_png_b64": "nope"}).status_code == 400
+        assert client.post(f"/api/clips/{cid}/mask", json={"frame": 99, "mask_png_b64": b64}).status_code == 400
+        assert client.post(f"/api/clips/{cid}/mask", json={"frame": -1, "mask_png_b64": b64}).status_code == 422
+        job_id = client.post(f"/api/clips/{cid}/propagate", json={"from_frame": 2, "direction": "forward"}).json()["job_id"]
+        busy = client.post(f"/api/clips/{cid}/mask", json={"frame": 3, "mask_png_b64": b64})
+        assert busy.status_code == 409 and busy.json()["job_id"] == job_id  # it replaces what the runner writes
+        wait_job(client, job_id)

@@ -1,4 +1,4 @@
-"""Prompt, accept, propagate and frame-cleanup routes (spec 4 API table, 5.2-5.4)."""
+"""Prompt, accept, propagate, paint-mask and frame-cleanup routes (spec 4 API table, 5.2-5.4)."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from ..jobs import Job
 from ..labeling import frames as frame_ops
 from ..labeling.errors import BadRequest
+from ..labeling.paint import decode_mask_png, set_mask
 from ..labeling.prompts import PromptSpec, accept, preview
 from ..labeling.propagate import check_seed, plan_indices, run_propagation
 from .deps import GPU, State, gpu_lease, require_engine
@@ -26,6 +27,12 @@ class PromptBody(BaseModel):
 class AcceptBody(PromptBody):
     class_id: int | None = None
     candidate: int = Field(default=0, ge=0)
+
+
+class MaskBody(BaseModel):
+    frame: int = Field(ge=0)
+    mask_png_b64: str
+    class_id: int | None = None
 
 
 class PropagateBody(BaseModel):
@@ -60,6 +67,15 @@ def prompt_accept(clip_id: str, body: AcceptBody, state: State) -> dict:
             state.store, engine, clip_id, body.frame, body.prompt, class_id=body.class_id, candidate=body.candidate
         )
         return clip_detail(state, clip)
+
+
+@router.post("/mask")
+def paint_mask(clip_id: str, body: MaskBody, state: State) -> dict:
+    """A hand-painted mask for one frame (brush spec). The frame becomes a `paint` keyframe."""
+    state.store.read_clip(clip_id)
+    mask = decode_mask_png(body.mask_png_b64)
+    with gpu_lease(state):  # a propagation writes the very masks this replaces
+        return clip_detail(state, set_mask(state.store, clip_id, body.frame, mask, class_id=body.class_id))
 
 
 @router.post("/propagate", status_code=202)

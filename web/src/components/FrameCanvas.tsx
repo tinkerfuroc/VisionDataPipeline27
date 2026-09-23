@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, type MouseEvent } from "react";
 import type { Box, Candidate } from "../api/types";
+import type { BrushMode } from "../lib/brush";
 import { MASK_ALPHA, PREVIEW_ALPHA, type FrameStore } from "../lib/frameCache";
 import {
   clampPoint, fitView, insideImage, normBox, panBy, pickCandidate, toImage, toScreen, zoomAt, type View,
@@ -27,6 +28,13 @@ type Props = {
   onPickCandidate: (index: number) => void;
   /** bump to fit the frame to the view again (the Fit button lives in the tool rail) */
   fitSignal?: number;
+  /** brush mode: left/right drags paint/erase on `brush.layer`, which is drawn in place of the stored mask.
+   * `baseVersion` carries no value the draw effect reads; it only exists so a base-mask load (which mutates
+   * `layer`'s pixels in place, not its identity) still triggers `useEffect(draw)` below. */
+  brush: {
+    size: number; layer: HTMLCanvasElement | null; baseVersion: number;
+    onStart: (mode: BrushMode, x: number, y: number) => void; onExtend: (x: number, y: number) => void; onEnd: () => void;
+  } | null;
 };
 
 const DRAG_PX = 4;
@@ -38,10 +46,14 @@ type LayerState = { owner: Candidate[] | null; items: (HTMLCanvasElement | null)
 
 /** `ix`/`iy`: the mousedown point in image space, fixed for the whole drag so a wheel-zoom mid-drag cannot
  * shift the box's first corner or a click's target. */
-type Drag = { button: number; sx: number; sy: number; ix: number; iy: number; lastX: number; lastY: number; moved: boolean };
+type Drag = {
+  button: number; sx: number; sy: number; ix: number; iy: number; lastX: number; lastY: number; moved: boolean;
+  /** a brush stroke is in progress; the box/click logic is skipped for this drag */
+  painting?: boolean;
+};
 
 export function FrameCanvas(props: Props) {
-  const { store, width, height, frameUrl, maskUrl, color, tool, candidates, onPoint, onBox, onPickCandidate, fitSignal } = props;
+  const { store, width, height, frameUrl, maskUrl, color, tool, candidates, onPoint, onBox, onPickCandidate, fitSignal, brush } = props;
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const size = useRef({ w: 0, h: 0 });
@@ -54,6 +66,8 @@ export function FrameCanvas(props: Props) {
   const latest = useRef(props);
   latest.current = props;
   const rgb = useMemo(() => hexToRgb(color), [color]);
+  /** screen position of the pointer, for the brush footprint circle */
+  const pointer = useRef<[number, number] | null>(null);
 
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
@@ -88,11 +102,31 @@ export function FrameCanvas(props: Props) {
           });
           ctx.globalAlpha = 1;
         }
+      } else if (p.brush !== null) {
+        if (p.brush.layer) {
+          ctx.globalAlpha = MASK_ALPHA;
+          ctx.drawImage(p.brush.layer, 0, 0, p.width, p.height);
+          ctx.globalAlpha = 1;
+        }
       } else if (assets.current.mask) {
         ctx.drawImage(assets.current.mask, 0, 0, p.width, p.height);
       }
     }
     ctx.restore();
+
+    if (p.brush !== null && pointer.current !== null) {
+      const [px, py] = pointer.current;
+      const r = (p.brush.size / 2) * v.scale;
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = "#ffffff";
+      ctx.beginPath();
+      ctx.arc(px, py, r, 0, 2 * Math.PI);
+      ctx.stroke();
+      ctx.strokeStyle = "#000000";
+      ctx.beginPath();
+      ctx.arc(px, py, r + 1, 0, 2 * Math.PI);
+      ctx.stroke();
+    }
 
     if (!assets.current.frame) {
       ctx.fillStyle = "#A3A5AA";
@@ -237,14 +271,40 @@ export function FrameCanvas(props: Props) {
     e.preventDefault(); // no text selection, no middle-click autoscroll
     const [sx, sy] = local(e);
     const [ix, iy] = toImage(view.current, sx, sy);
-    drag.current = { button: e.button, sx, sy, ix, iy, lastX: sx, lastY: sy, moved: false };
+    const d: Drag = { button: e.button, sx, sy, ix, iy, lastX: sx, lastY: sy, moved: false };
+    drag.current = d;
+    if (brush !== null && (e.button === 0 || e.button === 2)) {
+      const bx = Number.isFinite(ix) ? Math.floor(ix) : 0;
+      const by = Number.isFinite(iy) ? Math.floor(iy) : 0;
+      brush.onStart(e.button === 2 ? "erase" : "paint", bx, by);
+      d.painting = true;
+      draw();
+    }
   };
 
   const onMouseMove = (e: MouseEvent) => {
     const d = drag.current;
-    if (d === null) return;
     const [sx, sy] = local(e);
+    if (brush !== null) {
+      pointer.current = [sx, sy];
+      draw();
+    }
+    if (d === null) return;
     if (Math.hypot(sx - d.sx, sy - d.sy) > DRAG_PX) d.moved = true;
+    if (d.painting) {
+      // A mouseup outside the window (alt-tab mid-drag) never reaches us, so the drag looks unfinished; when the
+      // pointer comes back with no button held, end it here instead of continuing to paint with a phantom drag.
+      if (e.buttons === 0) {
+        endDrag(false);
+        return;
+      }
+      const [ix, iy] = toImage(view.current, sx, sy);
+      const bx = Number.isFinite(ix) ? Math.floor(ix) : 0;
+      const by = Number.isFinite(iy) ? Math.floor(iy) : 0;
+      brush?.onExtend(bx, by);
+      draw();
+      return;
+    }
     if (d.button === 1) {
       view.current = panBy(view.current, sx - d.lastX, sy - d.lastY);
       d.lastX = sx;
@@ -259,6 +319,11 @@ export function FrameCanvas(props: Props) {
   const endDrag = (commit: boolean) => {
     const d = drag.current;
     drag.current = null;
+    if (d?.painting) {
+      brush?.onEnd();
+      draw();
+      return;
+    }
     const box = dragBox.current;
     dragBox.current = null;
     if (d === null || d.button === 1) return;
@@ -285,11 +350,15 @@ export function FrameCanvas(props: Props) {
         ref={canvasRef}
         aria-label="Frame"
         className="block h-full w-full"
-        style={{ cursor: tool === null ? "default" : "crosshair" }}
+        style={{ cursor: brush !== null ? "none" : tool === null ? "default" : "crosshair" }}
         onMouseDown={onMouseDown}
         onMouseMove={onMouseMove}
         onMouseUp={() => endDrag(true)}
-        onMouseLeave={() => endDrag(false)}
+        onMouseLeave={() => {
+          pointer.current = null;
+          draw(); // without this, the brush footprint circle lingers at its last position when no drag is in progress
+          endDrag(false);
+        }}
         onContextMenu={(e) => e.preventDefault()}
       />
     </div>
