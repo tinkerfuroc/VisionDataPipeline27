@@ -126,7 +126,7 @@ runs; Ctrl-C cancels them. Do not start it on a GPU the server is also training 
 
 Defaults: 100 epochs, early stop after 30 epochs without improvement, 960 px, batch 8, COCO-pretrained weights,
 Ultralytics' default augmentation. Metrics come from `results.csv`; the comparison table ranks runs by the best mask
-mAP50-95 epoch. ONNX export (`best.onnx`, static 960 × 960) runs on the run's GPU queue.
+mAP50-95 epoch. ONNX export (`best.onnx`, static, square at the run's image size, 960 × 960 by default) runs on the run's GPU queue.
 
 ### Keyboard
 
