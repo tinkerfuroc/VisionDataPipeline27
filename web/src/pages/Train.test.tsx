@@ -96,6 +96,35 @@ describe("Train page", () => {
     expect((screen.getByRole("button", { name: "Start 4 runs" }) as HTMLButtonElement).disabled).toBe(true);
   });
 
+  it("shows GPU-busy notes for New runs and lists a foreign process's run in GPU queues", async () => {
+    const r3 = run("r3", "yolo11m-seg", {
+      status: "running", gpu: 0,
+      progress: { phase: "train", epoch: 5, epochs: 100, batch: 2, batches: 20 },
+    });
+    m.listRuns.mockResolvedValue([r1, r2, r3]);
+    renderPage();
+
+    // Every default-checked model starts on cuda:1 (the non-SAM3 GPU), which this server process
+    // is already training r1 ("yolo26s-seg") on.
+    expect(
+      await screen.findByText("cuda:1 is already training yolo26s-seg; this run will queue behind it."),
+    ).toBeTruthy();
+
+    // Putting a model on cuda:0 instead warns about the foreign `vsp train` run sitting there,
+    // which this server does not own (its own gpu-0 queue is empty).
+    fireEvent.change(await screen.findByLabelText("GPU for yolo26m-seg"), { target: { value: "0" } });
+    expect(await screen.findByText(/cuda:0 is busy with a vsp train run in another process/)).toBeTruthy();
+
+    const queue = await screen.findByText("GPU queues");
+    const panel = queue.closest("section")!;
+    const gpu0 = within(panel).getByText(/cuda:0 RTX 3080 Ti/).parentElement!.parentElement!;
+    expect(
+      within(gpu0).getByText("yolo11m-seg · Epoch 5/100 · running in another process (vsp train)"),
+    ).toBeTruthy();
+    expect(within(gpu0).queryByText("Idle")).toBeNull();
+    expect(within(gpu0).queryByRole("button", { name: "Cancel" })).toBeNull();
+  });
+
   it("keeps a compared run's chart colour on its slot across removal, and hands a new run the freed slot", async () => {
     const r3 = run("r3", "yolo26n-seg", { status: "done" });
     const r4 = run("r4", "yolo11s-seg", { status: "done" });

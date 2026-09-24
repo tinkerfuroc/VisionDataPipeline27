@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { ExportInfo, Run, StartRunsRequest, TrainParams, TrainStatus } from "../api/types";
+import type { ExportInfo, GpuQueue, Run, StartRunsRequest, TrainParams, TrainStatus } from "../api/types";
 import { defaultGpu, startProblem, statusText } from "../lib/train";
 
 type ModelPick = { checked: boolean; gpu: number };
@@ -11,6 +11,26 @@ const PARAM_FIELDS: { key: keyof TrainParams; label: string; min: number; max: n
 ];
 const gib = (bytes: number) => `${Math.round(bytes / 2 ** 30)} GiB`;
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+/** Runs training on `g` that this server process is not itself running (e.g. a `vsp train` CLI
+ * process sharing the same data root): present in the `runs` prop but not `g`'s own `running` slot. */
+const foreignRunning = (g: GpuQueue, runs: Run[]) =>
+  runs.filter((r) => r.status === "running" && r.gpu === g.index && r.id !== g.running);
+
+/** A note for the New-runs form when `gpu` is already busy training, whether owned by this server
+ * process (queues behind it) or by another process entirely (foreign; risk of running out of VRAM). */
+function gpuBusyNote(status: TrainStatus, runs: Run[], gpu: number): string | null {
+  const g = status.gpus.find((gg) => gg.index === gpu);
+  if (g === undefined) return null;
+  if (g.running !== null && g.running_kind === "train") {
+    const model = runs.find((r) => r.id === g.running)?.model ?? "a run";
+    return `cuda:${gpu} is already training ${model}; this run will queue behind it.`;
+  }
+  if (foreignRunning(g, runs).length > 0) {
+    return `cuda:${gpu} is busy with a vsp train run in another process; two runs on one GPU may run out of memory.`;
+  }
+  return null;
+}
 
 type Props = {
   status: TrainStatus | null;
@@ -102,6 +122,12 @@ export function TrainSidebar({ status, exports, runs, onStart, onCancel }: Props
             SAM3 runs on cuda:{status.sam3_gpu}. Training there shares its memory; labeling or training may run out of VRAM.
           </p>
         )}
+        {[...new Set(chosen.map((m) => picks[m].gpu))].map((gpu) => {
+          const note = gpuBusyNote(status, runs, gpu);
+          return note !== null ? (
+            <p key={gpu} className="note text-ink">{note}</p>
+          ) : null;
+        })}
         {PARAM_FIELDS.map((f) => (
           <label key={f.key} className="flex items-center justify-between gap-2 text-sm text-dim">
             {f.label}
@@ -121,13 +147,14 @@ export function TrainSidebar({ status, exports, runs, onStart, onCancel }: Props
         {status.gpus.length === 0 && <p className="note">No CUDA GPU is visible to the server.</p>}
         {status.gpus.map((g) => {
           const current = g.running ? byId.get(g.running) : undefined;
+          const foreign = foreignRunning(g, runs);
           return (
             <div key={g.index} className="flex flex-col gap-1.5 rounded border border-line p-2 text-sm">
               <div className="flex items-center justify-between gap-2">
                 <span className="font-medium">cuda:{g.index} {g.name}</span>
                 <span className="font-cond text-dim">{gib(g.memory_total)}{g.index === status.sam3_gpu ? " · SAM3" : ""}</span>
               </div>
-              {current === undefined && g.queue.length === 0 && <span className="note">Idle</span>}
+              {current === undefined && g.queue.length === 0 && foreign.length === 0 && <span className="note">Idle</span>}
               {current !== undefined && (
                 <div className="flex flex-col gap-1">
                   <div className="flex items-center justify-between gap-2">
@@ -143,6 +170,14 @@ export function TrainSidebar({ status, exports, runs, onStart, onCancel }: Props
                   )}
                 </div>
               )}
+              {foreign.map((r) => (
+                <div key={r.id} className="flex flex-col gap-1">
+                  <span>{r.model} · {statusText(r)} · running in another process (vsp train)</span>
+                  {r.progress !== null && r.progress.batches > 0 && (
+                    <progress value={r.progress.batch} max={r.progress.batches} />
+                  )}
+                </div>
+              ))}
               {g.queue.map((id, i) => (
                 <div key={id} className="flex items-center justify-between gap-2 text-dim">
                   <span>{i + 1}. {byId.get(id)?.model ?? id}</span>
