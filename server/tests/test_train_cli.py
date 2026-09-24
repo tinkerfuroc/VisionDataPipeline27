@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 
 import vsp.cli
 from train_fixtures import EXPORT_ID, FAKE_WORKER, make_export
@@ -42,6 +43,35 @@ def test_failed_run_returns_nonzero(tmp_path, capsys):
     rc = vsp.cli._train(_settings(tmp_path), _args(model=["yolo26s-seg"], epochs=13), gpus=[Gpu(1, "B", 1)],
                         worker_cmd=FAKE_WORKER, poll=0.05)
     assert rc == 1 and "OutOfMemoryError" in capsys.readouterr().out
+
+
+def test_default_gpu_picks_around_sam3(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(vsp.cli, "cuda_capabilities", lambda: [(8, 0), (7, 5)])
+    monkeypatch.setattr(vsp.cli, "pick_device", lambda requested, caps: "cuda:0")
+    s = _settings(tmp_path)
+    rc = vsp.cli._train(s, _args(gpu=None, model=["yolo26s-seg"]), gpus=[Gpu(0, "A", 1), Gpu(1, "B", 1)],
+                        worker_cmd=FAKE_WORKER, poll=0.05)
+    capsys.readouterr()
+    assert rc == 0
+    (run_dir,) = (s.project.data_root / "runs").iterdir()
+    run = json.loads((run_dir / "run.json").read_text())
+    assert run["gpu"] == 1
+
+
+def test_default_gpu_falls_back_when_pick_device_raises(tmp_path, capsys, monkeypatch):
+    def _raise(requested, caps):
+        raise ValueError(f"sam3.device must be 'auto' or 'cuda:N', got {requested!r}")
+
+    monkeypatch.setattr(vsp.cli, "cuda_capabilities", list)
+    monkeypatch.setattr(vsp.cli, "pick_device", _raise)
+    s = _settings(tmp_path)
+    rc = vsp.cli._train(s, _args(gpu=None, model=["yolo26s-seg"]), gpus=[Gpu(0, "A", 1), Gpu(1, "B", 1)],
+                        worker_cmd=FAKE_WORKER, poll=0.05)
+    capsys.readouterr()
+    assert rc == 0
+    (run_dir,) = (s.project.data_root / "runs").iterdir()
+    run = json.loads((run_dir / "run.json").read_text())
+    assert run["gpu"] == 0
 
 
 def test_bad_input(tmp_path, capsys):

@@ -21,7 +21,8 @@ def test_real_worker_trains_one_epoch(tmp_path):
     try:
         (rid,) = sched.submit(export, [("yolo11n-seg", gpus[-1].index)],
                               TrainParams(epochs=1, imgsz=320, batch=4, workers=0))
-        wait_for(lambda: sched.runs.read(rid)["status"] in ("done", "error", "cancelled"), timeout=600, interval=1)
+        wait_for(lambda: sched.runs.read(rid)["status"] in ("done", "error", "cancelled"),
+                timeout=600, interval=1)
         run = sched.runs.read(rid)
         assert run["status"] == "done", (sched.runs.dir(rid) / "worker.log").read_text()[-3000:]
         d = sched.runs.dir(rid)

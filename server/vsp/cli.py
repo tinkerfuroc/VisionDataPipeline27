@@ -110,7 +110,10 @@ def _train(settings: Settings, args, *, gpus=None, worker_cmd=None, poll: float 
     if args.gpu is not None:
         gpu = args.gpu
     else:
-        sam3 = pick_device(settings.sam3.device, cuda_capabilities()) if gpus else None
+        try:
+            sam3 = pick_device(settings.sam3.device, cuda_capabilities())
+        except ValueError:
+            sam3 = None
         gpu = default_gpu(gpus, int(sam3.split(":")[1]) if sam3 else None)
     try:
         export = find_export(data_root, args.export)
@@ -192,7 +195,8 @@ def main(argv: list[str] | None = None) -> int:
     p_train.add_argument("--export", default=None, help="export id (a folder name under data/exports/)")
     p_train.add_argument("--model", action="append", default=None,
                          help="model to train, repeatable (default: yolo26s/m-seg and yolo11s/m-seg)")
-    p_train.add_argument("--gpu", type=int, default=None, help="CUDA index (default: the first GPU SAM3 is not on)")
+    p_train.add_argument("--gpu", type=int, default=None,
+                         help="CUDA index (default: the first GPU SAM3 is not on)")
     p_train.add_argument("--epochs", type=int, default=100)
     p_train.add_argument("--imgsz", type=int, default=960)
     p_train.add_argument("--batch", type=int, default=8)
