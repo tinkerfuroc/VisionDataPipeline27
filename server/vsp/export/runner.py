@@ -41,7 +41,8 @@ def write_dataset(
         if link_images:
             place_image(frame.image_path, shared_image(out, frame))
         else:
-            shutil.copy2(frame.image_path, shared_image(out, frame))  # a copy: store frames are never linked outside
+            # a copy: store frames are never linked outside
+            shutil.copy2(frame.image_path, shared_image(out, frame))
         tick()
     summaries = [EXPORTERS[name].write(plan, out, tick) for name in formats]
     counts = _counts(plan)
@@ -52,7 +53,8 @@ def write_dataset(
 def manifest_for(
     plan: ExportPlan, export_id: str, summaries: list[ExportSummary], counts: dict, linked: bool,
 ) -> dict:
-    """The manifest `run_export` writes to `export.json` (and a derived export starts its own manifest from)."""
+    """The manifest `run_export` writes to `export.json` (and a derived export starts its own manifest
+    from)."""
     return {
         "export_id": export_id, "created_at": now_iso(),
         "project": {"id": plan.project_id, "name": plan.project_name},
@@ -64,12 +66,14 @@ def manifest_for(
             for cid in plan.clip_ids
         ],
         "classes": [
-            {"id": c.id, "name": c.name, "color": c.color, "yolo_id": c.id, "coco_id": c.id + 1, "mask_value": c.id + 1}
+            {"id": c.id, "name": c.name, "color": c.color, "yolo_id": c.id, "coco_id": c.id + 1,
+             "mask_value": c.id + 1}
             for c in sorted(plan.classes, key=lambda c: c.id)
         ],
         "formats": [asdict(s) for s in summaries],
         "counts": counts,
-        "images_hardlinked": linked,  # false: the filesystem refused hardlinks, so images were copied per format
+        # false: the filesystem refused hardlinks, so images were copied per format
+        "images_hardlinked": linked,
     }
 
 
