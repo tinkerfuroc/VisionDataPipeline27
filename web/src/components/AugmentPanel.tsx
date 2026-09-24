@@ -36,6 +36,7 @@ export function AugmentPanel({ exportInfo, onCreated }: Props) {
   const [handled, setHandled] = useState<Record<string, string>>({});
   const [perImage, setPerImage] = useState(3);
   const [maxObjects, setMaxObjects] = useState(2);
+  const [seed, setSeed] = useState(0);
 
   const loadPools = useCallback(() => {
     api.listBackgrounds().then(setPools, (e) => setPoolsError(message(e)));
@@ -56,9 +57,19 @@ export function AugmentPanel({ exportInfo, onCreated }: Props) {
   );
   const augmentJob = useJob(augmentJobId);
 
+  // Any terminal fetch job (own or one this panel is merely following) may have changed the pool, so
+  // always refresh it. Only the panel's OWN job also clears `ownFetchJobId`: once it does, a later
+  // `pool.fetching` reported by the server (the CLI, another tab, or a reload) is followed again instead
+  // of staying stuck on this finished job's id. Its error is captured into `fetchError` -- the same state
+  // the alert below already renders -- since clearing the id would otherwise drop it from `fetchJob` too.
   useEffect(() => {
-    if (fetchJob.status === "done" || fetchJob.status === "cancelled") loadPools();
-  }, [fetchJob.status, loadPools]);
+    if (!["done", "cancelled", "error"].includes(fetchJob.status)) return;
+    loadPools();
+    if (ownFetchJobId === null) return;
+    if (fetchJob.status === "error") setFetchError(fetchJob.error ?? "the download failed");
+    setOwnFetchJobId(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fetchJob.status, fetchJob.error, ownFetchJobId, loadPools]);
 
   useEffect(() => {
     if (exportInfo === null || augmentJobId === null) return;
@@ -106,7 +117,7 @@ export function AugmentPanel({ exportInfo, onCreated }: Props) {
       const { [exportId]: _dropped, ...rest } = errs;
       return rest;
     });
-    api.augmentExport(exportId, { per_image: perImage, max_objects: maxObjects, seed: 0, pool: POOL }).then(
+    api.augmentExport(exportId, { per_image: perImage, max_objects: maxObjects, seed, pool: POOL }).then(
       (r) => setAugmentJobs((j) => ({ ...j, [exportId]: r.job_id })),
       (e) => setAugmentErrors((errs) => ({ ...errs, [exportId]: message(e) })),
     );
@@ -148,6 +159,11 @@ export function AugmentPanel({ exportInfo, onCreated }: Props) {
         Objects per image
         <input aria-label="Objects per image" type="number" className="field w-20" min={1} max={3}
           value={maxObjects} onChange={(e) => setMaxObjects(Math.min(3, Math.max(1, Number(e.target.value) || 1)))} />
+      </label>
+      <label className="flex items-center justify-between gap-2 text-sm text-dim">
+        Seed
+        <input aria-label="Seed" type="number" className="field w-20" min={0}
+          value={seed} onChange={(e) => setSeed(Math.max(0, Number(e.target.value) || 0))} />
       </label>
 
       {augmentRunning && (

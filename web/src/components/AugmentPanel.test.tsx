@@ -197,6 +197,50 @@ describe("AugmentPanel", () => {
     expect(onCreatedB).not.toHaveBeenCalled();
   });
 
+  it("sends the chosen seed with the augment request", async () => {
+    m.listBackgrounds.mockResolvedValue([pool({ images: 5640 })]);
+    m.augmentExport.mockResolvedValue({ job_id: "aug1" });
+    render(<AugmentPanel exportInfo={exp()} onCreated={vi.fn()} />);
+    await screen.findByText("DTD textures · 5,640 images");
+    fireEvent.change(screen.getByLabelText("Seed"), { target: { value: "7" } });
+    fireEvent.click(screen.getByRole("button", { name: "Make augmented copy" }));
+    await waitFor(() =>
+      expect(m.augmentExport).toHaveBeenCalledWith("20260924-040124-8336a8", {
+        per_image: 3, max_objects: 2, seed: 7, pool: "dtd",
+      }),
+    );
+  });
+
+  it("shows an alert when the panel's own fetch job errors, and offers Download again", async () => {
+    m.fetchBackgrounds.mockResolvedValue({ job_id: "fetch1" });
+    const { rerender } = render(<AugmentPanel exportInfo={exp()} onCreated={vi.fn()} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Download DTD textures (625 MB)" }));
+    await waitFor(() => expect(m.fetchBackgrounds).toHaveBeenCalled());
+    jobs.fetch1 = { ...idle, status: "error", error: "the archive holds no images under dtd/images/" };
+    m.listBackgrounds.mockResolvedValue([pool({ images: 0, fetching: null })]);
+    rerender(<AugmentPanel exportInfo={exp()} onCreated={vi.fn()} />);
+    expect((await screen.findByRole("alert")).textContent).toBe(
+      "the archive holds no images under dtd/images/",
+    );
+    expect(await screen.findByRole("button", { name: "Download DTD textures (625 MB)" })).toBeTruthy();
+  });
+
+  it("follows a later foreign fetch once the panel's own fetch job is done", async () => {
+    m.fetchBackgrounds.mockResolvedValue({ job_id: "fetch1" });
+    const { rerender } = render(<AugmentPanel exportInfo={exp()} onCreated={vi.fn()} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Download DTD textures (625 MB)" }));
+    await waitFor(() => expect(m.fetchBackgrounds).toHaveBeenCalled());
+
+    // fetch1 (this panel's own job) finishes just as another tab (or the CLI) starts a new one; the
+    // pool list the "done" transition re-fetches already reports it. The panel must follow j9, not stay
+    // pinned to the finished fetch1 (which `ownFetchJobId` would otherwise still hold).
+    jobs.fetch1 = { ...idle, status: "done", result: { images: 5640 } };
+    jobs.j9 = { ...idle, status: "running", done: 10, total: 100 };
+    m.listBackgrounds.mockResolvedValue([pool({ images: 5640, fetching: "j9" })]);
+    rerender(<AugmentPanel exportInfo={exp()} onCreated={vi.fn()} />);
+    await waitFor(() => expect(screen.getByText("Downloading… 10 %")).toBeTruthy());
+  });
+
   it("shows a cancelled note when the augment job is cancelled", async () => {
     m.listBackgrounds.mockResolvedValue([pool({ images: 5640 })]);
     m.augmentExport.mockResolvedValue({ job_id: "aug1" });
