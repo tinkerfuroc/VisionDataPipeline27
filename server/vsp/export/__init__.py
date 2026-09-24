@@ -10,9 +10,9 @@ from .yolo import YoloDet, YoloSeg
 EXPORTERS: dict[str, Exporter] = {e.name: e for e in (YoloSeg(), YoloDet(), Coco(), MaskPng())}
 assert tuple(EXPORTERS) == FORMATS
 
-from .runner import ExportCancelled, run_export
+from .runner import ExportCancelled, manifest_for, run_export, write_dataset
 
 __all__ = [
     "EXPORTERS", "FORMATS", "ExportCancelled", "ExportOptions", "ExportPlan", "ExportSummary", "Exporter",
-    "build_plan", "check_request", "run_export",
+    "build_plan", "check_request", "manifest_for", "run_export", "write_dataset",
 ]
