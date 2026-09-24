@@ -80,14 +80,13 @@ The "Validation predictions" section becomes a gallery:
 ### Request
 
 `POST /api/exports/{id}/augment` body `{per_image: 1–10 (3), max_objects: 1–3 (2), seed: int (0), pool: "dtd"}` →
-`202 {job_id}` (kind `augment`). 400 when the export has no `masks` format or the pool has no images; 404 unknown export.
+`202 {job_id}` (kind `augment`). 400 when the source is itself an augmented copy (`derived_from` is not null), has no `masks` format, has no labelled train frame, or the pool has no images; 404 unknown export.
 
 ### Output
 
 A new export `<source_id>-aug<per_image>x-<4 hex>` under `data/exports/`:
 
-- **val** = the source's val frames and labels, unchanged (images hard-linked; label files re-derived from the source
-  masks by the same exporters, so they are identical in content to what the exporter would write).
+- **val** = the source's val frames and labels, unchanged (images hard-linked; per-format label files copied verbatim from the source; `coco/annotations/instances_val.json` and `yolo_det/data.yaml` and `yolo_seg/data.yaml` copied verbatim).
 - **train** = every real source train frame, plus `per_image × (real train frames)` composites named `syn_<seed>_<n:06d>`.
 - The same formats as the source (`yolo_seg`, `yolo_det`, `coco`, `masks` as present), written by the existing exporters
   from an `ExportPlan` built from the source export instead of the store.
@@ -102,18 +101,20 @@ For composite `n` with `rng = np.random.default_rng([seed, n])`:
 1. **Canvas**: the size of a random real train frame (portrait and landscape both occur). Background: a random image
    from the pool, a random crop with the canvas' aspect ratio covering 50–100 % of the image's short side, resized to the
    canvas (area interpolation).
-2. **Objects**: `k = rng.integers(1, max_objects + 1)` cutouts, each from a random real train frame's class region
-   (cleaned with the export's `min_area_px`), cropped to its bounding box with a 4 px margin.
+2. **Objects**: `k = rng.integers(1, max_objects + 1)` cutouts, each from a random real train frame's **class region**
+   of its `masks` image (same-class objects in one frame are cut as one region; a known limitation for multi-instance
+   classes), cleaned with the export's `min_area_px`, cropped to its bounding box with a 4 px margin.
 3. Per cutout: scale so the object's longer side is 15–70 % of the canvas' shorter side; rotate by U(−180°, 180°) with
-   the mask rotated identically (nearest for the mask, linear for the pixels); horizontal flip with p 0.5.
+   the mask rotated identically (nearest-neighbour for the mask, linear for the pixels, replicated border for pixels so
+   no black edges bleed into the mask); horizontal flip with p 0.5.
 4. **Placement**: random position such that at most 20 % of the object's pixels fall outside the canvas; up to 20 tries
    to avoid overlapping an already placed object by more than 10 % of the smaller one; a cutout that finds no place is
    dropped (at least one object always placed: the first uses no overlap test).
 5. **Colour match**: per channel, move the object's mean toward the mean of the background under its box by a factor
    U(0, 0.5), and scale its contrast by U(0.8, 1.2); clip to 0–255.
 6. **Blend**: alpha = the mask, Gaussian-blurred with σ 1.5 px, so edges are soft; the label mask is the hard mask.
-7. **Whole-image finish**: with p 0.3 a Gaussian blur σ U(0.5, 1.5); with p 0.3 Gaussian noise σ U(2, 8); JPEG
-   quality 90 on save.
+7. **Whole-image finish**: with p 0.3 a Gaussian blur σ U(0.5, 1.5); with p 0.3 Gaussian noise σ U(2, 8); pixel
+   values rounded and clipped to 0–255, saved as JPEG quality 90.
 8. The label masks are cleaned with `min_area_px`; later objects occlude earlier ones (an occluded pixel belongs to the
    top object only). A cutout reduced below `min_area_px` by occlusion or cropping is dropped from the labels.
 
@@ -165,7 +166,8 @@ the fields above prefilled from Strong. The runs table gains an **Aug** column (
 
 - Fetch: network failure → job error with the message; the partial files are removed. No disk-space pre-check beyond
   what the OS reports.
-- Augment: a source export missing its `masks` format or its images → 400 before the job starts; an unreadable source
+- Augment: a source export that is itself an augmented copy, missing its `masks` format, missing its `yolo_seg`
+  format, having no labelled train frame, or when the pool is empty → 400 before the job starts; an unreadable source
   image during the job → job error, output removed.
 - Training on a derived export needs nothing new: it is a normal yolo_seg export.
 
