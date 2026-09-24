@@ -46,17 +46,27 @@ def list_images(data_root: Path, name: str) -> list[Path]:
 
 
 def safe_member_name(member: tarfile.TarInfo, prefix: str) -> str | None:
-    """The path below `prefix` for a regular image file with a clean relative name; None for anything else."""
+    """The path below `prefix` for a regular image file with a clean relative name; None for anything else.
+
+    Computed with `PurePosixPath.relative_to` (not string slicing): a doubled slash in the member name, e.g.
+    `dtd/images//x/evil.jpg`, normalises to `x/evil.jpg` here instead of slicing to the leading-slash
+    `/x/evil.jpg` that `tmp / rel` would resolve as an absolute path, escaping the pool directory.
+    """
     if not member.isfile():
         return None
     name = member.name
-    parts = PurePosixPath(name).parts
-    if name.startswith("/") or ".." in parts or not name.startswith(prefix):
+    if "\\" in name:
         return None
-    if PurePosixPath(name).suffix.lower() not in IMAGE_SUFFIXES:
+    try:
+        rel = PurePosixPath(name).relative_to(prefix)
+    except ValueError:
         return None
-    rel = name[len(prefix):]
-    return rel or None
+    parts = rel.parts
+    if not parts or rel.is_absolute() or any(p in (".", "..") for p in parts):
+        return None
+    if rel.suffix.lower() not in IMAGE_SUFFIXES:
+        return None
+    return rel.as_posix()
 
 
 def fetch_pool(
@@ -99,11 +109,13 @@ def fetch_pool(
                 if rel is not None:
                     target = tmp / rel
                     target.parent.mkdir(parents=True, exist_ok=True)
-                    src = tar.extractfile(member)
-                    if src is not None:
-                        with src, open(target, "wb") as dst:
-                            shutil.copyfileobj(src, dst)
-                        count += 1
+                    # Belt and suspenders alongside `safe_member_name`: never write outside the pool dir.
+                    if target.resolve().is_relative_to(tmp.resolve()):
+                        src = tar.extractfile(member)
+                        if src is not None:
+                            with src, open(target, "wb") as dst:
+                                shutil.copyfileobj(src, dst)
+                            count += 1
                 if progress:
                     progress("extract", i + 1, len(members))
         if count == 0:

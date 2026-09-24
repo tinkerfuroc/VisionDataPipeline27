@@ -64,7 +64,8 @@ def wait_for(predicate, timeout: float = 15.0, interval: float = 0.05):
 
 def _tarball(path: Path) -> None:
     """A DTD-shaped archive: two good images, a labels file, a path-escape entry, an absolute-path
-    entry and a symlink -- so extraction tests can prove only the two safe images make it out."""
+    entry, a doubled-slash entry, a backslash entry and a symlink -- so extraction tests can prove only
+    the two safe images make it out."""
     with tarfile.open(path, "w:gz") as tar:
 
         def add(name, data=JPEG, kind=tarfile.REGTYPE, link=""):
@@ -77,6 +78,8 @@ def _tarball(path: Path) -> None:
         add("dtd/labels/labels_joint_anno.txt", b"text")
         add("dtd/images/../../evil.jpg")
         add("/abs/dtd/images/x.jpg")
+        add("dtd/images//abs.jpg")
+        add("dtd/images/evil\\..\\..\\evil.jpg")
         add("dtd/images/link.jpg", kind=tarfile.SYMTYPE, link="/etc/passwd")
 
 
