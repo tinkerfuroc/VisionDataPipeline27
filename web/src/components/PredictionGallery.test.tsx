@@ -65,6 +65,23 @@ describe("PredictionGallery", () => {
     expect(screen.getByText("1–4 of 30")).toBeTruthy();
   });
 
+  it("scrolls the remounted strip back under the counter after closing a card past the first page", async () => {
+    const scrollIntoView = vi.fn();
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = scrollIntoView;
+    try {
+      render(<PredictionGallery run={run} />);
+      fireEvent.click(await screen.findByRole("button", { name: "Open f_009.jpg" }));
+      expect(screen.getByText(/10 \/ 30 · f_009.jpg/)).toBeTruthy();
+      scrollIntoView.mockClear();
+      fireEvent.keyDown(window, { key: "Escape" });
+      expect(screen.getByText("9–12 of 30")).toBeTruthy();
+      expect(scrollIntoView).toHaveBeenCalledWith({ inline: "start", block: "nearest", behavior: "auto" });
+    } finally {
+      Element.prototype.scrollIntoView = original;
+    }
+  });
+
   it("does not let the previous filter's total leak into the counter while the next one is loading", async () => {
     render(<PredictionGallery run={run} />);
     await screen.findByText("1–4 of 30");

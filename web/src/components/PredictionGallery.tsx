@@ -82,7 +82,7 @@ export function PredictionGallery({ run }: { run: Run }) {
   const settle = useRef<{ finish: () => void } | null>(null);
   useEffect(() => () => settle.current?.finish(), []);
 
-  const scrollTo = (index: number) => {
+  const scrollTo = (index: number, behavior: ScrollBehavior = "smooth") => {
     const el = strip.current;
     const card = el?.children[index] as HTMLElement | undefined;
     if (!el || !card) return;
@@ -97,7 +97,7 @@ export function PredictionGallery({ run }: { run: Run }) {
     const timer = window.setTimeout(finish, 500);
     el.addEventListener("scrollend", finish);
     settle.current = { finish };
-    card.scrollIntoView?.({ inline: "start", block: "nearest", behavior: "smooth" });
+    card.scrollIntoView?.({ inline: "start", block: "nearest", behavior });
   };
   const page = (d: number) => {
     const next = Math.max(0, Math.min(first + d * VISIBLE, Math.max(0, total - 1)));
@@ -109,6 +109,14 @@ export function PredictionGallery({ run }: { run: Run }) {
     if (open !== null) setFirst(Math.max(0, open - (open % VISIBLE)));
     setOpen(null);
   };
+  // The strip unmounts while a card is open (it's a different branch of the JSX below) and remounts at
+  // scrollLeft 0 once `open` goes back to null, which would show cards 1-4 under a counter that still
+  // reads e.g. "9-12 of 30". Jump the freshly mounted strip to `first` (no smooth animation: it must
+  // land before the browser paints, not just start moving) under the same programmatic guard `page` uses.
+  useEffect(() => {
+    if (open === null) scrollTo(first, "auto");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (inField(e.target)) return;
