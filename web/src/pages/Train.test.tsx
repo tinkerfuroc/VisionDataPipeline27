@@ -27,7 +27,17 @@ const status: TrainStatus = {
   ],
   models: ["yolo26n-seg", "yolo26s-seg", "yolo26m-seg", "yolo11s-seg", "yolo11m-seg"],
   default_models: ["yolo26s-seg", "yolo26m-seg", "yolo11s-seg", "yolo11m-seg"],
-  defaults: { epochs: 100, imgsz: 960, batch: 8, patience: 30, workers: 8, seed: 0 },
+  defaults: { epochs: 100, imgsz: 960, batch: 8, patience: 30, workers: 8, seed: 0, augment: "default", aug: null },
+  aug_presets: {
+    default: {
+      degrees: 0, shear: 0, perspective: 0, flipud: 0, fliplr: 0.5, scale: 0.5, translate: 0.1,
+      hsv_h: 0.015, hsv_s: 0.7, hsv_v: 0.4, mosaic: 1.0, mixup: 0, copy_paste: 0, photometric: false,
+    },
+    strong: {
+      degrees: 15, shear: 5, perspective: 0.0005, flipud: 0.5, fliplr: 0.5, scale: 0.6, translate: 0.2,
+      hsv_h: 0.02, hsv_s: 0.7, hsv_v: 0.5, mosaic: 1.0, mixup: 0.1, copy_paste: 0.3, photometric: true,
+    },
+  },
 };
 const exp: ExportInfo = { id: "20260924-040124-8336a8", project_name: "OpticsConverter1", created_at: "", classes: ["Module"], train_images: 798, val_images: 252 };
 const run = (id: string, model: string, over: Partial<Run> = {}): Run => ({
@@ -68,6 +78,29 @@ describe("Train page", () => {
       { model: "yolo26s-seg", gpu: 1 }, { model: "yolo26m-seg", gpu: 1 }, { model: "yolo11s-seg", gpu: 1 }, { model: "yolo11m-seg", gpu: 1 },
     ]);
     expect(body.params.epochs).toBe(50);
+  });
+
+  it("starts with the strong augmentation preset and no custom aug values", async () => {
+    renderPage();
+    const start = await screen.findByRole("button", { name: "Start 4 runs" });
+    fireEvent.change(screen.getByLabelText("Augmentation"), { target: { value: "strong" } });
+    fireEvent.click(start);
+    await waitFor(() => expect(m.startRuns).toHaveBeenCalled());
+    const body = m.startRuns.mock.calls[0][0];
+    expect(body.params.augment).toBe("strong");
+    expect(body.params.aug).toBeNull();
+  });
+
+  it("starts with custom augmentation values prefilled from the strong preset", async () => {
+    renderPage();
+    const start = await screen.findByRole("button", { name: "Start 4 runs" });
+    fireEvent.change(screen.getByLabelText("Augmentation"), { target: { value: "custom" } });
+    fireEvent.change(screen.getByLabelText("degrees"), { target: { value: "7" } });
+    fireEvent.click(start);
+    await waitFor(() => expect(m.startRuns).toHaveBeenCalled());
+    const body = m.startRuns.mock.calls[0][0];
+    expect(body.params.aug?.degrees).toBe(7);
+    expect(body.params.aug?.mixup).toBe(0.1);
   });
 
   it("warns when a model is put on SAM3's GPU", async () => {

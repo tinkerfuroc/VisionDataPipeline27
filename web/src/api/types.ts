@@ -80,7 +80,34 @@ export type Health = {
   upload?: { max_bytes: number };
 };
 
-export type TrainParams = { epochs: number; imgsz: number; batch: number; patience: number; workers: number; seed: number };
+export type AugmentMode = "default" | "strong" | "custom";
+export type AugParams = {
+  degrees: number;
+  shear: number;
+  perspective: number;
+  flipud: number;
+  fliplr: number;
+  scale: number;
+  translate: number;
+  hsv_h: number;
+  hsv_s: number;
+  hsv_v: number;
+  mosaic: number;
+  mixup: number;
+  copy_paste: number;
+  photometric: boolean;
+};
+export type TrainParams = {
+  epochs: number;
+  imgsz: number;
+  batch: number;
+  patience: number;
+  workers: number;
+  seed: number;
+  /** Absent on an older run's stored params: the GUI treats that as "default". */
+  augment?: AugmentMode;
+  aug?: AugParams | null;
+};
 export type GpuQueue = {
   index: number;
   name: string;
@@ -97,6 +124,7 @@ export type TrainStatus = {
   models: string[];
   default_models: string[];
   defaults: TrainParams;
+  aug_presets: { default: AugParams; strong: AugParams };
 };
 export type ExportInfo = {
   id: string;

@@ -1,13 +1,28 @@
 import { useEffect, useState } from "react";
-import type { ExportInfo, GpuQueue, Run, StartRunsRequest, TrainParams, TrainStatus } from "../api/types";
+import type { AugmentMode, AugParams, ExportInfo, GpuQueue, Run, StartRunsRequest, TrainParams, TrainStatus } from "../api/types";
 import { defaultGpu, startProblem, statusText } from "../lib/train";
 
 type ModelPick = { checked: boolean; gpu: number };
-const PARAM_FIELDS: { key: keyof TrainParams; label: string; min: number; max: number; step: number }[] = [
+const PARAM_FIELDS: { key: "epochs" | "imgsz" | "batch" | "patience"; label: string; min: number; max: number; step: number }[] = [
   { key: "epochs", label: "Epochs", min: 1, max: 1000, step: 1 },
   { key: "imgsz", label: "Image size (px)", min: 320, max: 1920, step: 32 },
   { key: "batch", label: "Batch", min: 1, max: 64, step: 1 },
   { key: "patience", label: "Early-stop patience", min: 0, max: 1000, step: 1 },
+];
+const AUG_FIELDS: { key: keyof Omit<AugParams, "photometric">; min: number; max: number; step: number }[] = [
+  { key: "degrees", min: 0, max: 180, step: 1 },
+  { key: "shear", min: 0, max: 45, step: 1 },
+  { key: "perspective", min: 0, max: 0.001, step: 0.0001 },
+  { key: "flipud", min: 0, max: 1, step: 0.05 },
+  { key: "fliplr", min: 0, max: 1, step: 0.05 },
+  { key: "scale", min: 0, max: 0.9, step: 0.05 },
+  { key: "translate", min: 0, max: 0.9, step: 0.05 },
+  { key: "hsv_h", min: 0, max: 0.1, step: 0.005 },
+  { key: "hsv_s", min: 0, max: 1, step: 0.05 },
+  { key: "hsv_v", min: 0, max: 1, step: 0.05 },
+  { key: "mosaic", min: 0, max: 1, step: 0.05 },
+  { key: "mixup", min: 0, max: 1, step: 0.05 },
+  { key: "copy_paste", min: 0, max: 1, step: 0.05 },
 ];
 const gib = (bytes: number) => `${Math.round(bytes / 2 ** 30)} GiB`;
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -59,6 +74,11 @@ export function TrainSidebar({ status, exports, runs, onStart, onCancel }: Props
   }, [status, picks]);
 
   if (status === null || params === null) return <aside className="note p-3">Loading…</aside>;
+
+  const onAugmentChange = (mode: AugmentMode) =>
+    setParams((p) => (p === null ? p : { ...p, augment: mode, aug: mode === "custom" ? (p.aug ?? status.aug_presets.strong) : null }));
+  const setAug = (patch: Partial<AugParams>) =>
+    setParams((p) => (p === null || !p.aug ? p : { ...p, aug: { ...p.aug, ...patch } }));
 
   const visible = showAll ? status.models : status.models.filter((m) => status.default_models.includes(m) || picks[m]?.checked);
   const chosen = status.models.filter((m) => picks[m]?.checked);
@@ -135,6 +155,31 @@ export function TrainSidebar({ status, exports, runs, onStart, onCancel }: Props
               value={params[f.key]} onChange={(e) => setParams({ ...params, [f.key]: Number(e.target.value) || f.min })} />
           </label>
         ))}
+        <label className="flex flex-col gap-1 text-sm text-dim">
+          Augmentation
+          <select aria-label="Augmentation" className="field" value={params.augment ?? "default"}
+            onChange={(e) => onAugmentChange(e.target.value as AugmentMode)}>
+            <option value="default">Default</option>
+            <option value="strong">Strong</option>
+            <option value="custom">Custom</option>
+          </select>
+        </label>
+        {params.augment === "custom" && params.aug && (
+          <fieldset className="grid grid-cols-2 gap-x-2 gap-y-1.5">
+            <legend className="sr-only">Custom augmentation</legend>
+            {AUG_FIELDS.map((f) => (
+              <label key={f.key} className="flex items-center justify-between gap-1 text-sm text-dim">
+                {f.key}
+                <input aria-label={f.key} type="number" className="field w-20" min={f.min} max={f.max} step={f.step}
+                  value={params.aug![f.key]} onChange={(e) => setAug({ [f.key]: Number(e.target.value) || f.min })} />
+              </label>
+            ))}
+            <label className="col-span-2 flex items-center gap-2 text-sm text-dim">
+              <input type="checkbox" checked={params.aug.photometric} onChange={(e) => setAug({ photometric: e.target.checked })} />
+              Blur, noise, JPEG, contrast
+            </label>
+          </fieldset>
+        )}
         {problem !== null && <p className="note text-ink">{problem}</p>}
         {startError !== null && <p role="alert" className="alert">{startError}</p>}
         <button type="button" className="btn btn-on" disabled={problem !== null || starting} onClick={() => void start()}>

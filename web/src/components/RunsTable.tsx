@@ -46,6 +46,7 @@ export function RunsTable({ runs, selectedId, compareIds, onSelect, onToggleComp
             <th className="px-2 py-1.5 font-medium">Model</th>
             <th className="px-2 py-1.5 font-medium">Export</th>
             <th className="px-2 py-1.5 font-medium">GPU</th>
+            <th className="px-2 py-1.5 font-medium">Aug</th>
             <th className="px-2 py-1.5 font-medium">Status</th>
             <th className="px-2 py-1.5 text-right font-medium">Epochs</th>
             {METRICS.map((m) => (
@@ -70,6 +71,7 @@ export function RunsTable({ runs, selectedId, compareIds, onSelect, onToggleComp
                 <td className="px-2 py-1.5 font-medium">{r.model}</td>
                 <td className="px-2 py-1.5 text-dim">{r.project_name}</td>
                 <td className="px-2 py-1.5 font-cond text-dim">cuda:{r.gpu}</td>
+                <td className="px-2 py-1.5 text-dim">{r.params.augment ?? "default"}</td>
                 <td className="px-2 py-1.5">
                   <div className="flex flex-col gap-1">
                     <span className={r.status === "error" ? "text-danger" : ""}>{statusText(r)}</span>

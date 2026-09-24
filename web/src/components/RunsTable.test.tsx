@@ -34,4 +34,15 @@ describe("RunsTable", () => {
     fireEvent.click(rowA);
     expect(on.onSelect).toHaveBeenCalledWith(base.id);
   });
+
+  it("shows the Aug column from params.augment, defaulting to default", () => {
+    const strong: Run = { ...base, id: "20260924-120000-yolo26m-seg-dddd", model: "yolo26m-seg",
+      params: { ...base.params, augment: "strong" } };
+    const on = { onSelect: vi.fn(), onToggleCompare: vi.fn(), onCancel: vi.fn(), onResume: vi.fn(), onOnnx: vi.fn(), onDelete: vi.fn() };
+    render(<RunsTable runs={[base, strong]} selectedId={null} compareIds={[]} {...on} />);
+    const rowDefault = screen.getByText("yolo26s-seg").closest("tr")!;
+    const rowStrong = screen.getByText("yolo26m-seg").closest("tr")!;
+    expect(within(rowDefault).getByText("default")).toBeTruthy();
+    expect(within(rowStrong).getByText("strong")).toBeTruthy();
+  });
 });
