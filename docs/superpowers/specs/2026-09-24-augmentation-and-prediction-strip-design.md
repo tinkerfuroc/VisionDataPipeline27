@@ -68,19 +68,24 @@ The "Validation predictions" section becomes a gallery:
 - Stored under `data/backgrounds/<pool>/` (images only, any sub-folders). One pool now: `dtd`.
 - `vsp backgrounds fetch dtd` (CLI, foreground with a progress line) and `POST /api/backgrounds/dtd/fetch` (a
   `JobManager` job, kind `backgrounds`, progress `done/total` in bytes then files, cancellable) download the archive to
-  `data/backgrounds/.dtd.tar.gz.part`, then extract only `dtd/images/**/*.jpg` into `data/backgrounds/dtd/`, then delete
-  the archive. A cancelled or failed fetch removes the partial archive and the partial pool directory. A pool that
-  already has images is left alone unless `force`.
-- `GET /api/backgrounds` → `[{name, images, fetching: job_id | null}]` for the known pools (`dtd`), `images` 0 when absent.
-- Extraction guards against unsafe tar members (absolute paths, `..`, links): only regular files whose normalised path
-  is under `dtd/images/` and ends in `.jpg` are written.
+  `data/backgrounds/.dtd.tar.gz.part`, then extract only `dtd/images/**/*.jpg`, `*.jpeg` and `*.png` into
+  `data/backgrounds/dtd/`, then delete the archive. A cancelled or failed fetch removes the partial archive and the
+  partial pool directory. A pool that already has images is left alone unless `force`. This job and an augment job (B2)
+  share one exclusive key (`augment-data`): only one of either may run at a time; the second attempt gets `409
+  {job_id}` naming the one already running.
+- `GET /api/backgrounds` → `[{name, images, fetching: job_id | null}]` for the known pools (`dtd`), `images` 0 when
+  absent; `fetching` reports only a running *fetch* job, not a running augment job holding the same exclusive key.
+- Extraction guards against unsafe tar members (absolute paths, `..`, backslashes, links): only regular files whose
+  normalised path is under `dtd/images/` and ends in `.jpg`, `.jpeg` or `.png` are written.
 
 ## B2. Augmented copy of an export
 
 ### Request
 
 `POST /api/exports/{id}/augment` body `{per_image: 1–10 (3), max_objects: 1–3 (2), seed: int (0), pool: "dtd"}` →
-`202 {job_id}` (kind `augment`). 400 when the source is itself an augmented copy (`derived_from` is not null), has no `masks` format, has no labelled train frame, or the pool has no images; 404 unknown export.
+`202 {job_id}` (kind `augment`, exclusive key `augment-data` -- shared with a background fetch, B1). 400 when the
+source is itself an augmented copy (`derived_from` is not null), has no `yolo_seg` or no `masks` format, has no
+labelled train frame, names an unknown background pool, or the pool has no images; 404 unknown export.
 
 ### Output
 
