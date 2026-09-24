@@ -46,6 +46,39 @@ def _export(store, project, clip, formats, data_root):
     return run_export(store, project.id, [clip.id], formats, ExportOptions(), data_root / "exports")
 
 
+def _labelled_at(store, make_clip, n, indices):
+    """Like `_labelled`, but only the given frame indices get a mask (the rest are unlabelled)."""
+    project, clip = make_clip(n_frames=n)
+    clip.objects = [LabelObject(id=1, class_id=0)]
+    store.write_clip(clip)
+    mask = np.zeros((60, 120), bool)
+    mask[10:40, 20:60] = True
+    for i in indices:
+        store.write_mask(clip.id, 1, i, mask)
+    return project, clip
+
+
+def _multi(store, make_clip, n=6):
+    """Two touching same-class objects plus an overlapping other-class object, on every frame -- the
+    semantic `masks` PNG merges/occludes these, so real labels must never be rebuilt from it."""
+    project, clip = make_clip(n_frames=n, classes=("a", "b"))
+    clip.objects = [
+        LabelObject(id=1, class_id=0), LabelObject(id=2, class_id=0), LabelObject(id=3, class_id=1),
+    ]
+    store.write_clip(clip)
+    m1 = np.zeros((60, 120), bool)
+    m1[10:30, 5:30] = True
+    m2 = np.zeros((60, 120), bool)
+    m2[10:30, 29:50] = True  # touches m1, same class
+    m3 = np.zeros((60, 120), bool)
+    m3[20:45, 20:45] = True  # overlaps m1, other class
+    for i in range(n):
+        store.write_mask(clip.id, 1, i, m1)
+        store.write_mask(clip.id, 2, i, m2)
+        store.write_mask(clip.id, 3, i, m3)
+    return project, clip
+
+
 def test_derive_writes_val_unchanged_and_train_with_composites(store, make_clip, tmp_path):
     project, clip = _labelled(store, make_clip)
     data_root = tmp_path / "data"
@@ -158,3 +191,113 @@ def test_list_exports_reports_formats_and_derived_from(store, make_clip, tmp_pat
     assert by_id[src["export_id"]].formats == ("yolo_seg", "masks")
     derived = by_id[result["export_id"]]
     assert derived.derived_from == src["export_id"] and "masks" in derived.formats
+
+
+def test_multi_object_labels_are_copied_verbatim_not_relabelled(store, make_clip, tmp_path):
+    """Reviewer-reported defect: rebuilding real labels from the semantic `masks` PNG merges touching
+    same-class objects and drops occluded pixels. Real frames' labels must be byte-identical to the
+    source's, for every format, on both splits."""
+    project, clip = _multi(store, make_clip)
+    data_root = tmp_path / "data"
+    src = _export(store, project, clip, ["yolo_seg", "yolo_det", "coco", "masks"], data_root)
+    _make_pool(data_root)
+    src_dir = Path(src["path"])
+
+    result = run_augment(data_root, src["export_id"], AugmentOptions(per_image=1, seed=0))
+    new_dir = Path(result["path"])
+
+    for fmt, rel in (("yolo_seg", "labels"), ("yolo_det", "labels"), ("masks", "masks")):
+        for split in ("train", "val"):
+            src_split = src_dir / fmt / rel / split
+            new_split = new_dir / fmt / rel / split
+            names = sorted(p.name for p in src_split.iterdir())
+            new_names = {p.name for p in new_split.iterdir()}
+            assert names  # every real frame has a label/mask file, even an empty one
+            if split == "val":
+                assert set(names) == new_names  # val never gains synthetic frames
+            else:
+                assert set(names) <= new_names  # train keeps every real frame, plus synthetic ones
+            for name in names:
+                assert (new_split / name).read_bytes() == (src_split / name).read_bytes()
+
+    src_coco_val = (src_dir / "coco" / "annotations" / "instances_val.json").read_bytes()
+    new_coco_val = (new_dir / "coco" / "annotations" / "instances_val.json").read_bytes()
+    assert src_coco_val == new_coco_val
+
+    src_coco_train = json.loads((src_dir / "coco" / "annotations" / "instances_train.json").read_text())
+    new_coco_train = json.loads((new_dir / "coco" / "annotations" / "instances_train.json").read_text())
+    src_by_id = {a["id"]: a for a in src_coco_train["annotations"]}
+    new_by_id = {a["id"]: a for a in new_coco_train["annotations"]}
+    assert set(src_by_id) <= set(new_by_id)
+    for ann_id, ann in src_by_id.items():
+        assert new_by_id[ann_id] == ann  # every source annotation present, unchanged
+    assert len(new_by_id) > len(src_by_id)  # synthetic annotations were appended
+    assert len(new_by_id) == len(new_coco_train["annotations"])  # every id unique
+
+
+def test_check_augment_rejects_deriving_from_a_derived_export(store, make_clip, tmp_path):
+    project, clip = _labelled(store, make_clip)
+    data_root = tmp_path / "data"
+    src = _export(store, project, clip, ["yolo_seg", "masks"], data_root)
+    _make_pool(data_root)
+    derived = run_augment(data_root, src["export_id"], AugmentOptions(per_image=1, seed=0))
+
+    with pytest.raises(BadRequest, match="already an augmented copy"):
+        check_augment(data_root, derived["export_id"], AugmentOptions())
+
+
+def test_check_augment_rejects_no_train_objects(store, make_clip, tmp_path):
+    project, clip = _labelled_at(store, make_clip, 6, [4, 5])  # only the val frames are labelled
+    data_root = tmp_path / "data"
+    src = _export(store, project, clip, ["yolo_seg", "masks"], data_root)
+    _make_pool(data_root)
+
+    with pytest.raises(BadRequest, match="no train-split objects"):
+        check_augment(data_root, src["export_id"], AugmentOptions())
+
+
+def test_check_augment_requires_yolo_seg_format(store, make_clip, tmp_path):
+    project, clip = _labelled(store, make_clip)
+    data_root = tmp_path / "data"
+    src = _export(store, project, clip, ["masks"], data_root)  # no yolo_seg
+    _make_pool(data_root)
+
+    with pytest.raises(BadRequest):
+        check_augment(data_root, src["export_id"], AugmentOptions())
+
+
+def test_empty_val_frames_are_kept(store, make_clip, tmp_path):
+    project, clip = _labelled_at(store, make_clip, 6, [0, 1, 2, 3, 5])  # val frame 4 is unlabelled
+    data_root = tmp_path / "data"
+    src = _export(store, project, clip, ["yolo_seg", "masks"], data_root)
+    _make_pool(data_root)
+    src_dir = Path(src["path"])
+
+    result = run_augment(data_root, src["export_id"], AugmentOptions(per_image=1, seed=0))
+    new_dir = Path(result["path"])
+
+    src_val_dir = src_dir / "yolo_seg" / "labels" / "val"
+    new_val_dir = new_dir / "yolo_seg" / "labels" / "val"
+    src_val_names = sorted(p.name for p in src_val_dir.iterdir())
+    assert sorted(p.name for p in new_val_dir.iterdir()) == src_val_names
+    assert any(not (src_val_dir / n).read_text().strip() for n in src_val_names)  # at least one is empty
+    for name in src_val_names:
+        assert (new_val_dir / name).read_bytes() == (src_val_dir / name).read_bytes()
+
+
+def test_progress_is_monotonic_with_a_fixed_total(store, make_clip, tmp_path):
+    project, clip = _labelled(store, make_clip)
+    data_root = tmp_path / "data"
+    src = _export(store, project, clip, ["yolo_seg", "masks"], data_root)
+    _make_pool(data_root)
+
+    seen = []
+    run_augment(
+        data_root, src["export_id"], AugmentOptions(per_image=2, seed=0),
+        progress=lambda done, total: seen.append((done, total)),
+    )
+
+    assert seen
+    assert len({total for _, total in seen}) == 1  # the total is fixed up front, never moved
+    dones = [done for done, _ in seen]
+    assert dones == sorted(dones)  # done never goes backwards
