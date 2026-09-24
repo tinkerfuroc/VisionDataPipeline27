@@ -133,7 +133,12 @@ export type ExportInfo = {
   classes: string[];
   train_images: number;
   val_images: number;
+  formats: string[];
+  derived_from: string | null;
 };
+export type BackgroundPool = { name: string; label: string; images: number; size_bytes: number; fetching: string | null };
+export type ExportSample = { name: string; width: number; height: number; ground_truth: Instance[] };
+export type AugmentRequest = { per_image: number; max_objects: number; seed: number; pool: string };
 export type RunStatus = "queued" | "running" | "done" | "error" | "cancelled" | "interrupted";
 export type RunBest = {
   epoch: number;

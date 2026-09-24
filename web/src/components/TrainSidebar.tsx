@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { AugmentMode, AugParams, ExportInfo, GpuQueue, Run, StartRunsRequest, TrainParams, TrainStatus } from "../api/types";
 import { defaultGpu, startProblem, statusText } from "../lib/train";
+import { AugmentPanel } from "./AugmentPanel";
 
 type ModelPick = { checked: boolean; gpu: number };
 const PARAM_FIELDS: { key: "epochs" | "imgsz" | "batch" | "patience"; label: string; min: number; max: number; step: number }[] = [
@@ -51,21 +52,20 @@ type Props = {
   status: TrainStatus | null;
   exports: ExportInfo[];
   runs: Run[];
+  exportId: string | null;
+  onExportChange: (id: string) => void;
+  onExportsChanged: () => void;
   onStart: (body: StartRunsRequest) => Promise<void>;
   onCancel: (id: string) => void;
 };
 
-export function TrainSidebar({ status, exports, runs, onStart, onCancel }: Props) {
-  const [exportId, setExportId] = useState<string | null>(null);
+export function TrainSidebar({ status, exports, runs, exportId, onExportChange, onExportsChanged, onStart, onCancel }: Props) {
   const [picks, setPicks] = useState<Record<string, ModelPick>>({});
   const [showAll, setShowAll] = useState(false);
   const [params, setParams] = useState<TrainParams | null>(null);
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (exportId === null && exports.length > 0) setExportId(exports[0].id);
-  }, [exports, exportId]);
   useEffect(() => {
     if (status === null || Object.keys(picks).length > 0) return;
     const gpu = defaultGpu(status) ?? 0;
@@ -82,6 +82,7 @@ export function TrainSidebar({ status, exports, runs, onStart, onCancel }: Props
 
   const visible = showAll ? status.models : status.models.filter((m) => status.default_models.includes(m) || picks[m]?.checked);
   const chosen = status.models.filter((m) => picks[m]?.checked);
+  const selectedExport = exports.find((e) => e.id === exportId) ?? null;
   const onSam3 = status.sam3_gpu !== null && chosen.some((m) => picks[m].gpu === status.sam3_gpu);
   const problem = startProblem({ available: status.available, error: status.error, exportId, picked: chosen.length });
   const byId = new Map(runs.map((r) => [r.id, r]));
@@ -105,7 +106,7 @@ export function TrainSidebar({ status, exports, runs, onStart, onCancel }: Props
         <h2 className="heading">New runs</h2>
         <label className="flex flex-col gap-1 text-sm text-dim">
           Export
-          <select aria-label="Export" className="field" value={exportId ?? ""} onChange={(e) => setExportId(e.target.value || null)}>
+          <select aria-label="Export" className="field" value={exportId ?? ""} onChange={(e) => onExportChange(e.target.value)}>
             {exports.length === 0 && <option value="">No yolo_seg export yet</option>}
             {exports.map((e) => (
               <option key={e.id} value={e.id}>
@@ -114,6 +115,11 @@ export function TrainSidebar({ status, exports, runs, onStart, onCancel }: Props
             ))}
           </select>
         </label>
+        <AugmentPanel exportInfo={selectedExport}
+          onCreated={(id) => {
+            onExportsChanged();
+            onExportChange(id);
+          }} />
         <fieldset className="flex flex-col gap-1.5">
           <legend className="mb-1 text-sm text-dim">Models</legend>
           {visible.map((m) => (

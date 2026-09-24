@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, valImageUrl } from "../api/rest";
+import { api, exportImageUrl } from "../api/rest";
 import type { PredictionFilter, PredictionItem, PredictionPage, Run } from "../api/types";
 import { SERIES_COLORS, TEXT_INK } from "../lib/chart";
 import { GalleryCard } from "./GalleryCard";
@@ -161,7 +161,7 @@ export function PredictionGallery({ run }: { run: Run }) {
           {toggles}
         </div>
         <div className="relative w-full overflow-hidden rounded border border-line bg-well">
-          <img src={valImageUrl(run.export_id, it.name)} alt={it.name} className="block w-full" />
+          <img src={exportImageUrl(run.export_id, "val", it.name)} alt={it.name} className="block w-full" />
           <PredictionOverlay width={it.width} height={it.height} groundTruth={it.ground_truth}
             predictions={it.predictions} showGt={showGt} showPred={showPred} scores />
         </div>
@@ -190,7 +190,7 @@ export function PredictionGallery({ run }: { run: Run }) {
           <div ref={strip} onScroll={onScroll}
             className="grid min-w-0 flex-1 snap-x snap-mandatory auto-cols-[calc((100%-2.25rem)/4)] grid-flow-col gap-3 overflow-x-auto pb-1">
             {items.map((it, i) => (
-              <GalleryCard key={it.name} src={valImageUrl(run.export_id, it.name)} name={it.name} width={it.width}
+              <GalleryCard key={it.name} src={exportImageUrl(run.export_id, "val", it.name)} name={it.name} width={it.width}
                 height={it.height} groundTruth={it.ground_truth} predictions={it.predictions} showGt={showGt}
                 showPred={showPred} caption={caption(it)} onOpen={() => setOpen(i)} />
             ))}

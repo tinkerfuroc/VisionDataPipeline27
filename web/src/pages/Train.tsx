@@ -4,6 +4,7 @@ import { api } from "../api/rest";
 import type { RunDetail, StartRunsRequest } from "../api/types";
 import { AppHeader } from "../components/AppHeader";
 import { CompareChart, MetricCharts } from "../components/MetricCharts";
+import { CompositeSamples } from "../components/CompositeSamples";
 import { PredictionGallery } from "../components/PredictionGallery";
 import { RunsTable } from "../components/RunsTable";
 import { TrainSidebar } from "../components/TrainSidebar";
@@ -25,12 +26,17 @@ export function Train() {
   const exports = usePoll(() => api.listExports(), 15000, []);
   const runs = usePoll(() => api.listRuns(), POLL_MS, []);
   const [pickedId, setPickedId] = useState<string | null>(null);
+  const [exportId, setExportId] = useState<string | null>(null);
   // Slot index (0-3) a compared run is drawn in never changes while the run stays compared: a newly added run
   // takes the lowest free slot, and removing a run (toggle or delete) frees its slot for the next addition.
   const [compareSlots, setCompareSlots] = useState<(string | null)[]>(Array(MAX_COMPARE).fill(null));
   const [actionError, setActionError] = useState<string | null>(null);
 
   const compareIds = compareSlots.filter((id): id is string => id !== null);
+
+  const exportsList = exports.data ?? [];
+  const selectedExportId = exportId ?? exportsList[0]?.id ?? null;
+  const selectedExport = exportsList.find((e) => e.id === selectedExportId) ?? null;
 
   const list = runs.data ?? [];
   const selectedId = pickedId ?? list.find((r) => r.status === "running")?.id ?? list[0]?.id ?? null;
@@ -105,6 +111,9 @@ export function Train() {
           {(runs.error ?? status.error ?? actionError) !== null && (
             <p role="alert" className="alert">{runs.error ?? status.error ?? actionError}</p>
           )}
+          {selectedExport !== null && selectedExport.derived_from !== null && (
+            <CompositeSamples exportInfo={selectedExport} />
+          )}
           <section className="flex flex-col gap-2">
             <h2 className="heading">Runs</h2>
             <RunsTable runs={list} selectedId={selectedId} compareIds={compareIds} onSelect={setPickedId}
@@ -143,7 +152,8 @@ export function Train() {
             </section>
           )}
         </div>
-        <TrainSidebar status={status.data} exports={exports.data ?? []} runs={list} onStart={onStart}
+        <TrainSidebar status={status.data} exports={exportsList} runs={list} exportId={selectedExportId}
+          onExportChange={setExportId} onExportsChanged={exports.refresh} onStart={onStart}
           onCancel={(id) => act(() => api.cancelRun(id))} />
       </div>
     </div>

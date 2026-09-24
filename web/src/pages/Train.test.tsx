@@ -3,7 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "../api/rest";
-import type { ExportInfo, Run, RunDetail, TrainStatus } from "../api/types";
+import type { BackgroundPool, ExportInfo, ExportSample, Run, RunDetail, TrainStatus } from "../api/types";
 import { SERIES_COLORS } from "../lib/chart";
 import { runLabel } from "../lib/train";
 import { Train } from "./Train";
@@ -15,6 +15,7 @@ vi.mock("../api/rest", async (original) => {
     api: {
       health: vi.fn(), trainStatus: vi.fn(), listExports: vi.fn(), listRuns: vi.fn(), getRun: vi.fn(), startRuns: vi.fn(),
       cancelRun: vi.fn(), resumeRun: vi.fn(), exportOnnx: vi.fn(), deleteRun: vi.fn(), predictions: vi.fn(),
+      listBackgrounds: vi.fn(), fetchBackgrounds: vi.fn(), augmentExport: vi.fn(), exportSamples: vi.fn(),
     },
   };
 });
@@ -39,7 +40,15 @@ const status: TrainStatus = {
     },
   },
 };
-const exp: ExportInfo = { id: "20260924-040124-8336a8", project_name: "OpticsConverter1", created_at: "", classes: ["Module"], train_images: 798, val_images: 252 };
+const exp: ExportInfo = {
+  id: "20260924-040124-8336a8", project_name: "OpticsConverter1", created_at: "", classes: ["Module"],
+  train_images: 798, val_images: 252, formats: ["yolo_seg", "masks"], derived_from: null,
+};
+const derivedExp: ExportInfo = {
+  id: "20260924-040124-8336a6-aug3x-3385", project_name: "OpticsConverter1", created_at: "", classes: ["Module"],
+  train_images: 3192, val_images: 252, formats: ["yolo_seg", "masks"], derived_from: exp.id,
+};
+const pool: BackgroundPool = { name: "dtd", label: "DTD textures", images: 5640, size_bytes: 625_239_812, fetching: null };
 const run = (id: string, model: string, over: Partial<Run> = {}): Run => ({
   id, created_at: "", started_at: null, finished_at: null, export_id: exp.id, project_name: "OpticsConverter1", model, gpu: 1,
   params: status.defaults, status: "queued", error: null, resume: false, onnx: null, best: null, epochs_done: 0, progress: null,
@@ -56,6 +65,8 @@ beforeEach(() => {
   m.trainStatus.mockResolvedValue(status);
   m.listExports.mockResolvedValue([exp]);
   m.listRuns.mockResolvedValue([r1, r2]);
+  m.listBackgrounds.mockResolvedValue([pool]);
+  m.exportSamples.mockResolvedValue([]);
   m.getRun.mockImplementation(async (id: string) => ({ ...(id === "r1" ? r1 : r2), metrics: [
     { epoch: 1, "metrics/mAP50-95(M)": 0.2, "metrics/mAP50(M)": 0.4 },
     { epoch: 2, "metrics/mAP50-95(M)": 0.3, "metrics/mAP50(M)": 0.5 },
@@ -198,5 +209,19 @@ describe("Train page", () => {
 
     fireEvent.click(screen.getByLabelText("Compare yolo11s-seg")); // r4 takes r2's freed slot 1
     await waitFor(() => expect(strokeOf(r4)).toBe(SERIES_COLORS[1]));
+  });
+
+  it("shows composite samples when the selected export is a derived (augmented) export", async () => {
+    m.listExports.mockResolvedValue([exp, derivedExp]);
+    const sample: ExportSample = {
+      name: "syn_0_000001.jpg", width: 640, height: 480, ground_truth: [{ class_id: 0, polygons: [[0.1, 0.1, 0.9, 0.9]] }],
+    };
+    m.exportSamples.mockResolvedValue([sample]);
+    renderPage();
+
+    expect(screen.queryByText(/Composite samples/)).toBeNull();
+    fireEvent.change(await screen.findByLabelText("Export"), { target: { value: derivedExp.id } });
+    expect(await screen.findByText(`Composite samples · ${derivedExp.id}`)).toBeTruthy();
+    expect(m.exportSamples).toHaveBeenCalledWith(derivedExp.id, 12, 0);
   });
 });
