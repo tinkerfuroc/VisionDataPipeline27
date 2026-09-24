@@ -1,15 +1,17 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 import pytest
 from train_fixtures import FAKE_WORKER, make_export, wait_for
 from vsp.labeling.errors import BadRequest, Conflict
 from vsp.train.models import TrainParams, find_export
-from vsp.train.scheduler import Gpu, TrainScheduler, default_gpu
+from vsp.train.scheduler import Gpu, TrainScheduler, _is_worker_of, default_gpu
 
 GPUS = [Gpu(0, "Fast", 12 * 2**30), Gpu(1, "Slow", 11 * 2**30)]
 
@@ -230,6 +232,67 @@ def test_recover_after_restart(env):
     r = sched.runs.read(running)
     assert r["status"] == "interrupted" and r["onnx"] is None and r["pid"] is None
     assert status(sched, foreign) == "running"
+
+
+def test_recover_classifies_a_dead_running_run_from_result_json(env):
+    """A worker survives an unclean server exit (its own session) and can finish on its own before
+    the server restarts; recover() must read result.json rather than blindly marking it
+    interrupted."""
+    sched, export = env
+    dead = _dead_pid()
+    done_id, err_id, gone_id = [
+        sched.runs.create(export, "yolo26s-seg", 0, TrainParams(epochs=2), owner_pid=dead)["id"]
+        for _ in range(3)
+    ]
+    for rid in (done_id, err_id, gone_id):
+        sched.runs.update(rid, status="running", pid=dead)
+    (sched.runs.dir(done_id) / "result.json").write_text(
+        json.dumps({"best": {"epoch": 2, "mask_map50_95": 0.4}})
+    )
+    (sched.runs.dir(err_id) / "result.json").write_text(json.dumps({"error": "x"}))
+    # gone_id: no result.json at all
+    sched.recover()
+    done = sched.runs.read(done_id)
+    assert done["status"] == "done" and done["best"] == {"epoch": 2, "mask_map50_95": 0.4}
+    assert done["pid"] is None and done["finished_at"]
+    err = sched.runs.read(err_id)
+    assert err["status"] == "error" and err["error"] == "x"
+    gone = sched.runs.read(gone_id)
+    assert gone["status"] == "interrupted"
+
+
+def test_recover_keeps_killing_a_confirmed_live_worker(env):
+    """A `running` run whose recorded pid is alive and confirmed (via /proc/<pid>/cmdline) to be
+    this run's worker is still training; recover() must still kill it and mark it interrupted,
+    ignoring any result.json (a stale one from a previous attempt, say)."""
+    sched, export = env
+    run = sched.runs.create(export, "yolo26s-seg", 0, TrainParams(epochs=2), owner_pid=os.getpid())
+    run_dir = sched.runs.dir(run["id"])
+    proc = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)", str(run_dir)], start_new_session=True
+    )
+    try:
+        sched.runs.update(run["id"], status="running", pid=proc.pid)
+        (run_dir / "result.json").write_text(json.dumps({"best": {"epoch": 1}}))
+        sched.start()
+        until(sched, run["id"], "interrupted")
+        assert proc.poll() is not None  # killed
+    finally:
+        proc.wait()
+
+
+def test_is_worker_of_true_for_the_actual_worker(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    proc = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)", str(run_dir)], start_new_session=True
+    )
+    try:
+        wait_for(lambda: Path(f"/proc/{proc.pid}/cmdline").is_file())
+        assert _is_worker_of(proc.pid, run_dir) is True
+    finally:
+        proc.terminate()
+        proc.wait()
 
 
 def test_recover_does_not_kill_unrelated_process_with_recycled_pid(env):

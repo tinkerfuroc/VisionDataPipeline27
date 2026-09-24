@@ -141,9 +141,14 @@ class TrainScheduler:
                 changes: dict = {}
                 if run["status"] == "running":
                     pid = run.get("pid")
-                    if _alive(pid) and _is_worker_of(pid, self.runs.dir(run["id"])):
-                        _signal_group(pid, signal.SIGKILL)  # an orphan of a killed server
-                    changes.update(status="interrupted", pid=None, finished_at=now_iso())
+                    run_dir = self.runs.dir(run["id"])
+                    if _alive(pid) and _is_worker_of(pid, run_dir):
+                        _signal_group(pid, signal.SIGKILL)  # an orphan of a killed server, still training
+                        changes.update(status="interrupted", pid=None, finished_at=now_iso())
+                    else:
+                        # The worker already exited (it survives an unclean server exit, running in its
+                        # own session) — recover what it reported rather than discarding a finished run.
+                        changes.update(self._classify_dead_run(run_dir))
                 if run.get("onnx") in ("queued", "running"):
                     changes["onnx"] = None
                 if run["status"] == "queued":
@@ -155,6 +160,25 @@ class TrainScheduler:
                 if changes:
                     self.runs.update(run["id"], **changes)
             self._cv.notify_all()
+
+    def _classify_dead_run(self, run_dir: Path) -> dict:
+        """A `running` run whose worker has already exited (dead pid, or a pid that /proc no longer
+        confirms as this run's worker): classify it from result.json the way `_finish_train` would,
+        instead of always marking it `interrupted` and losing a run that finished after the server
+        died."""
+        result = read_json(run_dir / "result.json")
+        fields: dict = {"pid": None, "finished_at": now_iso()}
+        if result is None:
+            fields["status"] = "interrupted"
+        elif "best" in result:
+            fields.update(status="done", best=result.get("best") or summarize(read_metrics(run_dir)))
+        elif "cancelled" in result:
+            fields["status"] = "cancelled"
+        elif "error" in result:
+            fields.update(status="error", error=result["error"])
+        else:
+            fields["status"] = "interrupted"
+        return fields
 
     # ---- requests ----
 
