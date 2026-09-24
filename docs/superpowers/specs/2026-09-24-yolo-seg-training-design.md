@@ -137,7 +137,8 @@ lands next to `best.pt` as `best.onnx`. `result.json` is not touched; exit code 
 - `delete(run_id)`: only for terminal runs; removes the run dir.
 - Startup recovery: scan `data/runs/*/run.json`; `running` → `interrupted` (the worker died with the old server:
   workers run in their own session but the scheduler cannot re-attach, so it kills a stale process group recorded
-  as `pid` in `run.json` if it is still alive); `queued` → enqueued again in `created_at` order; `onnx` of
+  as `pid` in `run.json` if `/proc/<pid>/cmdline` shows it is that run's worker); `queued` → enqueued again in
+  `created_at` order, and a queue entry is launched only if `run.json` still says it is queued; `onnx` of
   `queued`/`running` → `null`.
 - `snapshot()`: per GPU `{index, name, memory_total, running: run_id|null, queue: [run_id]}`.
 - Thread safety: one lock guards the queues and `run.json` writes.
@@ -154,9 +155,9 @@ lands next to `best.pt` as `best.onnx`. `result.json` is not touched; exit code 
 
 `uv run vsp train --export <id> [--model M]… [--gpu N] [--epochs --imgsz --batch --patience --workers --seed]`
 (defaults: the four default models, GPU = first GPU SAM3 would not pick). Runs in the foreground: creates the run
-dirs through the same code as the scheduler (`TrainScheduler` with no background threads, running items inline),
-prints each run's per-epoch mask mAP from `results.csv`, and ends with the comparison table. Ctrl-C cancels the
-current run and marks the rest `cancelled` (a CLI has no queue to come back to).
+dirs through the same `TrainScheduler` code, started without restart recovery (`start(recover=False)`), and waits in
+the foreground until its runs finish. Prints each run's per-epoch mask mAP from `results.csv` and ends with the
+comparison table. Ctrl-C cancels the current run and marks the rest `cancelled` (a CLI has no queue to come back to).
 `--list` prints the yolo_seg exports. CLI runs appear in the GUI because they live in `data/runs/`; a CLI must not
 be started on a GPU the server is also training on (not enforced; documented).
 
@@ -167,7 +168,7 @@ be started on a GPU the server is also training on (not enforced; documented).
 | `GET /api/train/status` | `{available, error, gpus: [{index, name, memory_total, running, queue}], sam3_gpu, models, default_models, defaults: TrainParams}`; `available=false` with the import error when `ultralytics` cannot be imported |
 | `GET /api/exports` | yolo_seg exports: `[{id, project_name, created_at, classes, train_images, val_images}]` |
 | `GET /api/exports/{id}/images/val/{name}` | a val image of the export (for the preview); names are validated against the directory listing |
-| `POST /api/train/runs` | body `{export_id, runs: [{model, gpu}], params}` → `201 {run_ids}`; 400 unknown model / GPU / bad params / empty `runs`, 404 export |
+| `POST /api/train/runs` | body `{export_id, runs: [{model, gpu}], params}` → `201 {run_ids}`; 422 invalid params (FastAPI validation), 400 unknown model / GPU / empty `runs`, 404 export |
 | `GET /api/train/runs` | all runs, newest first: `run.json` + `progress` (when running) |
 | `GET /api/train/runs/{id}` | `run.json` + `progress` + `metrics` (all rows of results.csv) |
 | `POST /api/train/runs/{id}/cancel` | 409 when already terminal |
@@ -201,10 +202,11 @@ comfortable scale.
   Resume, Delete). Best value per metric column in bold. Clicking a row selects it.
 - *Curves* of the selected run: four small inline-SVG line charts over epochs — mask mAP50-95 and mAP50, box
   mAP50-95, train losses (box/seg/cls), val losses. When two or more runs are selected via row checkboxes, the mask
-  mAP50-95 chart overlays them (one line per run, legend by model name). No chart library.
-- *Preview* of the selected `done` run: the val image with ground truth outlined and predictions filled (class
-  colour, score label), ◀ ▶ through val images (and `←/→` keys), a toggle for GT / predictions. Before `done`:
-  "Predictions appear when the run finishes."
+  mAP50-95 chart overlays them (one line per run, each keeping a fixed colour slot per run; lowest free of four,
+  released when the run leaves the comparison). No chart library.
+- *Preview* of the selected `done` run: the val image with ground truth outlined (dashed, ink) and predictions
+  filled in one colour (series slot 1, blue) with a score label, ◀ ▶ through val images (and `←/→` keys), a toggle
+  for GT / predictions. Before `done`: "Predictions appear when the run finishes."
 
 Polling: `GET /api/train/status` and `GET /api/train/runs` every 2 s while the page is visible; the selected run's
 detail every 2 s while it is running, once otherwise.

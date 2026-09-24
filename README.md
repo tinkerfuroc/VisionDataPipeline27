@@ -103,6 +103,31 @@ Polygon and box coordinates share one convention in every format: continuous ima
 deleted while an export is reading it (409), and a request that turns out to have no usable mask at all is
 reported as a failed job ("nothing to export"), because finding that out means reading the masks.
 
+### Training
+
+`uv sync` installs Ultralytics (YOLO26 and YOLO11 segmentation). Train from the Train page (header → Train) or from
+the terminal:
+
+    uv run vsp train --list                                  # exports that have a yolo_seg dataset
+    uv run vsp train --export <id> --gpu 1                   # yolo26s/m-seg and yolo11s/m-seg, one after another
+    uv run vsp train --export <id> --model yolo26s-seg --epochs 150 --imgsz 960 --batch 8
+
+Each run lives in `data/runs/<run_id>/`: `run.json` (request and status), `worker.log`, Ultralytics' own output under
+`train/` (`weights/best.pt`, `last.pt`, `results.csv`, plots) and `predictions.json` (best.pt on every val image, conf
+≥ 0.25). Pretrained checkpoints are cached in `data/train_weights/`. A run is a separate process
+(`python -m vsp.train.worker`) with `CUDA_VISIBLE_DEVICES` set to its GPU, so a crash or out-of-memory error ends
+that run only.
+
+The server keeps one queue per GPU: one run at a time per GPU, GPUs in parallel. The default GPU is the one SAM3 is not
+on; choosing SAM3's GPU is allowed but shares its VRAM. Cancel stops a run after SIGTERM (SIGKILL after 30 s) and keeps
+`last.pt`, so Resume continues from the last finished epoch. A run that was training when the server stopped is shown
+as "interrupted" and can be resumed; queued runs are queued again. `vsp train` runs in the foreground and owns its
+runs; Ctrl-C cancels them. Do not start it on a GPU the server is also training on.
+
+Defaults: 100 epochs, early stop after 30 epochs without improvement, 960 px, batch 8, COCO-pretrained weights,
+Ultralytics' default augmentation. Metrics come from `results.csv`; the comparison table ranks runs by the best mask
+mAP50-95 epoch. ONNX export (`best.onnx`, static 960 × 960) runs on the run's GPU queue.
+
 ### Keyboard
 
 `Enter` accept · `Esc` clear · `Z` undo click · `←/→` step · `Shift+←/→` ±10 · `Space` play/pause · `K` / `Shift+K`
