@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
 
 import vsp.cli
 from train_fixtures import EXPORT_ID, FAKE_WORKER, make_export
@@ -72,6 +73,35 @@ def test_default_gpu_falls_back_when_pick_device_raises(tmp_path, capsys, monkey
     (run_dir,) = (s.project.data_root / "runs").iterdir()
     run = json.loads((run_dir / "run.json").read_text())
     assert run["gpu"] == 0
+
+
+def test_terminating_signal_cancels_the_run(tmp_path, capsys, monkeypatch):
+    """SIGTERM/SIGHUP take the same cancel path as Ctrl-C. Driving it here without sending a real
+    signal: `_train` does `import time` locally, so its `time.sleep` is this same `time` module's
+    `sleep`; making that raise KeyboardInterrupt, once the run is actually running, behaves exactly
+    like the raise a signal handler would perform."""
+    s = _settings(tmp_path)
+    real_sleep = time.sleep
+
+    def run_status() -> str | None:
+        runs = list((s.project.data_root / "runs").glob("*/run.json"))
+        return json.loads(runs[0].read_text())["status"] if runs else None
+
+    raised = {"done": False}
+
+    def fake_sleep(seconds):
+        if not raised["done"] and run_status() == "running":
+            raised["done"] = True
+            raise KeyboardInterrupt
+        real_sleep(seconds)
+
+    monkeypatch.setattr(time, "sleep", fake_sleep)
+    rc = vsp.cli._train(s, _args(model=["yolo26s-seg"], epochs=99, gpu=0), gpus=[Gpu(0, "A", 1)],
+                        worker_cmd=FAKE_WORKER, poll=0.02)
+    assert rc == 1
+    assert raised["done"] is True
+    assert run_status() == "cancelled"
+    assert "cancelling this command's runs" in capsys.readouterr().out
 
 
 def test_bad_input(tmp_path, capsys):

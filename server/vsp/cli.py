@@ -78,6 +78,8 @@ def _fmt(v: float | None) -> str:
 
 
 def _train(settings: Settings, args, *, gpus=None, worker_cmd=None, poll: float = 2.0) -> int:
+    import signal
+    import threading
     import time
 
     from pydantic import ValidationError
@@ -141,6 +143,18 @@ def _train(settings: Settings, args, *, gpus=None, worker_cmd=None, poll: float 
                 extra = f": {run['error']}" if run["status"] == "error" else ""
                 print(f"{run['model']:<12} {run['status']}{extra}", flush=True)
 
+    def _raise_interrupt(signum, frame) -> None:
+        raise KeyboardInterrupt
+
+    # Closing the terminal or `kill`ing this process sends SIGHUP/SIGTERM, not SIGINT; route them
+    # through the same cancel path as Ctrl-C so the workers are not left running unowned. Only the
+    # main thread may install signal handlers.
+    installed = threading.current_thread() is threading.main_thread()
+    previous_handlers = {}
+    if installed:
+        for sig in (signal.SIGTERM, signal.SIGHUP):
+            previous_handlers[sig] = signal.signal(sig, _raise_interrupt)
+
     sched.start(recover=False)
     try:
         while not sched.idle():
@@ -155,6 +169,8 @@ def _train(settings: Settings, args, *, gpus=None, worker_cmd=None, poll: float 
         while not sched.idle():
             time.sleep(0.2)
     finally:
+        for sig, handler in previous_handlers.items():
+            signal.signal(sig, handler)
         sched.shutdown()
     report()
     print(f"\n{'model':<12} {'status':<11} {'best epoch':>10} {'mask mAP50':>10} {'mask mAP50-95':>13} "
