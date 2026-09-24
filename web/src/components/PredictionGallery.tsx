@@ -42,6 +42,12 @@ export function PredictionGallery({ run }: { run: Run }) {
       if (my !== token.current) return;
       setMeta({ total: p.total, counts: p.counts, conf: p.conf });
       setItems((prev) => (reset ? p.items : [...prev, ...p.items]));
+      if (reset) {
+        // belt and suspenders alongside the reset effect's own clamp: keep first/open valid for
+        // whatever total this page actually landed with.
+        setFirst((f) => Math.min(f, Math.max(0, p.total - 1)));
+        setOpen((o) => (o === null ? null : Math.min(o, Math.max(0, p.total - 1))));
+      }
       setError(null);
     } catch (e) {
       if (my === token.current) setError(e instanceof Error ? e.message : String(e));
@@ -51,9 +57,13 @@ export function PredictionGallery({ run }: { run: Run }) {
   }, [run.id, filter]);
 
   useEffect(() => {
+    // meta goes back to null too: while it's in flight the previous filter's total must not be
+    // usable to page past the new (possibly smaller) one. The "Loading predictions…" state below
+    // shows briefly instead of a strip whose counter can lie.
     setItems([]);
     setFirst(0);
     setOpen(null);
+    setMeta(null);
     void load(0, true);
   }, [load]);
 
@@ -64,9 +74,30 @@ export function PredictionGallery({ run }: { run: Run }) {
     if (items.length < total && at + VISIBLE * 2 >= items.length) void load(items.length, false);
   }, [first, open, items.length, total, load]);
 
+  // While a ‹ ›/arrow-key click is still smooth-scrolling the strip, a scroll event it causes must not
+  // be read back as a hand-scroll (which would fight the click's own `first`). `scrollend` clears the
+  // guard as soon as the browser reports the scroll settled; the timeout is the fallback for browsers
+  // (and jsdom) that never fire it.
+  const programmatic = useRef(false);
+  const settle = useRef<{ finish: () => void } | null>(null);
+  useEffect(() => () => settle.current?.finish(), []);
+
   const scrollTo = (index: number) => {
-    const card = strip.current?.children[index] as HTMLElement | undefined;
-    card?.scrollIntoView?.({ inline: "start", block: "nearest", behavior: "smooth" });
+    const el = strip.current;
+    const card = el?.children[index] as HTMLElement | undefined;
+    if (!el || !card) return;
+    settle.current?.finish(); // a new click interrupts whatever settle was still pending
+    programmatic.current = true;
+    const finish = () => {
+      programmatic.current = false;
+      el.removeEventListener("scrollend", finish);
+      window.clearTimeout(timer);
+      if (settle.current?.finish === finish) settle.current = null;
+    };
+    const timer = window.setTimeout(finish, 500);
+    el.addEventListener("scrollend", finish);
+    settle.current = { finish };
+    card.scrollIntoView?.({ inline: "start", block: "nearest", behavior: "smooth" });
   };
   const page = (d: number) => {
     const next = Math.max(0, Math.min(first + d * VISIBLE, Math.max(0, total - 1)));
@@ -90,10 +121,14 @@ export function PredictionGallery({ run }: { run: Run }) {
   });
   // keep the counter honest when the user scrolls the strip by hand (browsers only; jsdom has no layout)
   const onScroll = () => {
+    if (programmatic.current) return;
     const el = strip.current;
     const card = el?.children[0] as HTMLElement | undefined;
     if (!el || !card || card.offsetWidth === 0) return;
-    setFirst(Math.round(el.scrollLeft / (card.offsetWidth + 12)));
+    // the root font is 112.5%, so the `gap-3` class is 13.5px, not the 12px it would be at 100%;
+    // read the real gap instead of assuming one (jsdom reports "" for it, hence the `|| 0`).
+    const gap = parseFloat(getComputedStyle(el).columnGap) || 0;
+    setFirst(Math.round(el.scrollLeft / (card.offsetWidth + gap)));
   };
 
   if (error !== null) return <p role="alert" className="alert">{error}</p>;
