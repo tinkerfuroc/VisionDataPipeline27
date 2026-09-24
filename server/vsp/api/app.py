@@ -18,13 +18,16 @@ from ..ingest import IngestError, UploadTooLarge, clear_uploads
 from ..jobs import JobBusy, JobManager, JobNotFound
 from ..labeling.errors import BadRequest, Conflict, PropagationFailed
 from ..store import NotFound, ProjectStore, StoreError
+from ..train.scheduler import TrainScheduler, detect_gpus
 from . import clips, export, jobs, labeling, projects
+from . import train as train_api
 from .deps import AppState, State
 
 log = logging.getLogger(__name__)
 
 _STATUS = [  # most specific first
-    (NotFound, 404), (JobNotFound, 404), (Conflict, 409), (EngineNotLoaded, 503), (PropagationFailed, 500),
+    (NotFound, 404), (JobNotFound, 404), (Conflict, 409), (EngineNotLoaded, 503),
+    (train_api.TrainUnavailable, 503), (PropagationFailed, 500),
     (UploadTooLarge, 413), (BadRequest, 400), (IngestError, 400), (StoreError, 400),
 ]
 
@@ -39,12 +42,13 @@ def _build_engine(settings: Settings):
     )
 
 
-def create_app(settings: Settings, *, engine=None, load_engine: bool = True) -> FastAPI:
+def create_app(settings: Settings, *, engine=None, load_engine: bool = True, train=None) -> FastAPI:
     state = AppState(
         settings=settings,
         store=ProjectStore(settings.project.data_root),
         engine=engine if engine is not None else _build_engine(settings),
         jobs=JobManager(),
+        train=train if train is not None else TrainScheduler(settings.project.data_root, detect_gpus()),
     )
 
     def _load() -> None:
@@ -55,7 +59,9 @@ def create_app(settings: Settings, *, engine=None, load_engine: bool = True) -> 
     async def lifespan(app: FastAPI):
         if load_engine and hasattr(state.engine, "load"):
             threading.Thread(target=_load, name="engine-load", daemon=True).start()
+        state.train.start()
         yield
+        state.train.shutdown()
 
     app = FastAPI(title="vision-sampler", version=__version__, lifespan=lifespan)
     app.state.vsp = state
@@ -91,6 +97,7 @@ def create_app(settings: Settings, *, engine=None, load_engine: bool = True) -> 
     app.include_router(clips.router)
     app.include_router(labeling.router)
     app.include_router(export.router)
+    app.include_router(train_api.router)
     app.include_router(jobs.router)
 
     removed = clear_uploads(state.settings.project.data_root)  # litter from a previous process; see clear_uploads
