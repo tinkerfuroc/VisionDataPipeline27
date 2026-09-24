@@ -11,6 +11,7 @@ import { usePoll } from "../hooks/usePoll";
 import { statusText } from "../lib/train";
 
 const POLL_MS = 2000;
+const MAX_COMPARE = 4;
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 const back = (
@@ -24,8 +25,12 @@ export function Train() {
   const exports = usePoll(() => api.listExports(), 15000, []);
   const runs = usePoll(() => api.listRuns(), POLL_MS, []);
   const [pickedId, setPickedId] = useState<string | null>(null);
-  const [compareIds, setCompareIds] = useState<string[]>([]);
+  // Slot index (0-3) a compared run is drawn in never changes while the run stays compared: a newly added run
+  // takes the lowest free slot, and removing a run (toggle or delete) frees its slot for the next addition.
+  const [compareSlots, setCompareSlots] = useState<(string | null)[]>(Array(MAX_COMPARE).fill(null));
   const [actionError, setActionError] = useState<string | null>(null);
+
+  const compareIds = compareSlots.filter((id): id is string => id !== null);
 
   const list = runs.data ?? [];
   const selectedId = pickedId ?? list.find((r) => r.status === "running")?.id ?? list[0]?.id ?? null;
@@ -36,10 +41,13 @@ export function Train() {
     [selectedId, selected?.status],
   );
   const anyCompareRunning = list.some((r) => compareIds.includes(r.id) && r.status === "running");
-  const compared = usePoll<RunDetail[]>(
-    () => Promise.all(compareIds.map((id) => api.getRun(id))),
+  const compared = usePoll<{ run: RunDetail; slot: number }[]>(
+    () =>
+      Promise.all(
+        compareSlots.map((id, slot) => (id === null ? null : api.getRun(id).then((run) => ({ run, slot })))),
+      ).then((entries) => entries.filter((e): e is { run: RunDetail; slot: number } => e !== null)),
     anyCompareRunning ? 5000 : null,
-    [compareIds.join(",")],
+    [compareSlots.join(",")],
   );
 
   const act = useCallback(
@@ -62,14 +70,27 @@ export function Train() {
     runs.refresh();
     status.refresh();
   };
+  const releaseSlot = (id: string) => setCompareSlots((slots) => slots.map((s) => (s === id ? null : s)));
   const onDelete = (id: string) => {
     if (!window.confirm("Delete this run and its weights?")) return;
     act(() => api.deleteRun(id));
-    setCompareIds((ids) => ids.filter((x) => x !== id));
+    releaseSlot(id);
     if (pickedId === id) setPickedId(null);
   };
   const toggleCompare = (id: string) =>
-    setCompareIds((ids) => (ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id]));
+    setCompareSlots((slots) => {
+      const at = slots.indexOf(id);
+      if (at !== -1) {
+        const next = [...slots];
+        next[at] = null;
+        return next;
+      }
+      const free = slots.indexOf(null);
+      if (free === -1) return slots; // all slots taken; RunsTable already disables further picks
+      const next = [...slots];
+      next[free] = id;
+      return next;
+    });
 
   const shown = detail.data !== null && detail.data.id === selectedId ? detail.data : null;
 
@@ -91,10 +112,11 @@ export function Train() {
               onResume={(id) => act(() => api.resumeRun(id))} onOnnx={(id) => act(() => api.exportOnnx(id))} onDelete={onDelete} />
           </section>
 
-          {compareIds.length >= 2 && compared.data !== null && (
+          {compareIds.length >= 2 && (
             <section className="flex flex-col gap-2">
               <h2 className="heading">Comparison</h2>
-              <CompareChart runs={compared.data} />
+              {compared.error !== null && <p role="alert" className="alert">{compared.error}</p>}
+              {compared.data !== null && <CompareChart runs={compared.data} />}
             </section>
           )}
 

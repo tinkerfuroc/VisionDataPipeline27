@@ -20,10 +20,14 @@ export function MetricCharts({ run }: { run: RunDetail }) {
   );
 }
 
-/** Mask mAP50-95 of up to four runs; a run keeps its colour slot for as long as it stays in the comparison. */
-export function CompareChart({ runs }: { runs: RunDetail[] }) {
+/**
+ * Mask mAP50-95 of up to four runs. Each run is drawn in the colour of the slot (0-3) its caller assigned it,
+ * not its position in `runs` — so a run keeps its colour for as long as it stays in the comparison, even as
+ * other runs are added or removed around it.
+ */
+export function CompareChart({ runs }: { runs: { run: RunDetail; slot: number }[] }) {
   return (
     <LineChart title="Mask mAP50-95, compared"
-      series={runs.slice(0, C.length).map((r, i) => ({ name: runLabel(r), color: C[i], points: metricSeries(r.metrics, MASK_MAP) }))} />
+      series={runs.map(({ run, slot }) => ({ name: runLabel(run), color: C[slot], points: metricSeries(run.metrics, MASK_MAP) }))} />
   );
 }

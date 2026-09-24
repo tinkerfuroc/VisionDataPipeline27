@@ -4,6 +4,8 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "../api/rest";
 import type { ExportInfo, Run, RunDetail, TrainStatus } from "../api/types";
+import { SERIES_COLORS } from "../lib/chart";
+import { runLabel } from "../lib/train";
 import { Train } from "./Train";
 
 vi.mock("../api/rest", async (original) => {
@@ -92,5 +94,47 @@ describe("Train page", () => {
     renderPage();
     expect(await screen.findByText(/ultralytics is not installed/)).toBeTruthy();
     expect((screen.getByRole("button", { name: "Start 4 runs" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("keeps a compared run's chart colour on its slot across removal, and hands a new run the freed slot", async () => {
+    const r3 = run("r3", "yolo26n-seg", { status: "done" });
+    const r4 = run("r4", "yolo11s-seg", { status: "done" });
+    const byId: Record<string, Run> = { r1, r2, r3, r4 };
+    m.listRuns.mockResolvedValue([r1, r2, r3, r4]);
+    m.getRun.mockImplementation(
+      async (id: string) =>
+        ({
+          ...byId[id],
+          metrics: [
+            { epoch: 1, "metrics/mAP50-95(M)": 0.1 },
+            { epoch: 2, "metrics/mAP50-95(M)": 0.2 },
+          ],
+        }) as RunDetail,
+    );
+
+    renderPage();
+    fireEvent.click(await screen.findByLabelText("Compare yolo26s-seg")); // r1 -> slot 0
+    fireEvent.click(screen.getByLabelText("Compare yolo26m-seg")); // r2 -> slot 1
+    fireEvent.click(screen.getByLabelText("Compare yolo26n-seg")); // r3 -> slot 2
+
+    const chart = await screen.findByRole("img", { name: "Mask mAP50-95, compared by epoch" });
+    const strokeOf = (r: Run) => chart.querySelector(`path[data-series="${runLabel(r)}"]`)?.getAttribute("stroke");
+    await waitFor(() => {
+      expect(strokeOf(r1)).toBe(SERIES_COLORS[0]);
+      expect(strokeOf(r2)).toBe(SERIES_COLORS[1]);
+      expect(strokeOf(r3)).toBe(SERIES_COLORS[2]);
+    });
+
+    fireEvent.click(screen.getByLabelText("Compare yolo26m-seg")); // remove r2, freeing slot 1
+    await waitFor(() => {
+      // Compare against a boolean, not the raw element: asserting a DOM node directly makes a failed retry's
+      // message inspect React's internal props on it, which trips React's dev-only "`key` is not a prop" trap.
+      expect(chart.querySelector(`path[data-series="${runLabel(r2)}"]`) === null).toBe(true);
+      expect(strokeOf(r1)).toBe(SERIES_COLORS[0]); // unchanged
+      expect(strokeOf(r3)).toBe(SERIES_COLORS[2]); // unchanged, did not shift down into slot 1
+    });
+
+    fireEvent.click(screen.getByLabelText("Compare yolo11s-seg")); // r4 takes r2's freed slot 1
+    await waitFor(() => expect(strokeOf(r4)).toBe(SERIES_COLORS[1]));
   });
 });
