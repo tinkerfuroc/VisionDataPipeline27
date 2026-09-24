@@ -194,7 +194,9 @@ comfortable scale.
   "shared with SAM3" and selecting it shows a VRAM warning); epochs, image size, batch, patience inputs; **Start**
   (disabled with no model checked or `available=false`, whose error is shown instead).
 - *GPU queues*: per GPU, name and memory, the running run (model, epoch x/y, batch progress bar) with **Cancel**, and
-  queued runs with **Cancel**.
+  queued runs with **Cancel**. Also lists, without a Cancel button, any run on that GPU owned by another process
+  (a `vsp train` CLI run sharing this data root, not this server's own scheduler) — the server only ever launches
+  workers of its own, so it cannot cancel someone else's.
 
 **Main area**
 - *Runs* table (the comparison): model, export, GPU, status, epochs done/total, best mask mAP50, mask mAP50-95,
