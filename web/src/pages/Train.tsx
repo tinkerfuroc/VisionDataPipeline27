@@ -4,7 +4,7 @@ import { api } from "../api/rest";
 import type { RunDetail, StartRunsRequest } from "../api/types";
 import { AppHeader } from "../components/AppHeader";
 import { CompareChart, MetricCharts } from "../components/MetricCharts";
-import { PredictionPreview } from "../components/PredictionPreview";
+import { PredictionGallery } from "../components/PredictionGallery";
 import { RunsTable } from "../components/RunsTable";
 import { TrainSidebar } from "../components/TrainSidebar";
 import { usePoll } from "../hooks/usePoll";
@@ -136,7 +136,7 @@ export function Train() {
             <section className="flex flex-col gap-2">
               <h2 className="heading">Validation predictions</h2>
               {selected.status === "done" ? (
-                <PredictionPreview run={selected} />
+                <PredictionGallery run={selected} />
               ) : (
                 <p className="note">Predictions appear when the run finishes.</p>
               )}

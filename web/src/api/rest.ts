@@ -1,5 +1,5 @@
 import type {
-  Candidate, ClassDef, ClipDetail, ClipSummary, Direction, ExportInfo, ExportRequest, Health, JobSnapshot, PredictionPage, Project, PromptSpec, Run, RunDetail, StartRunsRequest, TrainStatus,
+  Candidate, ClassDef, ClipDetail, ClipSummary, Direction, ExportInfo, ExportRequest, Health, JobSnapshot, PredictionFilter, PredictionPage, Project, PromptSpec, Run, RunDetail, StartRunsRequest, TrainStatus,
 } from "./types";
 
 /** The `job_id` the server reports while a prompt/accept/clear-range call holds the GPU lease. */
@@ -201,6 +201,6 @@ export const api = {
   resumeRun: (id: string) => request<Run>(`/api/train/runs/${id}/resume`, post()),
   exportOnnx: (id: string) => request<Run>(`/api/train/runs/${id}/onnx`, post()),
   deleteRun: (id: string) => request<void>(`/api/train/runs/${id}`, { method: "DELETE" }),
-  predictions: (id: string, offset: number, limit: number) =>
-    request<PredictionPage>(`/api/train/runs/${id}/predictions?offset=${offset}&limit=${limit}`),
+  predictions: (id: string, offset: number, limit: number, filter: PredictionFilter = "all") =>
+    request<PredictionPage>(`/api/train/runs/${id}/predictions?offset=${offset}&limit=${limit}&filter=${filter}`),
 };

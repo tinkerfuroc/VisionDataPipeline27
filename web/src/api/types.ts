@@ -140,6 +140,20 @@ export type Run = {
 export type MetricRow = { epoch: number } & Record<string, number>;
 export type RunDetail = Run & { metrics: MetricRow[] };
 export type Instance = { class_id: number; score?: number; polygons: number[][] };
-export type PredictionItem = { name: string; width: number; height: number; predictions: Instance[]; ground_truth: Instance[] };
-export type PredictionPage = { total: number; conf: number | null; items: PredictionItem[] };
+export type PredictionFilter = "all" | "missed" | "worst";
+export type PredictionItem = {
+  index: number;
+  name: string;
+  width: number;
+  height: number;
+  predictions: Instance[];
+  ground_truth: Instance[];
+  iou: number | null;
+};
+export type PredictionPage = {
+  total: number;
+  conf: number | null;
+  counts: { all: number; missed: number; worst: number };
+  items: PredictionItem[];
+};
 export type StartRunsRequest = { export_id: string; runs: { model: string; gpu: number }[]; params: TrainParams };
