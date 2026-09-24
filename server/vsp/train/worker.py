@@ -78,6 +78,24 @@ def _raise_interrupt(signum, frame) -> None:
     raise KeyboardInterrupt
 
 
+def training_finished(ckpt: dict) -> bool:
+    """True when an Ultralytics checkpoint (`last.pt`, loaded as a dict) records a training run
+    that already ran to completion. Ultralytics stamps a finished checkpoint's `epoch` as -1 (and
+    strips the optimizer state), which is also why `model.train(resume=True)` on it fails with
+    "nothing to resume"; a checkpoint from a cancelled/interrupted mid-run has `epoch >= 0`."""
+    return ckpt.get("epoch", 0) == -1
+
+
+def _resume_already_finished(run_dir: Path) -> bool:
+    path = last_weights(run_dir)
+    if not path.is_file():
+        return False
+    import torch
+
+    ckpt = torch.load(path, map_location="cpu", weights_only=False)
+    return training_finished(ckpt)
+
+
 def _quiet_ultralytics():
     from ultralytics import settings
 
@@ -146,7 +164,9 @@ def train(run_dir: Path) -> int:
         from ultralytics import YOLO
 
         _quiet_ultralytics()
-        if run.get("resume"):
+        if run.get("resume") and best_weights(run_dir).is_file() and _resume_already_finished(run_dir):
+            pass  # training already ran to completion (cancelled/interrupted mid-prediction); just predict
+        elif run.get("resume"):
             model = YOLO(str(last_weights(run_dir)))
             _attach_progress(model, progress)
             model.train(resume=True)

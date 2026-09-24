@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import numpy as np
 import yaml
 from train_fixtures import make_export
-from vsp.train.worker import ProgressWriter, instances_from_result, write_data_yaml
+from vsp.train.worker import ProgressWriter, instances_from_result, training_finished, write_data_yaml
 
 
 def test_write_data_yaml_makes_path_absolute(tmp_path):
@@ -28,6 +28,16 @@ def test_progress_writer_throttles_but_force_always_writes(tmp_path):
     assert json.loads((tmp_path / "p.json").read_text())["batch"] == 2
     w.update(force=True, phase="val")
     assert json.loads((tmp_path / "p.json").read_text())["phase"] == "val"
+
+
+def test_training_finished_reads_ultralytics_epoch_marker():
+    """Ultralytics stamps a finished checkpoint's `epoch` as -1 (and strips it for resume); a
+    mid-training checkpoint (cancelled or interrupted) keeps its epoch number. No ultralytics
+    import needed: `training_finished` takes the already-unpickled checkpoint dict."""
+    assert training_finished({"epoch": -1}) is True
+    assert training_finished({"epoch": 0}) is False
+    assert training_finished({"epoch": 41}) is False
+    assert training_finished({}) is False  # no epoch key: treat as unfinished, not a crash
 
 
 def test_instances_from_result():
