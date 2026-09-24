@@ -71,10 +71,17 @@ def transform_cutout(
     nw, nh = int(h * sin + w * cos) + 2, int(h * cos + w * sin) + 2
     rot[0, 2] += nw / 2 - w / 2
     rot[1, 2] += nh / 2 - h / 2
-    img2 = cv2.warpAffine(np.ascontiguousarray(img), rot, (nw, nh), flags=cv2.INTER_LINEAR, borderValue=0)
+    # BORDER_REPLICATE: when the cutout's mask touches the crop edge (no margin left to draw from), a constant
+    # black border would bleed into the labelled edge pixels under linear interpolation. The mask itself still
+    # gets a constant-0 border (BORDER_CONSTANT, the warpAffine default) so its outline stays exact.
+    img2 = cv2.warpAffine(
+        np.ascontiguousarray(img), rot, (nw, nh), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE,
+    )
     m2 = cv2.warpAffine(np.ascontiguousarray(m), rot, (nw, nh), flags=cv2.INTER_NEAREST, borderValue=0) > 0
     box = mask_bbox(m2)
-    if box is None:  # scaled below a pixel: keep a one-pixel object rather than failing
+    if box is None:
+        # scaled below a pixel: keep a one-pixel object rather than failing. min_area_px > 1 (the normal case)
+        # drops it via clean_mask once it reaches make_composite, so this is only ever a transient value.
         return img2[:1, :1], np.ones((1, 1), bool)
     x, y, bw, bh = box
     return img2[y:y + bh, x:x + bw], m2[y:y + bh, x:x + bw]
@@ -161,7 +168,7 @@ def make_composite(rng: np.random.Generator, width: int, height: int, background
         canvas = cv2.GaussianBlur(canvas, (0, 0), rng.uniform(0.5, 1.5))
     if rng.random() < 0.3:
         canvas = canvas + rng.normal(0.0, rng.uniform(2.0, 8.0), canvas.shape)
-    image = np.clip(canvas, 0, 255).astype(np.uint8)
+    image = np.rint(np.clip(canvas, 0, 255)).astype(np.uint8)
     objects = []
     for idx, cls in enumerate(classes):
         m = clean_mask(owner == idx, min_area_px)

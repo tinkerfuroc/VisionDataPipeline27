@@ -3,6 +3,7 @@ from __future__ import annotations
 import cv2
 import numpy as np
 from vsp.augment.composite import (
+    Cutout,
     crop_background,
     cutout_from,
     make_composite,
@@ -80,16 +81,9 @@ def test_single_object_when_max_is_one():
 
 
 def test_far_pixels_untouched_by_object_paste():
-    """Pixels far from every object mask differ from the input only by the optional whole-image blur/noise. At
-    least one seed in 0-20 fires neither finish step, so its far pixels equal the background crop exactly (the
-    background crop is the rng's first draw).
-
-    The alpha blur (sigma 1.5) is what makes an "outside the mask" pixel touch the blend at all, and OpenCV's
-    float32 Gaussian kernel for that sigma has a support radius of about 6 px (ksize = round(sigma * 4 * 2 +
-    1) | 1 = 13, radius 6): a margin of 4 px (the spec's cutout margin, reused loosely here) is too tight and
-    catches genuine float32 rounding dust at the object's edge even when neither finish step fired, so the far
-    region here uses an 8 px margin, safely past that kernel's support.
-    """
+    """Pixels farther than 4 px from every object mask differ from the input only by the optional
+    whole-image blur/noise. At least one seed in 0-20 fires neither finish step, so its far pixels equal
+    the background crop exactly (the background crop is the rng's first draw)."""
     bg = _bg()
     cutouts = [_cut(0), _cut(1)]
     found = False
@@ -100,10 +94,22 @@ def test_far_pixels_untouched_by_object_paste():
         object_area = np.zeros((96, 160), np.uint8)
         for _, m in composite.objects:
             object_area |= m.astype(np.uint8)
-        kernel = np.ones((17, 17), np.uint8)  # Chebyshev radius 8, past the alpha blur's float32 support
+        kernel = np.ones((9, 9), np.uint8)  # Chebyshev radius 4
         dilated = cv2.dilate(object_area, kernel) > 0
         far = ~dilated
         if np.array_equal(composite.image[far], expected_bg[far]):
             found = True
             break
     assert found
+
+
+def test_transform_replicates_border_instead_of_bleeding_black():
+    """The cutout's mask fills the whole crop (as it would when the source mask touched the frame edge,
+    leaving no margin): the image warp must replicate that edge colour rather than blend in a black
+    constant border, or linear interpolation darkens the labelled pixels near the transformed edge."""
+    img = np.full((30, 30, 3), 200, np.uint8)
+    mask = np.ones((30, 30), bool)
+    cut = Cutout(0, img, mask)
+    for seed in range(20):
+        out_img, out_mask = transform_cutout(np.random.default_rng(seed), cut, 200)
+        assert out_img[out_mask].min() >= 150
