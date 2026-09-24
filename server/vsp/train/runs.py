@@ -17,6 +17,7 @@ from .models import ExportInfo, TrainParams
 
 TERMINAL = frozenset({"done", "error", "cancelled", "interrupted"})
 _RUN_ID_RE = re.compile(r"^\d{8}-\d{6}-[a-z0-9-]+-[0-9a-f]{4}$")
+_REQUIRED_KEYS = frozenset({"id", "created_at", "status", "gpu", "model", "params"})
 
 # Re-export for callers (later tasks import now_iso from vsp.train.runs)
 __all__ = ["now_iso"]
@@ -99,9 +100,17 @@ class RunStore:
         return run
 
     def list(self) -> list[dict]:
+        """Every run.json under the root, newest first. A run.json that is missing a required key
+        or whose `id` does not match `_RUN_ID_RE` (half-written, or corrupted) is skipped rather
+        than breaking the whole listing."""
         if not self.root.is_dir():
             return []
-        runs = [r for p in self.root.glob("*/run.json") if (r := read_json(p)) is not None]
+        runs = []
+        for p in self.root.glob("*/run.json"):
+            r = read_json(p)
+            if r is None or not _REQUIRED_KEYS.issubset(r) or not _RUN_ID_RE.match(str(r["id"])):
+                continue
+            runs.append(r)
         return sorted(runs, key=lambda r: (r["created_at"], r["id"]), reverse=True)
 
     def delete(self, run_id: str) -> None:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from datetime import datetime
 
@@ -55,3 +56,26 @@ def test_create_read_update_list_delete(tmp_path):
     with pytest.raises(NotFound):
         store.dir("../../etc")
     assert RunStore(tmp_path / "nothing").list() == []
+
+
+def test_list_skips_malformed_run_json(tmp_path):
+    export = find_export(tmp_path, make_export(tmp_path).name)
+    store = RunStore(tmp_path / "runs")
+    good = store.create(export, "yolo26s-seg", 0, TrainParams(epochs=5), owner_pid=os.getpid())
+
+    missing_field = store.root / "missing-field"
+    missing_field.mkdir()
+    (missing_field / "run.json").write_text(json.dumps({
+        "id": "20260101-000000-yolo26s-seg-aaaa", "status": "queued", "gpu": 0, "model": "yolo26s-seg",
+        "params": {},
+        # no created_at
+    }))
+
+    bad_id = store.root / "bad-id"
+    bad_id.mkdir()
+    (bad_id / "run.json").write_text(json.dumps({
+        "id": "not-a-valid-run-id", "created_at": "2026-01-01T00:00:00+00:00", "status": "queued",
+        "gpu": 0, "model": "yolo26s-seg", "params": {},
+    }))
+
+    assert [r["id"] for r in store.list()] == [good["id"]]
