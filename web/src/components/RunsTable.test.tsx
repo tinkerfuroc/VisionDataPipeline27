@@ -35,6 +35,16 @@ describe("RunsTable", () => {
     expect(on.onSelect).toHaveBeenCalledWith(base.id);
   });
 
+  it("shows the export id under the project name, so a run on an augmented export is distinguishable", () => {
+    const original: Run = { ...base, id: "20260924-120000-yolo26s-seg-eeee" };
+    const augmented: Run = { ...base, id: "20260924-120000-yolo26s-seg-ffff", export_id: "e-aug3x-3385" };
+    const on = { onSelect: vi.fn(), onToggleCompare: vi.fn(), onCancel: vi.fn(), onResume: vi.fn(), onOnnx: vi.fn(), onDelete: vi.fn() };
+    render(<RunsTable runs={[original, augmented]} selectedId={null} compareIds={[]} {...on} />);
+    const rows = screen.getAllByText("Optics").map((el) => el.closest("tr")!);
+    expect(within(rows[0]).getByText("e")).toBeTruthy();
+    expect(within(rows[1]).getByText("e-aug3x-3385")).toBeTruthy();
+  });
+
   it("shows the Aug column from params.augment, defaulting to default", () => {
     const strong: Run = { ...base, id: "20260924-120000-yolo26m-seg-dddd", model: "yolo26m-seg",
       params: { ...base.params, augment: "strong" } };

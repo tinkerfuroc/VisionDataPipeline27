@@ -69,7 +69,12 @@ export function RunsTable({ runs, selectedId, compareIds, onSelect, onToggleComp
                     disabled={!comparing && compareIds.length >= MAX_COMPARE} onChange={() => onToggleCompare(r.id)} />
                 </td>
                 <td className="px-2 py-1.5 font-medium">{r.model}</td>
-                <td className="px-2 py-1.5 text-dim">{r.project_name}</td>
+                <td className="px-2 py-1.5 text-dim">
+                  <div className="flex flex-col">
+                    <span>{r.project_name}</span>
+                    <span className="note font-cond text-dim">{r.export_id}</span>
+                  </div>
+                </td>
                 <td className="px-2 py-1.5 font-cond text-dim">cuda:{r.gpu}</td>
                 <td className="px-2 py-1.5 text-dim">{r.params.augment ?? "default"}</td>
                 <td className="px-2 py-1.5">
