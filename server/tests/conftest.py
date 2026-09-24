@@ -10,6 +10,11 @@ import pytest
 from vsp.ingest import FrameDirSource, import_clip
 from vsp.store import ProjectStore
 
+# Registers train_fixtures.py's fixtures (e.g. `server`) for every test module without an explicit
+# `from train_fixtures import server` -- that import trips ruff's F811 in tests that also take
+# `server` as a parameter (see the comment in test_api_export.py).
+pytest_plugins = ["train_fixtures"]
+
 FRAME_W, FRAME_H = 120, 60
 
 

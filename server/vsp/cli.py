@@ -186,6 +186,31 @@ def _train(settings: Settings, args, *, gpus=None, worker_cmd=None, poll: float 
     return 0 if ok else 1
 
 
+def _backgrounds(settings: Settings, args) -> int:
+    from .augment.backgrounds import fetch_pool, pool_dir
+
+    data_root = settings.project.data_root
+    last_pct: dict[str, int] = {}
+
+    def progress(phase: str, done: int, total: int) -> None:
+        pct = int(done * 100 / total) if total else 100
+        if last_pct.get(phase) != pct:
+            last_pct[phase] = pct
+            print(f"{phase} {pct}%", flush=True)
+
+    try:
+        dest = pool_dir(data_root, args.name)
+        result = fetch_pool(data_root, args.name, force=args.force, progress=progress)
+    except Exception as e:  # noqa: BLE001
+        print(f"error: {e}")
+        return 1
+    if result["skipped"]:
+        print(f"skipped: {result['images']} images already in {dest} (use --force)")
+    else:
+        print(f"OK: {result['images']} images in {dest}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="vsp")
     parser.add_argument("--config", default=None, help="path to a YAML config (default: configs/default.yaml)")
@@ -220,6 +245,12 @@ def main(argv: list[str] | None = None) -> int:
     p_train.add_argument("--workers", type=int, default=8)
     p_train.add_argument("--seed", type=int, default=0)
     p_train.add_argument("--augment", choices=["default", "strong"], default="default")
+    p_bg = sub.add_parser("backgrounds", help="manage background image pools for synthetic composites")
+    bg_sub = p_bg.add_subparsers(dest="bg_cmd", required=True)
+    p_bg_fetch = bg_sub.add_parser("fetch", help="download and extract a background pool")
+    p_bg_fetch.add_argument("name", help="pool name (e.g. dtd)")
+    p_bg_fetch.add_argument("--force", action="store_true",
+                            help="redownload even if images are already present")
     args = parser.parse_args(argv)
     settings, config_path = _load_settings(args.config)
     if args.cmd == "doctor":
@@ -235,5 +266,7 @@ def main(argv: list[str] | None = None) -> int:
         return _serve(settings, args.host, args.port)
     if args.cmd == "train":
         return _train(settings, args)
+    if args.cmd == "backgrounds" and args.bg_cmd == "fetch":
+        return _backgrounds(settings, args)
     parser.error(f"unknown command {args.cmd}")
     return 2

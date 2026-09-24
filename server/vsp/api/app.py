@@ -19,6 +19,7 @@ from ..jobs import JobBusy, JobManager, JobNotFound
 from ..labeling.errors import BadRequest, Conflict, PropagationFailed
 from ..store import NotFound, ProjectStore, StoreError
 from ..train.scheduler import TrainScheduler, detect_gpus
+from . import augment as augment_api
 from . import clips, export, jobs, labeling, projects
 from . import train as train_api
 from .deps import AppState, State
@@ -98,6 +99,7 @@ def create_app(settings: Settings, *, engine=None, load_engine: bool = True, tra
     app.include_router(labeling.router)
     app.include_router(export.router)
     app.include_router(train_api.router)
+    app.include_router(augment_api.router)
     app.include_router(jobs.router)
 
     removed = clear_uploads(state.settings.project.data_root)  # litter from a previous process; see clear_uploads
