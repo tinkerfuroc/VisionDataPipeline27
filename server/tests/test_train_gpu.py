@@ -10,12 +10,15 @@ from vsp.train.scheduler import TrainScheduler, detect_gpus
 pytestmark = pytest.mark.gpu
 
 
-@pytest.mark.skipif(not detect_gpus(), reason="needs CUDA")
 def test_real_worker_trains_one_epoch(tmp_path):
     pytest.importorskip("ultralytics")
+    # detect_gpus() initialises CUDA, so it must not run at collection time (that would happen even
+    # under `-m "not gpu"`, which only skips running this test's body): check it here instead.
+    gpus = detect_gpus()
+    if not gpus:
+        pytest.skip("needs CUDA")
     data_root = tmp_path / "data"
     export = find_export(data_root, make_export(data_root, n_train=16, n_val=4).name)
-    gpus = detect_gpus()
     sched = TrainScheduler(data_root, gpus)
     sched.start()
     try:
