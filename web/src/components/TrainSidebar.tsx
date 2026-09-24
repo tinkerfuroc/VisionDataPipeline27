@@ -1,0 +1,160 @@
+import { useEffect, useState } from "react";
+import type { ExportInfo, Run, StartRunsRequest, TrainParams, TrainStatus } from "../api/types";
+import { defaultGpu, startProblem, statusText } from "../lib/train";
+
+type ModelPick = { checked: boolean; gpu: number };
+const PARAM_FIELDS: { key: keyof TrainParams; label: string; min: number; max: number; step: number }[] = [
+  { key: "epochs", label: "Epochs", min: 1, max: 1000, step: 1 },
+  { key: "imgsz", label: "Image size (px)", min: 320, max: 1920, step: 32 },
+  { key: "batch", label: "Batch", min: 1, max: 64, step: 1 },
+  { key: "patience", label: "Early-stop patience", min: 0, max: 1000, step: 1 },
+];
+const gib = (bytes: number) => `${Math.round(bytes / 2 ** 30)} GiB`;
+const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+type Props = {
+  status: TrainStatus | null;
+  exports: ExportInfo[];
+  runs: Run[];
+  onStart: (body: StartRunsRequest) => Promise<void>;
+  onCancel: (id: string) => void;
+};
+
+export function TrainSidebar({ status, exports, runs, onStart, onCancel }: Props) {
+  const [exportId, setExportId] = useState<string | null>(null);
+  const [picks, setPicks] = useState<Record<string, ModelPick>>({});
+  const [showAll, setShowAll] = useState(false);
+  const [params, setParams] = useState<TrainParams | null>(null);
+  const [starting, setStarting] = useState(false);
+  const [startError, setStartError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (exportId === null && exports.length > 0) setExportId(exports[0].id);
+  }, [exports, exportId]);
+  useEffect(() => {
+    if (status === null || Object.keys(picks).length > 0) return;
+    const gpu = defaultGpu(status) ?? 0;
+    setPicks(Object.fromEntries(status.models.map((m) => [m, { checked: status.default_models.includes(m), gpu }])));
+    setParams(status.defaults);
+  }, [status, picks]);
+
+  if (status === null || params === null) return <aside className="note p-3">Loading…</aside>;
+
+  const visible = showAll ? status.models : status.models.filter((m) => status.default_models.includes(m) || picks[m]?.checked);
+  const chosen = status.models.filter((m) => picks[m]?.checked);
+  const onSam3 = status.sam3_gpu !== null && chosen.some((m) => picks[m].gpu === status.sam3_gpu);
+  const problem = startProblem({ available: status.available, error: status.error, exportId, picked: chosen.length });
+  const byId = new Map(runs.map((r) => [r.id, r]));
+
+  const start = async () => {
+    if (problem !== null || starting || exportId === null) return;
+    setStarting(true);
+    setStartError(null);
+    try {
+      await onStart({ export_id: exportId, runs: chosen.map((m) => ({ model: m, gpu: picks[m].gpu })), params });
+    } catch (e) {
+      setStartError(message(e));
+    } finally {
+      setStarting(false);
+    }
+  };
+
+  return (
+    <aside className="flex shrink-0 flex-col gap-5 border-t border-line bg-panel p-3 md:w-96 md:overflow-y-auto md:border-l md:border-t-0">
+      <section className="flex flex-col gap-2">
+        <h2 className="heading">New runs</h2>
+        <label className="flex flex-col gap-1 text-sm text-dim">
+          Export
+          <select aria-label="Export" className="field" value={exportId ?? ""} onChange={(e) => setExportId(e.target.value || null)}>
+            {exports.length === 0 && <option value="">No yolo_seg export yet</option>}
+            {exports.map((e) => (
+              <option key={e.id} value={e.id}>
+                {e.project_name} · {e.id} · {e.train_images} train / {e.val_images} val
+              </option>
+            ))}
+          </select>
+        </label>
+        <fieldset className="flex flex-col gap-1.5">
+          <legend className="mb-1 text-sm text-dim">Models</legend>
+          {visible.map((m) => (
+            <div key={m} className="flex items-center justify-between gap-2 text-sm">
+              <label className="flex items-center gap-2">
+                <input type="checkbox" aria-label={m} checked={picks[m]?.checked ?? false}
+                  onChange={(e) => setPicks((p) => ({ ...p, [m]: { ...p[m], checked: e.target.checked } }))} />
+                {m}
+              </label>
+              <select aria-label={`GPU for ${m}`} className="field py-0.5" value={picks[m]?.gpu ?? 0}
+                onChange={(e) => setPicks((p) => ({ ...p, [m]: { ...p[m], gpu: Number(e.target.value) } }))}>
+                {status.gpus.map((g) => (
+                  <option key={g.index} value={g.index}>
+                    cuda:{g.index} {g.name}{g.index === status.sam3_gpu ? " (shared with SAM3)" : ""}
+                  </option>
+                ))}
+              </select>
+            </div>
+          ))}
+          <button type="button" className="btn self-start" onClick={() => setShowAll((v) => !v)}>
+            {showAll ? "Fewer models" : "More models"}
+          </button>
+        </fieldset>
+        {onSam3 && (
+          <p className="note text-ink">
+            SAM3 runs on cuda:{status.sam3_gpu}. Training there shares its memory; labeling or training may run out of VRAM.
+          </p>
+        )}
+        {PARAM_FIELDS.map((f) => (
+          <label key={f.key} className="flex items-center justify-between gap-2 text-sm text-dim">
+            {f.label}
+            <input aria-label={f.label} type="number" className="field w-24" min={f.min} max={f.max} step={f.step}
+              value={params[f.key]} onChange={(e) => setParams({ ...params, [f.key]: Number(e.target.value) || f.min })} />
+          </label>
+        ))}
+        {problem !== null && <p className="note text-ink">{problem}</p>}
+        {startError !== null && <p role="alert" className="alert">{startError}</p>}
+        <button type="button" className="btn btn-on" disabled={problem !== null || starting} onClick={() => void start()}>
+          Start {chosen.length} run{chosen.length === 1 ? "" : "s"}
+        </button>
+      </section>
+
+      <section className="flex flex-col gap-3">
+        <h2 className="heading">GPU queues</h2>
+        {status.gpus.length === 0 && <p className="note">No CUDA GPU is visible to the server.</p>}
+        {status.gpus.map((g) => {
+          const current = g.running ? byId.get(g.running) : undefined;
+          return (
+            <div key={g.index} className="flex flex-col gap-1.5 rounded border border-line p-2 text-sm">
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-medium">cuda:{g.index} {g.name}</span>
+                <span className="font-cond text-dim">{gib(g.memory_total)}{g.index === status.sam3_gpu ? " · SAM3" : ""}</span>
+              </div>
+              {current === undefined && g.queue.length === 0 && <span className="note">Idle</span>}
+              {current !== undefined && (
+                <div className="flex flex-col gap-1">
+                  <div className="flex items-center justify-between gap-2">
+                    <span>
+                      {current.model} · {g.running_kind === "onnx" ? "exporting ONNX" : statusText(current)}
+                    </span>
+                    {g.running_kind === "train" && (
+                      <button type="button" className="btn" onClick={() => onCancel(current.id)}>Cancel</button>
+                    )}
+                  </div>
+                  {g.running_kind === "train" && current.progress !== null && current.progress.batches > 0 && (
+                    <progress value={current.progress.batch} max={current.progress.batches} />
+                  )}
+                </div>
+              )}
+              {g.queue.map((id, i) => (
+                <div key={id} className="flex items-center justify-between gap-2 text-dim">
+                  <span>{i + 1}. {byId.get(id)?.model ?? id}</span>
+                  <button type="button" className="btn" aria-label={`Cancel queued ${byId.get(id)?.model ?? id}`} onClick={() => onCancel(id)}>
+                    Cancel
+                  </button>
+                </div>
+              ))}
+            </div>
+          );
+        })}
+      </section>
+    </aside>
+  );
+}
