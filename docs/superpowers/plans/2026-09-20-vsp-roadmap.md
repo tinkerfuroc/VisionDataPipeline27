@@ -14,6 +14,7 @@ proves (most importantly: Plan 1 Task 6 is the first time SAM3 inference runs on
 | 4 | Export | `ExportPlan` + YOLO-seg, YOLO-det, COCO, mask PNG exporters, Export dialog | No | **Done** (branch `plan4-exporters`; see the Plan 4 section below) |
 | 5 | `2026-09-21-vsp-plan5-uploads.md` — web uploads | Streaming video and image-zip uploads from the Clips page, with progress and cancel, over the SSH-forwarded GUI | No | **Done** (branch `plan5-uploads`, 204 Python tests, 167 web tests) |
 | 6 | Training | vsp.train (worker, per-GPU scheduler), /api/train, vsp train, Train page | Yes | **Done** (branch `yolo-seg-training`; plan `2026-09-24-yolo-seg-training.md`; 290 Python tests, 16 on GPU, 216 web tests) |
+| 7 | `2026-09-24-augmentation-and-prediction-strip.md` — augmentation | Prediction strip, presets, DTD pool, augmented exports | For the comparison run | **Done** (311 Python tests, 242 web tests) |
 
 Plans 3, 4 and 5 are independent of each other once Plan 2 is done and can run in any order.
 

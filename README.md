@@ -132,6 +132,16 @@ Defaults: 100 epochs, early stop after 30 epochs without improvement, 960 px, ba
 Ultralytics' default augmentation. Metrics come from `results.csv`; the comparison table ranks runs by the best mask
 mAP50-95 epoch. ONNX export (`best.onnx`, static, square at the run's image size, 960 × 960 by default) runs on the run's GPU queue.
 
+### Augmentation
+
+**Presets:** `uv run vsp train --export <id> --augment strong` (or `default`, on the Train page select Default / Strong / Custom). The **Strong** preset raises geometric, photometric and copy-paste augmentation above Ultralytics' defaults: degrees 15, shear 5, perspective 0.0005, flip up 0.5, flip horizontal 0.5, scale 0.6, translate 0.2, HSV hue 0.02, saturation 0.7, value 0.5, mosaic 1.0, mixup 0.1, copy_paste 0.3, plus RandomBrightnessContrast, MotionBlur, GaussianBlur, GaussNoise, ImageCompression and CLAHE. The Custom preset on the GUI allows per-field adjustment.
+
+**Background pools:** `uv run vsp backgrounds fetch dtd` (CLI, ~625 MB) or `POST /api/backgrounds/dtd/fetch` (web job) downloads the Describable Textures Dataset (5,640 images, one category per folder) to `data/backgrounds/dtd/`. The `--force` flag redownloads even if images are present.
+
+**Augmented copies:** From the Train page, when an export has the `masks` format, an "Augmented copy" panel creates a new export with real train frames plus `per_image × (frame count)` synthetic composites named `syn_*`. Each composite pastes `1–3` (user configurable) cutouts from real frames onto random background textures, scaled, rotated, positioned and colour-matched. Val frames are unchanged (images hard-linked, labels copied). The source export is never modified and cannot itself be augmented if it is already derived. Both formats from the source are present in the copy: `yolo_seg`, `yolo_det`, `coco`, `masks`.
+
+**Prediction strip:** On the Train page, when a run finishes, a "Validation predictions" gallery shows four images at a time, scrollable. Filter chips select All / Missed (ground truth present but no prediction) / Worst IoU. Click a card to enlarge it; keyboard `←/→` steps through the current filter. The overlay shows ground truth as a dashed outline and predictions filled blue with confidence scores. IoU values per image are computed with the export's polygon convention and cached in `<run_dir>/predictions_iou.json`, rebuilt when `predictions.json` changes.
+
 ### Keyboard
 
 `Enter` accept · `Esc` clear · `Z` undo click · `←/→` step · `Shift+←/→` ±10 · `Space` play/pause · `K` / `Shift+K`

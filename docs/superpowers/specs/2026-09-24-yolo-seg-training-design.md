@@ -186,7 +186,7 @@ process whose only shared resource is VRAM.
 ## Train page (`/train`)
 
 Linked from the header ("Train"). Layout as every page: main area left, all controls in the right sidebar at a
-comfortable scale.
+comfortable scale. For augmentation presets and augmented copies, see `2026-09-24-augmentation-and-prediction-strip-design.md` (B2, B3).
 
 **Sidebar**
 - *New runs*: export select (label: project name · id · train/val counts); a checklist of models (the four defaults
