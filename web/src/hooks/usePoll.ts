@@ -16,6 +16,12 @@ export function usePoll<T>(fetcher: () => Promise<T>, intervalMs: number | null,
     let closed = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const tick = async () => {
+      // A hidden tab still needs to reschedule (so it picks back up if intervalMs never changes),
+      // but skips the fetch itself: a background tab has no reason to poll the server.
+      if (typeof document !== "undefined" && document.hidden) {
+        if (!closed && intervalMs !== null) timer = setTimeout(() => void tick(), intervalMs);
+        return;
+      }
       try {
         const value = await fetcherRef.current();
         if (closed) return;
@@ -28,9 +34,16 @@ export function usePoll<T>(fetcher: () => Promise<T>, intervalMs: number | null,
       if (!closed && intervalMs !== null) timer = setTimeout(() => void tick(), intervalMs);
     };
     void tick();
+    const onVisible = () => {
+      if (typeof document === "undefined" || document.hidden) return;
+      if (timer !== undefined) clearTimeout(timer);
+      void tick();
+    };
+    document.addEventListener("visibilitychange", onVisible);
     return () => {
       closed = true;
       if (timer !== undefined) clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisible);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [intervalMs, nonce, ...deps]);
