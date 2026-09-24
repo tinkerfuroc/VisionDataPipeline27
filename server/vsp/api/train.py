@@ -86,10 +86,12 @@ def exports(state: State) -> list[dict]:
     return [e.to_json() for e in list_exports(state.settings.project.data_root)]
 
 
-@router.get("/api/exports/{export_id}/images/val/{name}")
-def val_image(export_id: str, name: str, state: State) -> FileResponse:
+@router.get("/api/exports/{export_id}/images/{split}/{name}")
+def export_image(export_id: str, split: str, name: str, state: State) -> FileResponse:
+    if split not in ("train", "val"):
+        raise NotFound(f"image {name} not found")
     export = find_export(state.settings.project.data_root, export_id)
-    path = export.yolo_dir / "images" / "val" / name
+    path = export.yolo_dir / "images" / split / name
     if not _IMAGE_NAME_RE.match(name) or not path.is_file():
         raise NotFound(f"image {name} not found")
     return FileResponse(path)

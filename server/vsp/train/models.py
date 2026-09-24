@@ -82,6 +82,8 @@ class ExportInfo:
     classes: tuple[str, ...]
     train_images: int
     val_images: int
+    formats: tuple[str, ...] = ()
+    derived_from: str | None = None
 
     @property
     def yolo_dir(self) -> Path:
@@ -91,6 +93,7 @@ class ExportInfo:
         return {
             "id": self.id, "project_name": self.project_name, "created_at": self.created_at,
             "classes": list(self.classes), "train_images": self.train_images, "val_images": self.val_images,
+            "formats": list(self.formats), "derived_from": self.derived_from,
         }
 
 
@@ -111,10 +114,12 @@ def find_export(data_root: Path, export_id: str) -> ExportInfo:
     if fmt is None or not (d / "yolo_seg" / "data.yaml").is_file():
         raise BadRequest(f"export {export_id} has no yolo_seg dataset")
     classes = tuple(c["name"] for c in sorted(manifest.get("classes", []), key=lambda c: c["yolo_id"]))
+    formats = tuple(f["name"] for f in manifest.get("formats", []))
     return ExportInfo(
         id=export_id, dir=d, project_name=manifest.get("project", {}).get("name", ""),
         created_at=manifest.get("created_at", ""), classes=classes,
         train_images=int(fmt["images"]["train"]), val_images=int(fmt["images"]["val"]),
+        formats=formats, derived_from=manifest.get("derived_from"),
     )
 
 

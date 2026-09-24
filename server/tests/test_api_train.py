@@ -44,7 +44,8 @@ def test_status_and_exports(client):
     assert st["defaults"]["augment"] == "default"
     exports = client.get("/api/exports").json()
     assert exports == [{"id": EXPORT_ID, "project_name": "Bench", "created_at": "2026-01-01T00:00:00+00:00",
-                        "classes": ["Module"], "train_images": 2, "val_images": 2}]
+                        "classes": ["Module"], "train_images": 2, "val_images": 2,
+                        "formats": ["yolo_seg"], "derived_from": None}]
 
 
 def test_run_lifecycle_metrics_predictions_weights(client):

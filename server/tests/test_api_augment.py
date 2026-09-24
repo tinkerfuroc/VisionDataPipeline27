@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import time
 
+import cv2
+import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 from vsp.api.app import create_app
 from vsp.config import Settings
 from vsp.engine.fake import FakeEngine
+from vsp.export import ExportOptions, run_export
+from vsp.store.models import LabelObject
 
 
 def _settings(tmp_path):
@@ -54,3 +58,59 @@ def test_list_fetch_and_unknown_pool(client, server, monkeypatch):
     assert listed[0]["images"] == 2
 
     assert client.post("/api/backgrounds/does-not-exist/fetch").status_code == 404
+
+
+def _labelled(store, make_clip, n=6):
+    project, clip = make_clip(n_frames=n)
+    clip.objects = [LabelObject(id=1, class_id=0)]
+    store.write_clip(clip)
+    mask = np.zeros((60, 120), bool)
+    mask[10:40, 20:60] = True
+    for i in range(n):
+        store.write_mask(clip.id, 1, i, mask)
+    return project, clip
+
+
+def _make_pool(data_root, n=3, seed=0):
+    d = data_root / "backgrounds" / "dtd" / "x"
+    d.mkdir(parents=True)
+    rng = np.random.default_rng(seed)
+    for i in range(n):
+        img = rng.integers(0, 255, (64, 64, 3), dtype=np.uint8)
+        assert cv2.imwrite(str(d / f"bg_{i}.jpg"), img)
+
+
+def test_augment_route_creates_derived_export_and_serves_samples(client, store, make_clip, tmp_path):
+    project, clip = _labelled(store, make_clip)
+    data_root = tmp_path / "data"
+    exports_root = data_root / "exports"
+    src = run_export(store, project.id, [clip.id], ["yolo_seg", "masks"], ExportOptions(), exports_root)
+    _make_pool(data_root)
+
+    started = client.post(f"/api/exports/{src['export_id']}/augment", json={"per_image": 1, "seed": 2})
+    assert started.status_code == 202, started.text
+    snap = wait_job(client, started.json()["job_id"])
+    assert snap["status"] == "done" and snap["kind"] == "augment"
+    new_id = snap["result"]["export_id"]
+
+    exports = client.get("/api/exports").json()
+    entry = next(e for e in exports if e["id"] == new_id)
+    assert entry["derived_from"] == src["export_id"]
+
+    listed = client.get(f"/api/exports/{new_id}/samples", params={"limit": 3}).json()
+    assert len(listed) == 3
+    for item in listed:
+        assert item["name"].startswith("syn_") and item["ground_truth"]
+
+    name = listed[0]["name"]
+    img = client.get(f"/api/exports/{new_id}/images/train/{name}")
+    assert img.status_code == 200 and img.headers["content-type"] == "image/jpeg"
+
+    assert client.get(f"/api/exports/{new_id}/images/test/x.jpg").status_code == 404
+
+
+def test_augment_requires_masks_format(client, store, make_clip, tmp_path):
+    project, clip = _labelled(store, make_clip)
+    data_root = tmp_path / "data"
+    src = run_export(store, project.id, [clip.id], ["yolo_seg"], ExportOptions(), data_root / "exports")
+    assert client.post(f"/api/exports/{src['export_id']}/augment", json={}).status_code == 400
