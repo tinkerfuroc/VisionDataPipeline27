@@ -77,6 +77,17 @@ def _signal_group(pid: int, sig: int) -> None:
         os.killpg(pid, sig)
 
 
+def _is_worker_of(pid: int, run_dir: Path) -> bool:
+    """True only if /proc/<pid>'s command line names this run's directory — guards against a pid
+    that has been recycled (a reboot, or pid wraparound) since run.json was last written."""
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except (FileNotFoundError, PermissionError, ProcessLookupError):
+        return False
+    args = raw.decode(errors="replace").split("\x00")
+    return str(run_dir) in args
+
+
 class TrainScheduler:
     def __init__(
         self, data_root: Path, gpus: list[Gpu], *, worker_cmd=WORKER_CMD, kill_after: float = 30.0
@@ -119,7 +130,8 @@ class TrainScheduler:
 
     def recover(self) -> None:
         """Adopt what a previous process left on disk: running → interrupted, queued → queued
-        here again."""
+        here again. Idempotent: a run already sitting in one of our queues is left alone, so a
+        second call (or a call after some runs are already in flight) never double-queues it."""
         me = os.getpid()
         with self._cv:
             for run in sorted(self.runs.list(), key=lambda r: (r["created_at"], r["id"])):
@@ -128,17 +140,18 @@ class TrainScheduler:
                     continue  # another live scheduler (a `vsp train` in a terminal) owns this run
                 changes: dict = {}
                 if run["status"] == "running":
-                    if _alive(run.get("pid")):
-                        _signal_group(run["pid"], signal.SIGKILL)  # an orphan of a killed server
+                    pid = run.get("pid")
+                    if _alive(pid) and _is_worker_of(pid, self.runs.dir(run["id"])):
+                        _signal_group(pid, signal.SIGKILL)  # an orphan of a killed server
                     changes.update(status="interrupted", pid=None, finished_at=now_iso())
                 if run.get("onnx") in ("queued", "running"):
                     changes["onnx"] = None
                 if run["status"] == "queued":
-                    if run["gpu"] in self._queues:
+                    if run["gpu"] not in self._queues:
+                        changes.update(status="error", error=f"GPU {run['gpu']} is not available")
+                    elif not self._in_queue(run["id"]):
                         self._queues[run["gpu"]].append((run["id"], "train"))
                         changes["owner_pid"] = me
-                    else:
-                        changes.update(status="error", error=f"GPU {run['gpu']} is not available")
                 if changes:
                     self.runs.update(run["id"], **changes)
             self._cv.notify_all()
@@ -165,6 +178,9 @@ class TrainScheduler:
         with self._cv:
             run = self.runs.read(run_id)
             if run["status"] == "queued":
+                owner = run.get("owner_pid")
+                if not self._in_queue(run_id) and owner not in (None, os.getpid()) and _alive(owner):
+                    raise Conflict(f"run {run_id} is queued in another process")
                 self._drop(run_id)
                 self.runs.update(run_id, status="cancelled", finished_at=now_iso())
                 return
@@ -240,6 +256,18 @@ class TrainScheduler:
             for item in [i for i in q if i[0] == run_id]:
                 q.remove(item)
 
+    def _in_queue(self, run_id: str) -> bool:
+        return any(rid == run_id for q in self._queues.values() for rid, _ in q)
+
+    def _should_launch(self, run_id: str, kind: str) -> bool:
+        """Re-read run.json right before launching, under the same lock as the pop: guards
+        against a concurrent cancel (by this or another process) or a stale queue entry left by
+        a second `recover()`."""
+        run = self.runs.read(run_id)
+        if kind == "train":
+            return run["status"] == "queued"
+        return run.get("onnx") == "queued"
+
     def _proc_of(self, run_id: str) -> subprocess.Popen | None:
         for rid, _, proc in self._running.values():
             if rid == run_id:
@@ -258,6 +286,8 @@ class TrainScheduler:
                 if self._stopping:
                     return
                 run_id, kind = self._queues[gpu].popleft()
+                if not self._should_launch(run_id, kind):
+                    continue
                 try:
                     proc = self._launch(run_id, kind, gpu)
                 except Exception as e:
@@ -266,6 +296,7 @@ class TrainScheduler:
                     continue
                 self._running[gpu] = (run_id, kind, proc)
             code = proc.wait()
+            _signal_group(proc.pid, signal.SIGKILL)  # reap any dataloader children left behind
             with self._cv:
                 del self._running[gpu]
                 cancelled = run_id in self._cancelled
@@ -295,11 +326,17 @@ class TrainScheduler:
                 args, cwd=self.weights_dir, env=env, stdin=subprocess.DEVNULL, stdout=log_file,
                 stderr=subprocess.STDOUT, start_new_session=True,
             )
-        if kind == "train":
-            self.runs.update(run_id, status="running", started_at=now_iso(), finished_at=None, error=None,
-                             pid=proc.pid, owner_pid=os.getpid())
-        else:
-            self.runs.update(run_id, onnx="running")
+        try:
+            if kind == "train":
+                self.runs.update(run_id, status="running", started_at=now_iso(), finished_at=None,
+                                 error=None, pid=proc.pid, owner_pid=os.getpid())
+            else:
+                self.runs.update(run_id, onnx="running")
+        except Exception:
+            # the subprocess is already running but untracked; do not leave it orphaned
+            _signal_group(proc.pid, signal.SIGKILL)
+            proc.wait()
+            raise
         return proc
 
     def _launch_failed(self, run_id: str, kind: str, e: Exception) -> None:
@@ -315,12 +352,12 @@ class TrainScheduler:
         run_dir = self.runs.dir(run_id)
         result = read_json(run_dir / "result.json", {}) or {}
         fields: dict = {"pid": None, "resume": False, "finished_at": now_iso()}
-        if self._stopping and not cancelled:
+        if code == 0:
+            fields.update(status="done", best=result.get("best") or summarize(read_metrics(run_dir)))
+        elif self._stopping and not cancelled:
             fields["status"] = "interrupted"
         elif cancelled or code == CANCELLED_EXIT:
             fields["status"] = "cancelled"
-        elif code == 0:
-            fields.update(status="done", best=result.get("best") or summarize(read_metrics(run_dir)))
         else:
             message = (
                 result.get("error") or tail(run_dir / "worker.log", 20) or f"worker exited with code {code}"

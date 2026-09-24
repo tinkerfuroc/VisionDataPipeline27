@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import time
 
 import pytest
 from train_fixtures import FAKE_WORKER, make_export, wait_for
@@ -79,6 +80,75 @@ def test_cancel_queued_run_never_starts(env):
     assert sched.idle()
     with pytest.raises(Conflict):
         sched.cancel(rid)
+    time.sleep(0.5)
+    assert status(sched, rid) == "cancelled"
+    assert not (sched.runs.dir(rid) / "worker.log").exists()
+
+
+def test_queued_run_cancelled_externally_is_skipped(env):
+    """A run that is cancelled on disk (e.g. by another process sharing this run store) while it
+    is still sitting in this scheduler's own queue must never be launched."""
+    sched, export = env
+    (rid,) = sched.submit(export, [("yolo26s-seg", 0)], TrainParams(epochs=2))
+    sched.runs.update(rid, status="cancelled")
+    sched.start()
+    time.sleep(0.5)
+    assert status(sched, rid) == "cancelled"
+    assert not (sched.runs.dir(rid) / "worker.log").exists()
+
+
+def test_recover_is_idempotent(env):
+    sched, export = env
+    run = sched.runs.create(export, "yolo26s-seg", 0, TrainParams(epochs=2), owner_pid=os.getpid())
+    sched.recover()
+    sched.recover()
+    snap = {g["index"]: g for g in sched.snapshot()}
+    assert snap[0]["queue"] == [run["id"]]
+
+
+def test_cancel_queued_run_owned_by_another_live_process(env):
+    sched, export = env
+    run = sched.runs.create(export, "yolo26s-seg", 0, TrainParams(epochs=2), owner_pid=os.getppid())
+    with pytest.raises(Conflict):
+        sched.cancel(run["id"])
+    assert status(sched, run["id"]) == "queued"
+
+
+def test_queue_continues_after_error(env):
+    sched, export = env
+    sched.start()
+    (err_id,) = sched.submit(export, [("yolo26s-seg", 0)], TrainParams(epochs=13))
+    (ok_id,) = sched.submit(export, [("yolo26s-seg", 0)], TrainParams(epochs=2))
+    until(sched, err_id, "error")
+    until(sched, ok_id, "done")
+
+
+def test_launch_failure_does_not_kill_gpu_thread(tmp_path):
+    data_root = tmp_path / "data"
+    export = find_export(data_root, make_export(data_root).name)
+    sched = TrainScheduler(data_root, GPUS, worker_cmd=["/nonexistent/binary"], kill_after=5.0)
+    sched.start()
+    try:
+        a, b = sched.submit(export, [("yolo26s-seg", 0), ("yolo26m-seg", 0)], TrainParams(epochs=2))
+        until(sched, a, "error")
+        until(sched, b, "error")  # the GPU-0 thread survived launching "a" and picked up "b"
+        assert "could not start the worker" in sched.runs.read(a)["error"]
+        assert "could not start the worker" in sched.runs.read(b)["error"]
+    finally:
+        sched.shutdown(timeout=10)
+
+
+def test_finish_train_prefers_done_over_interrupted_during_shutdown(env):
+    """A run whose worker exits 0 right as shutdown() fires must be recorded done, not
+    interrupted."""
+    sched, export = env
+    (rid,) = sched.submit(export, [("yolo26s-seg", 0)], TrainParams(epochs=2))
+    sched.start()
+    until(sched, rid, "done")
+    sched.runs.update(rid, status="running", finished_at=None)
+    sched._stopping = True
+    sched._finish_train(rid, 0, False)
+    assert status(sched, rid) == "done"
 
 
 def test_error_message_from_result_json_or_log_tail(env):
@@ -160,6 +230,24 @@ def test_recover_after_restart(env):
     r = sched.runs.read(running)
     assert r["status"] == "interrupted" and r["onnx"] is None and r["pid"] is None
     assert status(sched, foreign) == "running"
+
+
+def test_recover_does_not_kill_unrelated_process_with_recycled_pid(env):
+    """run.json's `pid` may have been recycled by the OS since it was written (a reboot, or pid
+    wraparound); recover() must confirm via /proc/<pid>/cmdline that the pid is actually this
+    run's worker before sending it SIGKILL."""
+    sched, export = env
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"], start_new_session=True)
+    try:
+        dead = _dead_pid()
+        run = sched.runs.create(export, "yolo26s-seg", 0, TrainParams(epochs=2), owner_pid=dead)
+        sched.runs.update(run["id"], status="running", pid=proc.pid)
+        sched.start()
+        until(sched, run["id"], "interrupted")
+        assert proc.poll() is None  # still alive: recover() must not have SIGKILLed it
+    finally:
+        proc.terminate()
+        proc.wait()
 
 
 def test_shutdown_interrupts_running_runs(tmp_path):
