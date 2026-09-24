@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from types import SimpleNamespace
 
 import numpy as np
@@ -13,6 +14,13 @@ from vsp.train.worker import (
     training_finished,
     write_data_yaml,
 )
+
+
+def test_worker_import_disables_albumentations_update_check():
+    # Set at module import time (already happened by the time this test runs), not only inside
+    # photometric_transforms, so Ultralytics' own `from ultralytics import YOLO` never triggers the
+    # PyPI version check either.
+    assert os.environ.get("NO_ALBUMENTATIONS_UPDATE") == "1"
 
 
 def test_write_data_yaml_makes_path_absolute(tmp_path):

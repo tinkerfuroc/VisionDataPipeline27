@@ -9,6 +9,7 @@ and its exit code (0 done, 2 cancelled, else error).
 from __future__ import annotations
 
 import argparse
+import os
 import signal
 import sys
 import time
@@ -20,6 +21,11 @@ import yaml
 from .models import train_overrides
 from .results import read_metrics, summarize
 from .runs import atomic_write_json, best_weights, last_weights, onnx_weights, read_json
+
+# Set before any `from ultralytics import ...` below: Ultralytics imports albumentations itself (for its
+# own built-in transforms) as a side effect, so this must be set at worker import time, not only inside
+# `photometric_transforms`, or its first import still reaches out to PyPI for the version check.
+os.environ.setdefault("NO_ALBUMENTATIONS_UPDATE", "1")
 
 CANCELLED_EXIT = 2
 PREDICT_CONF = 0.25
@@ -98,6 +104,7 @@ def _resume_already_finished(run_dir: Path) -> bool:
 
 
 def photometric_transforms() -> list:
+    os.environ.setdefault("NO_ALBUMENTATIONS_UPDATE", "1")  # never phone home for a version check
     import albumentations as A
 
     return [
