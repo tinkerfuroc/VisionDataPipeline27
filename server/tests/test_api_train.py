@@ -113,6 +113,7 @@ def test_bad_requests(client):
     assert client.post("/api/train/runs", json={**body, "params": {"imgsz": 1000}}).status_code == 422
     assert client.get("/api/train/runs/not-a-run").status_code == 404
     assert client.get("/api/exports/missing/images/val/a.jpg").status_code == 404
+    assert client.get("/api/train/runs/20260101-000000-yolo26s-seg-face/log").status_code == 404
 
 
 def test_unavailable_without_ultralytics(client, monkeypatch):

@@ -165,4 +165,5 @@ def predictions(
 
 @router.get("/api/train/runs/{run_id}/log", response_class=PlainTextResponse)
 def run_log(run_id: str, state: State) -> str:
+    state.train.runs.read(run_id)  # 404 for an unknown run, instead of 200 with empty text
     return tail(state.train.runs.dir(run_id) / "worker.log", 200)
