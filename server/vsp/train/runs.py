@@ -1,4 +1,5 @@
-"""Run folders under data/runs/ and their run.json (spec: Storage). The scheduler is run.json's only writer."""
+"""Run folders under data/runs/ and their run.json (spec: Storage). The scheduler is run.json's only
+writer."""
 
 from __future__ import annotations
 
@@ -7,24 +8,28 @@ import os
 import re
 import secrets
 import shutil
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 
 from ..store import NotFound
+from ..store.project import now_iso
 from .models import ExportInfo, TrainParams
 
 TERMINAL = frozenset({"done", "error", "cancelled", "interrupted"})
 _RUN_ID_RE = re.compile(r"^\d{8}-\d{6}-[a-z0-9-]+-[0-9a-f]{4}$")
 
-
-def now_iso() -> str:
-    return datetime.now(UTC).isoformat(timespec="seconds")
+# Re-export for callers (later tasks import now_iso from vsp.train.runs)
+__all__ = ["now_iso"]
 
 
 def atomic_write_json(path: Path, obj) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-    tmp.write_text(json.dumps(obj, indent=2))
-    os.replace(tmp, path)
+    try:
+        tmp.write_text(json.dumps(obj, indent=2))
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def read_json(path: Path, default=None):
@@ -60,7 +65,9 @@ class RunStore:
             raise NotFound(f"run {run_id} not found")
         return self.root / run_id
 
-    def create(self, export: ExportInfo, model: str, gpu: int, params: TrainParams, *, owner_pid: int) -> dict:
+    def create(
+        self, export: ExportInfo, model: str, gpu: int, params: TrainParams, *, owner_pid: int
+    ) -> dict:
         self.root.mkdir(parents=True, exist_ok=True)
         while True:
             run_id = new_run_id(model)

@@ -24,6 +24,19 @@ def test_atomic_json_roundtrip(tmp_path):
     assert not list(tmp_path.glob("*.tmp"))
 
 
+def test_atomic_write_json_cleanup_on_os_replace_error(tmp_path, monkeypatch):
+    """atomic_write_json cleans up .tmp file when os.replace raises."""
+    import vsp.train.runs
+
+    def raise_os_error(*args, **kwargs):
+        raise OSError("simulated replace failure")
+
+    monkeypatch.setattr(vsp.train.runs.os, "replace", raise_os_error)
+    with pytest.raises(OSError, match="simulated replace failure"):
+        atomic_write_json(tmp_path / "test.json", {"x": 1})
+    assert not list(tmp_path.glob("*.tmp"))
+
+
 def test_create_read_update_list_delete(tmp_path):
     export = find_export(tmp_path, make_export(tmp_path).name)
     store = RunStore(tmp_path / "runs")

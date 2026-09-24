@@ -31,9 +31,15 @@ def make_export(data_root: Path, export_id: str = EXPORT_ID, n_train: int = 2, n
     manifest = {
         "export_id": export_id, "created_at": "2026-01-01T00:00:00+00:00",
         "project": {"id": "p1", "name": "Bench"},
-        "classes": [{"id": 0, "name": "Module", "color": "#e6194b", "yolo_id": 0, "coco_id": 1, "mask_value": 1}],
-        "formats": [{"name": "yolo_seg", "images": {"train": n_train, "val": n_val},
-                     "annotations": {"train": n_train, "val": n_val}, "linked": True}],
+        "classes": [
+            {"id": 0, "name": "Module", "color": "#e6194b", "yolo_id": 0, "coco_id": 1, "mask_value": 1}
+        ],
+        "formats": [
+            {
+                "name": "yolo_seg", "images": {"train": n_train, "val": n_val},
+                "annotations": {"train": n_train, "val": n_val}, "linked": True,
+            }
+        ],
     }
     (d / "export.json").write_text(json.dumps(manifest))
     return d
