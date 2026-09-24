@@ -65,3 +65,17 @@ def test_tail(tmp_path):
     p.write_text("".join(f"line {i}\n" for i in range(50)))
     assert tail(p, 3) == "line 47\nline 48\nline 49"
     assert tail(tmp_path / "missing", 3) == ""
+
+
+from vsp.train.results import mask_iou
+
+SQ = {"class_id": 0, "polygons": [[0.0, 0.0, 0.5, 0.0, 0.5, 1.0, 0.0, 1.0]]}      # left half
+FULL = {"class_id": 0, "polygons": [[0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0]]}    # whole image
+
+
+def test_mask_iou_cases():
+    assert mask_iou([], [], 10, 10) is None
+    assert mask_iou([SQ], [], 10, 10) == 0.0
+    assert mask_iou([], [SQ], 10, 10) == 0.0
+    assert mask_iou([SQ], [SQ], 10, 10) == 1.0
+    assert mask_iou([SQ], [FULL], 10, 10) == 0.6

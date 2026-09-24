@@ -124,3 +124,14 @@ def test_unavailable_without_ultralytics(client, monkeypatch):
     assert st["available"] is False and "uv sync" in st["error"]
     body = {"export_id": EXPORT_ID, "runs": [{"model": "yolo26s-seg", "gpu": 0}]}
     assert client.post("/api/train/runs", json=body).status_code == 503
+
+
+def test_predictions_filters_and_counts(client):
+    rid = start(client)
+    until(client, rid, "done")
+    page = client.get(f"/api/train/runs/{rid}/predictions?filter=all").json()
+    assert page["counts"]["all"] == 1 and page["counts"]["missed"] == 0 and page["counts"]["worst"] == 1
+    item = page["items"][0]
+    assert item["index"] == 0 and 0.0 < item["iou"] <= 1.0
+    assert client.get(f"/api/train/runs/{rid}/predictions?filter=missed").json()["total"] == 0
+    assert client.get(f"/api/train/runs/{rid}/predictions?filter=nope").status_code == 422

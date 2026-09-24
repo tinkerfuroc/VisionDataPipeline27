@@ -5,6 +5,10 @@ from __future__ import annotations
 import csv
 from pathlib import Path
 
+import numpy as np
+
+from ..export.polygons import polygons_to_mask
+
 MASK_MAP = "metrics/mAP50-95(M)"
 MASK_MAP50 = "metrics/mAP50(M)"
 BOX_MAP = "metrics/mAP50-95(B)"
@@ -75,3 +79,24 @@ def tail(path: Path, n: int) -> str:
     except FileNotFoundError:
         return ""
     return "\n".join(lines[-n:])
+
+
+def _union_mask(instances: list[dict], width: int, height: int) -> np.ndarray:
+    canvas = np.zeros((height, width), bool)
+    for inst in instances:
+        for flat in inst["polygons"]:
+            points = [(flat[i] * width, flat[i + 1] * height) for i in range(0, len(flat) - 1, 2)]
+            if len(points) >= 3:
+                canvas |= polygons_to_mask([points], width, height)
+    return canvas
+
+
+def mask_iou(predictions: list[dict], ground_truth: list[dict], width: int, height: int) -> float | None:
+    """IoU of the union of predicted polygons against the union of labelled ones; None when both
+    are empty."""
+    pred = _union_mask(predictions, width, height)
+    gt = _union_mask(ground_truth, width, height)
+    union = int(np.logical_or(pred, gt).sum())
+    if union == 0:
+        return None
+    return round(int(np.logical_and(pred, gt).sum()) / union, 4)

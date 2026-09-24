@@ -6,14 +6,16 @@ import contextlib
 import re
 from importlib.util import find_spec
 from pathlib import Path
+from typing import Literal
 
 from fastapi import APIRouter, Query, Response
 from fastapi.responses import FileResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 
 from ..store import NotFound
+from ..train.gallery import FILTERS, filter_items, load_gallery
 from ..train.models import DEFAULT_MODELS, MODELS, TrainParams, find_export, list_exports
-from ..train.results import read_ground_truth, read_metrics, tail
+from ..train.results import read_metrics, tail
 from ..train.runs import best_weights, onnx_weights, read_json
 from .deps import State
 
@@ -148,19 +150,15 @@ def weights(run_id: str, filename: str, state: State) -> FileResponse:
 @router.get("/api/train/runs/{run_id}/predictions")
 def predictions(
     run_id: str, state: State, offset: int = Query(0, ge=0), limit: int = Query(20, ge=1, le=50),
+    filter: Literal["all", "missed", "worst"] = Query("all"),
 ) -> dict:
     run = state.train.runs.read(run_id)
-    preds = read_json(state.train.runs.dir(run_id) / "predictions.json")
-    if preds is None:
-        raise NotFound(f"run {run_id} has no predictions yet")
     labels = Path(run["export_dir"]) / "yolo_seg" / "labels" / "val"
-    images = preds["images"]
-    items = [
-        {"name": im["name"], "width": im["width"], "height": im["height"], "predictions": im["instances"],
-         "ground_truth": read_ground_truth(labels / f"{Path(im['name']).stem}.txt")}
-        for im in images[offset:offset + limit]
-    ]
-    return {"total": len(images), "conf": preds.get("conf"), "items": items}
+    gallery = load_gallery(state.train.runs.dir(run_id), labels)
+    lists = {name: filter_items(gallery["items"], name) for name in FILTERS}
+    chosen = lists[filter]
+    return {"total": len(chosen), "conf": gallery["conf"], "counts": {k: len(v) for k, v in lists.items()},
+            "items": chosen[offset:offset + limit]}
 
 
 @router.get("/api/train/runs/{run_id}/log", response_class=PlainTextResponse)
