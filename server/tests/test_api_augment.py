@@ -52,10 +52,10 @@ def test_list_fetch_and_unknown_pool(client, server, monkeypatch):
     assert r.status_code == 202
     job_id = r.json()["job_id"]
     snap = wait_job(client, job_id)
-    assert snap["status"] == "done" and snap["result"] == {"pool": "dtd", "images": 2, "skipped": False}
+    assert snap["status"] == "done" and snap["result"] == {"pool": "dtd", "images": 3, "skipped": False}
 
     listed = client.get("/api/backgrounds").json()
-    assert listed[0]["images"] == 2
+    assert listed[0]["images"] == 3
 
     assert client.post("/api/backgrounds/does-not-exist/fetch").status_code == 404
 
@@ -114,3 +114,31 @@ def test_augment_requires_masks_format(client, store, make_clip, tmp_path):
     data_root = tmp_path / "data"
     src = run_export(store, project.id, [clip.id], ["yolo_seg"], ExportOptions(), data_root / "exports")
     assert client.post(f"/api/exports/{src['export_id']}/augment", json={}).status_code == 400
+
+
+def test_augment_unknown_pool_is_bad_request(client, store, make_clip, tmp_path):
+    project, clip = _labelled(store, make_clip)
+    data_root = tmp_path / "data"
+    exports_root = data_root / "exports"
+    src = run_export(store, project.id, [clip.id], ["yolo_seg", "masks"], ExportOptions(), exports_root)
+    _make_pool(data_root)
+    r = client.post(f"/api/exports/{src['export_id']}/augment", json={"pool": "does-not-exist"})
+    assert r.status_code == 400
+
+
+def test_augment_and_fetch_share_one_exclusive_key(client, store, make_clip, server, tmp_path, monkeypatch):
+    from vsp.augment import backgrounds
+
+    monkeypatch.setitem(backgrounds.POOLS["dtd"], "url", server)
+    project, clip = _labelled(store, make_clip)
+    data_root = tmp_path / "data"
+    exports_root = data_root / "exports"
+    src = run_export(store, project.id, [clip.id], ["yolo_seg", "masks"], ExportOptions(), exports_root)
+    _make_pool(data_root)
+
+    started = client.post(f"/api/exports/{src['export_id']}/augment", json={"per_image": 1, "seed": 2})
+    assert started.status_code == 202, started.text
+    r = client.post("/api/backgrounds/dtd/fetch")
+    assert r.status_code == 409
+    assert r.json()["job_id"] == started.json()["job_id"]
+    wait_job(client, started.json()["job_id"])

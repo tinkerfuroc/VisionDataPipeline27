@@ -18,8 +18,9 @@ from ..train.results import read_ground_truth
 from .deps import State
 
 router = APIRouter(tags=["augment"])
-BACKGROUNDS = "backgrounds"  # job kind and exclusive key: one download at a time
+BACKGROUNDS = "backgrounds"  # job kind (also used by GET /api/backgrounds to report a running fetch)
 AUGMENT = "augment"  # job kind
+EXCLUSIVE = "augment-data"  # shared exclusive key: a fetch and an augment job never run at once
 
 
 class FetchBody(BaseModel):
@@ -57,7 +58,7 @@ def fetch(name: str, state: State, body: FetchBody | None = None) -> dict:
         except FetchCancelled:
             return {"cancelled": True}
 
-    return {"job_id": state.jobs.start(BACKGROUNDS, work, exclusive=BACKGROUNDS).id}
+    return {"job_id": state.jobs.start(BACKGROUNDS, work, exclusive=EXCLUSIVE).id}
 
 
 @router.post("/api/exports/{export_id}/augment", status_code=202)
@@ -77,7 +78,7 @@ def augment(export_id: str, state: State, body: AugmentBody | None = None) -> di
         except ExportCancelled:
             return {"cancelled": True}
 
-    return {"job_id": state.jobs.start(AUGMENT, work).id}
+    return {"job_id": state.jobs.start(AUGMENT, work, exclusive=EXCLUSIVE).id}
 
 
 @router.get("/api/exports/{export_id}/samples")

@@ -31,7 +31,7 @@ from ..export.polygons import clean_mask
 from ..labeling.errors import BadRequest
 from ..store.models import ClassDef
 from ..train.models import find_export
-from .backgrounds import list_images
+from .backgrounds import POOLS, list_images
 from .composite import Cutout, cutout_from, make_composite
 
 
@@ -50,6 +50,8 @@ def check_augment(data_root: Path, export_id: str, opts: AugmentOptions) -> dict
         raise BadRequest(f"export {export_id} is already an augmented copy; augment the original export")
     if "masks" not in info.formats:
         raise BadRequest(f"export {export_id} has no masks format; re-export with Mask images ticked")
+    if opts.pool not in POOLS:
+        raise BadRequest(f"background pool {opts.pool} not found")
     if not list_images(data_root, opts.pool):
         raise BadRequest(f"background pool {opts.pool} is empty; download it first")
     if not 1 <= opts.per_image <= 10:
