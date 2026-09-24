@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 
 from ..store import NotFound
 from ..train.gallery import FILTERS, filter_items, load_gallery
-from ..train.models import DEFAULT_MODELS, MODELS, TrainParams, find_export, list_exports
+from ..train.models import AUG_PRESETS, DEFAULT_MODELS, MODELS, TrainParams, find_export, list_exports
 from ..train.results import read_metrics, tail
 from ..train.runs import best_weights, onnx_weights, read_json
 from .deps import State
@@ -77,6 +77,7 @@ def train_status(state: State) -> dict:
         "gpus": state.train.snapshot(), "sam3_gpu": sam3_gpu(state.engine),
         "models": list(MODELS), "default_models": list(DEFAULT_MODELS),
         "defaults": TrainParams().model_dump(),
+        "aug_presets": {k: v.model_dump() for k, v in AUG_PRESETS.items()},
     }
 
 

@@ -7,7 +7,17 @@ from pydantic import ValidationError
 from train_fixtures import EXPORT_ID, make_export
 from vsp.labeling.errors import BadRequest
 from vsp.store import NotFound
-from vsp.train.models import DEFAULT_MODELS, MODELS, TrainParams, check_model, find_export, list_exports
+from vsp.train.models import (
+    DEFAULT_MODELS,
+    MODELS,
+    STRONG_AUG,
+    AugParams,
+    TrainParams,
+    check_model,
+    find_export,
+    list_exports,
+    train_overrides,
+)
 
 
 def test_model_whitelist():
@@ -54,3 +64,25 @@ def test_list_exports_newest_first_and_skips_incomplete(tmp_path):
     (tmp_path / "exports" / "20260103-000000-cccccc").mkdir()  # an export still being written: no manifest
     assert [e.id for e in list_exports(tmp_path)] == ["20260102-000000-bbbbbb", "20260101-000000-aaaaaa"]
     assert list_exports(tmp_path / "missing") == []
+
+
+def test_aug_presets_and_overrides():
+    assert train_overrides({"epochs": 5}) == ({}, False)  # old run.json
+    assert train_overrides(TrainParams().model_dump()) == ({}, False)
+    kw, photo = train_overrides(TrainParams(augment="strong").model_dump())
+    assert photo is True and kw["degrees"] == 15 and kw["copy_paste"] == 0.3
+    assert kw["copy_paste_mode"] == "flip"
+    expected = {**STRONG_AUG.model_dump(exclude={"photometric"}), "copy_paste_mode": "flip"}
+    assert "photometric" not in kw and kw == expected
+    custom = TrainParams(augment="custom",
+                         aug=AugParams(degrees=5, photometric=False)).model_dump()
+    kw, photo = train_overrides(custom)
+    assert kw["degrees"] == 5 and kw["fliplr"] == 0.5 and photo is False
+
+
+def test_custom_needs_values_and_bounds():
+    with pytest.raises(ValidationError):
+        TrainParams(augment="custom")
+    for bad in ({"degrees": 181}, {"perspective": 0.01}, {"mixup": 1.5}, {"nope": 1}):
+        with pytest.raises(ValidationError):
+            AugParams(**bad)

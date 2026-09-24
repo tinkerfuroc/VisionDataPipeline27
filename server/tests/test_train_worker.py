@@ -6,7 +6,13 @@ from types import SimpleNamespace
 import numpy as np
 import yaml
 from train_fixtures import make_export
-from vsp.train.worker import ProgressWriter, instances_from_result, training_finished, write_data_yaml
+from vsp.train.worker import (
+    ProgressWriter,
+    instances_from_result,
+    photometric_transforms,
+    training_finished,
+    write_data_yaml,
+)
 
 
 def test_write_data_yaml_makes_path_absolute(tmp_path):
@@ -52,3 +58,12 @@ def test_instances_from_result():
     assert out[0]["class_id"] == 0 and out[0]["score"] == 0.9123
     assert out[0]["polygons"][0] == [0.1, 0.2, 0.3, 0.2, 0.3, 0.4]
     assert instances_from_result(SimpleNamespace(masks=None, boxes=None)) == []
+
+
+def test_photometric_transforms():
+    import albumentations as A
+
+    ts = photometric_transforms()
+    assert [type(t) for t in ts] == [A.RandomBrightnessContrast, A.MotionBlur, A.GaussianBlur,
+                                     A.GaussNoise, A.ImageCompression, A.CLAHE]
+    assert [t.p for t in ts] == [0.5, 0.2, 0.1, 0.2, 0.3, 0.1]

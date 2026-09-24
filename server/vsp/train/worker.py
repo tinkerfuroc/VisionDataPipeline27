@@ -17,6 +17,7 @@ from pathlib import Path
 
 import yaml
 
+from .models import train_overrides
 from .results import read_metrics, summarize
 from .runs import atomic_write_json, best_weights, last_weights, onnx_weights, read_json
 
@@ -94,6 +95,19 @@ def _resume_already_finished(run_dir: Path) -> bool:
 
     ckpt = torch.load(path, map_location="cpu", weights_only=False)
     return training_finished(ckpt)
+
+
+def photometric_transforms() -> list:
+    import albumentations as A
+
+    return [
+        A.RandomBrightnessContrast(brightness_limit=0.25, contrast_limit=0.25, p=0.5),
+        A.MotionBlur(blur_limit=(3, 9), p=0.2),
+        A.GaussianBlur(sigma_limit=(0.3, 1.5), p=0.1),
+        A.GaussNoise(std_range=(0.02, 0.06), p=0.2),
+        A.ImageCompression(quality_range=(60, 95), p=0.3),
+        A.CLAHE(p=0.1),
+    ]
 
 
 def _quiet_ultralytics():
@@ -177,6 +191,9 @@ def train(run_dir: Path) -> int:
             p = run["params"]
             model = YOLO(f"{run['model']}.pt")
             _attach_progress(model, progress)
+            overrides, photometric = train_overrides(p)
+            if photometric:
+                overrides["augmentations"] = photometric_transforms()
             model.train(
                 data=str(data),
                 epochs=p["epochs"],
@@ -190,6 +207,7 @@ def train(run_dir: Path) -> int:
                 exist_ok=True,
                 device=0,
                 plots=True,
+                **overrides,
             )
         _predict(run_dir, run, progress)
     except KeyboardInterrupt:

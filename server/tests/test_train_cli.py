@@ -19,7 +19,7 @@ def _settings(tmp_path):
 
 def _args(**kw):
     base = {"list": False, "export": EXPORT_ID, "model": None, "gpu": 1, "epochs": 2, "imgsz": 640,
-            "batch": 8, "patience": 30, "workers": 0, "seed": 0}
+            "batch": 8, "patience": 30, "workers": 0, "seed": 0, "augment": "default"}
     return argparse.Namespace(**{**base, **kw})
 
 
@@ -57,6 +57,16 @@ def test_default_gpu_picks_around_sam3(tmp_path, capsys, monkeypatch):
     (run_dir,) = (s.project.data_root / "runs").iterdir()
     run = json.loads((run_dir / "run.json").read_text())
     assert run["gpu"] == 1
+
+
+def test_augment_strong(tmp_path, capsys):
+    s = _settings(tmp_path)
+    rc = vsp.cli._train(s, _args(model=["yolo26s-seg"], augment="strong"), gpus=[Gpu(1, "B", 1)],
+                        worker_cmd=FAKE_WORKER, poll=0.05)
+    assert rc == 0
+    (run_dir,) = (s.project.data_root / "runs").iterdir()
+    run = json.loads((run_dir / "run.json").read_text())
+    assert run["params"]["augment"] == "strong"
 
 
 def test_default_gpu_falls_back_when_pick_device_raises(tmp_path, capsys, monkeypatch):

@@ -40,6 +40,8 @@ def test_status_and_exports(client):
     assert [g["index"] for g in st["gpus"]] == [0, 1] and st["gpus"][0]["queue"] == []
     assert "yolo11m-seg" in st["models"] and st["default_models"][0] == "yolo26s-seg"
     assert st["defaults"]["imgsz"] == 960
+    assert st["aug_presets"]["strong"]["degrees"] == 15
+    assert st["defaults"]["augment"] == "default"
     exports = client.get("/api/exports").json()
     assert exports == [{"id": EXPORT_ID, "project_name": "Bench", "created_at": "2026-01-01T00:00:00+00:00",
                         "classes": ["Module"], "train_images": 2, "val_images": 2}]
@@ -102,6 +104,17 @@ def test_cancel_resume_and_conflicts(client, tmp_path):
     until(client, rid, "cancelled")
 
 
+def test_augment_presets(client):
+    r = client.post("/api/train/runs", json={
+        "export_id": EXPORT_ID, "runs": [{"model": "yolo26s-seg", "gpu": 1}],
+        "params": {"epochs": 2, "imgsz": 640, "augment": "strong"},
+    })
+    assert r.status_code == 201
+    rid = r.json()["run_ids"][0]
+    run = client.get(f"/api/train/runs/{rid}").json()
+    assert run["params"]["augment"] == "strong"
+
+
 def test_bad_requests(client):
     body = {"export_id": EXPORT_ID, "runs": [{"model": "yolo26s-seg", "gpu": 0}]}
     bad_model = {**body, "runs": [{"model": "yolov8s-seg", "gpu": 0}]}
@@ -111,6 +124,7 @@ def test_bad_requests(client):
     assert client.post("/api/train/runs", json={**body, "runs": []}).status_code == 400
     assert client.post("/api/train/runs", json={**body, "export_id": "missing"}).status_code == 404
     assert client.post("/api/train/runs", json={**body, "params": {"imgsz": 1000}}).status_code == 422
+    assert client.post("/api/train/runs", json={**body, "params": {"augment": "custom"}}).status_code == 422
     assert client.get("/api/train/runs/not-a-run").status_code == 404
     assert client.get("/api/exports/missing/images/val/a.jpg").status_code == 404
     assert client.get("/api/train/runs/20260101-000000-yolo26s-seg-face/log").status_code == 404

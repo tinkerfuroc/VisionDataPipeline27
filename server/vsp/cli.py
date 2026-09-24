@@ -101,7 +101,7 @@ def _train(settings: Settings, args, *, gpus=None, worker_cmd=None, poll: float 
         return 2
     try:
         params = TrainParams(epochs=args.epochs, imgsz=args.imgsz, batch=args.batch, patience=args.patience,
-                             workers=args.workers, seed=args.seed)
+                             workers=args.workers, seed=args.seed, augment=args.augment)
     except ValidationError as e:
         print(f"error: {e}")
         return 2
@@ -219,6 +219,7 @@ def main(argv: list[str] | None = None) -> int:
     p_train.add_argument("--patience", type=int, default=30)
     p_train.add_argument("--workers", type=int, default=8)
     p_train.add_argument("--seed", type=int, default=0)
+    p_train.add_argument("--augment", choices=["default", "strong"], default="default")
     args = parser.parse_args(argv)
     settings, config_path = _load_settings(args.config)
     if args.cmd == "doctor":
