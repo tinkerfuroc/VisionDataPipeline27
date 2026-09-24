@@ -13,6 +13,12 @@ export function CompositeSamples({ exportInfo }: { exportInfo: ExportInfo }) {
   const [first, setFirst] = useState(0);
   const strip = useRef<HTMLDivElement>(null);
 
+  // A newly selected export starts from the first (seed 0) batch of samples again, not wherever Shuffle
+  // had left the previous export.
+  useEffect(() => {
+    setSeed(0);
+  }, [exportInfo.id]);
+
   useEffect(() => {
     let cancelled = false;
     setSamples(null);

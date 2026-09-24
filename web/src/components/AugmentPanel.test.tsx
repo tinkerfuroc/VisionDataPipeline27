@@ -82,6 +82,16 @@ describe("AugmentPanel", () => {
     await waitFor(() => expect(m.cancelJob).toHaveBeenCalledWith("fetch1"));
   });
 
+  it("follows an in-progress fetch it did not start itself (pool.fetching)", async () => {
+    m.listBackgrounds.mockResolvedValue([pool({ images: 0, fetching: "j9" })]);
+    jobs.j9 = { ...idle, status: "running", done: 80, total: 200 };
+    render(<AugmentPanel exportInfo={exp()} onCreated={vi.fn()} />);
+    expect(await screen.findByText("Downloading… 40 %")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Download DTD textures/ })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(m.cancelJob).toHaveBeenCalledWith("j9"));
+  });
+
   it("shows the pool note once images are present", async () => {
     m.listBackgrounds.mockResolvedValue([pool({ images: 5640 })]);
     render(<AugmentPanel exportInfo={exp()} onCreated={vi.fn()} />);
@@ -139,6 +149,52 @@ describe("AugmentPanel", () => {
     await screen.findByText("DTD textures · 5,640 images");
     fireEvent.click(screen.getByRole("button", { name: "Make augmented copy" }));
     expect((await screen.findByRole("alert")).textContent).toBe("already an augmented copy; augment the original export");
+  });
+
+  it("scopes the augment job per export: starting on A does not block or show progress for B", async () => {
+    m.listBackgrounds.mockResolvedValue([pool({ images: 5640 })]);
+    m.augmentExport.mockResolvedValue({ job_id: "augA" });
+    const expA = exp({ id: "expA" });
+    const expB = exp({ id: "expB" });
+    const { rerender } = render(<AugmentPanel exportInfo={expA} onCreated={vi.fn()} />);
+    await screen.findByText("DTD textures · 5,640 images");
+    jobs.augA = { ...idle, status: "running", done: 3, total: 10 };
+    fireEvent.click(screen.getByRole("button", { name: "Make augmented copy" }));
+    expect(await screen.findByText("Making composites… 30 %")).toBeTruthy();
+
+    rerender(<AugmentPanel exportInfo={expB} onCreated={vi.fn()} />);
+    expect(screen.queryByText(/Making composites/)).toBeNull();
+    const makeB = screen.getByRole("button", { name: "Make augmented copy" }) as HTMLButtonElement;
+    expect(makeB.disabled).toBe(false);
+    m.augmentExport.mockResolvedValue({ job_id: "augB" });
+    fireEvent.click(makeB);
+    await waitFor(() =>
+      expect(m.augmentExport).toHaveBeenLastCalledWith("expB", { per_image: 3, max_objects: 2, seed: 0, pool: "dtd" }),
+    );
+
+    rerender(<AugmentPanel exportInfo={expA} onCreated={vi.fn()} />);
+    expect(await screen.findByText("Making composites… 30 %")).toBeTruthy();
+  });
+
+  it("calls onCreated exactly once per job, keyed to its own export", async () => {
+    m.listBackgrounds.mockResolvedValue([pool({ images: 5640 })]);
+    m.augmentExport.mockResolvedValue({ job_id: "augA" });
+    const expA = exp({ id: "expA" });
+    const expB = exp({ id: "expB" });
+    const onCreatedA = vi.fn();
+    const { rerender } = render(<AugmentPanel exportInfo={expA} onCreated={onCreatedA} />);
+    await screen.findByText("DTD textures · 5,640 images");
+    jobs.augA = { ...idle, status: "done", result: { export_id: "newA" } };
+    fireEvent.click(screen.getByRole("button", { name: "Make augmented copy" }));
+    await waitFor(() => expect(onCreatedA).toHaveBeenCalledWith("newA"));
+    expect(onCreatedA).toHaveBeenCalledTimes(1);
+
+    // switching away and back to expA must not re-fire onCreated for the same finished job
+    const onCreatedB = vi.fn();
+    rerender(<AugmentPanel exportInfo={expB} onCreated={onCreatedB} />);
+    rerender(<AugmentPanel exportInfo={expA} onCreated={onCreatedA} />);
+    expect(onCreatedA).toHaveBeenCalledTimes(1);
+    expect(onCreatedB).not.toHaveBeenCalled();
   });
 
   it("shows a cancelled note when the augment job is cancelled", async () => {

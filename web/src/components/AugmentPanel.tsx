@@ -22,14 +22,20 @@ function Note({ text }: { text: string }) {
 export function AugmentPanel({ exportInfo, onCreated }: Props) {
   const [pools, setPools] = useState<BackgroundPool[]>([]);
   const [poolsError, setPoolsError] = useState<string | null>(null);
-  const [fetchJobId, setFetchJobId] = useState<string | null>(null);
+  // A fetch this panel itself started; while null, a fetch reported by the server (`pool.fetching`, started by
+  // the CLI, another tab, or before a reload) is followed instead, so the Download button never fires a 409.
+  const [ownFetchJobId, setOwnFetchJobId] = useState<string | null>(null);
   const [fetchPhase, setFetchPhase] = useState<string | null>(null);
   const [fetchError, setFetchError] = useState<string | null>(null);
-  const [augmentJobId, setAugmentJobId] = useState<string | null>(null);
-  const [augmentError, setAugmentError] = useState<string | null>(null);
+  // Augment jobs are scoped per source export, so switching the selected export never shows another
+  // export's progress or disables its own Make button.
+  const [augmentJobs, setAugmentJobs] = useState<Record<string, string>>({});
+  const [augmentErrors, setAugmentErrors] = useState<Record<string, string>>({});
+  // Last job id per export whose "done" was already reported to `onCreated`, so a re-render (or switching
+  // back to an export whose job already finished) never calls it twice for the same job.
+  const [handled, setHandled] = useState<Record<string, string>>({});
   const [perImage, setPerImage] = useState(3);
   const [maxObjects, setMaxObjects] = useState(2);
-  const [handled, setHandled] = useState<string | null>(null); // last augment job id whose "done" we already reported
 
   const loadPools = useCallback(() => {
     api.listBackgrounds().then(setPools, (e) => setPoolsError(message(e)));
@@ -37,6 +43,10 @@ export function AugmentPanel({ exportInfo, onCreated }: Props) {
   useEffect(() => {
     loadPools();
   }, [loadPools]);
+
+  const pool = pools.find((p) => p.name === POOL) ?? null;
+  const fetchJobId = ownFetchJobId ?? pool?.fetching ?? null;
+  const augmentJobId = exportInfo !== null ? (augmentJobs[exportInfo.id] ?? null) : null;
 
   const fetchJob = useJob(
     fetchJobId,
@@ -51,13 +61,16 @@ export function AugmentPanel({ exportInfo, onCreated }: Props) {
   }, [fetchJob.status, loadPools]);
 
   useEffect(() => {
-    if (augmentJob.status !== "done" || augmentJobId === null || handled === augmentJobId) return;
+    if (exportInfo === null || augmentJobId === null) return;
+    if (augmentJob.status !== "done" || handled[exportInfo.id] === augmentJobId) return;
     const id = augmentJob.result?.export_id;
     if (typeof id === "string") {
-      setHandled(augmentJobId);
+      const exportId = exportInfo.id;
+      setHandled((h) => ({ ...h, [exportId]: augmentJobId }));
       onCreated(id);
     }
-  }, [augmentJob.status, augmentJob.result, augmentJobId, handled, onCreated]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [exportInfo?.id, augmentJobId, augmentJob.status, augmentJob.result, handled, onCreated]);
 
   if (exportInfo === null) return <Note text="Augmented copies need an export with Mask images." />;
   if (exportInfo.derived_from !== null) {
@@ -67,16 +80,16 @@ export function AugmentPanel({ exportInfo, onCreated }: Props) {
   }
   if (!exportInfo.formats.includes("masks")) return <Note text="Augmented copies need an export with Mask images." />;
 
-  const pool = pools.find((p) => p.name === POOL) ?? null;
   const poolReady = pool !== null && pool.images > 0;
   const fetchRunning = isBusy(fetchJob.status);
   const augmentRunning = isBusy(augmentJob.status);
+  const augmentError = augmentErrors[exportInfo.id] ?? null;
 
   const onDownload = () => {
     setFetchError(null);
     setFetchPhase(null);
     api.fetchBackgrounds(POOL).then(
-      (r) => setFetchJobId(r.job_id),
+      (r) => setOwnFetchJobId(r.job_id),
       (e) => setFetchError(message(e)),
     );
   };
@@ -88,10 +101,14 @@ export function AugmentPanel({ exportInfo, onCreated }: Props) {
   };
   const onMake = () => {
     if (!poolReady || augmentRunning) return;
-    setAugmentError(null);
-    api.augmentExport(exportInfo.id, { per_image: perImage, max_objects: maxObjects, seed: 0, pool: POOL }).then(
-      (r) => setAugmentJobId(r.job_id),
-      (e) => setAugmentError(message(e)),
+    const exportId = exportInfo.id;
+    setAugmentErrors((errs) => {
+      const { [exportId]: _dropped, ...rest } = errs;
+      return rest;
+    });
+    api.augmentExport(exportId, { per_image: perImage, max_objects: maxObjects, seed: 0, pool: POOL }).then(
+      (r) => setAugmentJobs((j) => ({ ...j, [exportId]: r.job_id })),
+      (e) => setAugmentErrors((errs) => ({ ...errs, [exportId]: message(e) })),
     );
   };
 
@@ -100,11 +117,7 @@ export function AugmentPanel({ exportInfo, onCreated }: Props) {
       <h2 className="heading">Augmented copy</h2>
       {poolsError !== null && <p role="alert" className="alert">{poolsError}</p>}
       {pool !== null &&
-        (poolReady ? (
-          <p className="note">
-            {pool.label} · {pool.images.toLocaleString()} images
-          </p>
-        ) : fetchRunning ? (
+        (fetchRunning ? (
           <div className="flex flex-col gap-1">
             <progress value={fetchJob.done} max={fetchJob.total ?? 1} />
             <div className="flex items-center justify-between gap-2 text-sm text-dim">
@@ -114,6 +127,10 @@ export function AugmentPanel({ exportInfo, onCreated }: Props) {
               <button type="button" className="btn" onClick={onCancelFetch}>Cancel</button>
             </div>
           </div>
+        ) : poolReady ? (
+          <p className="note">
+            {pool.label} · {pool.images.toLocaleString()} images
+          </p>
         ) : (
           <button type="button" className="btn" onClick={onDownload}>
             Download DTD textures ({Math.round(pool.size_bytes / 1e6)} MB)
