@@ -192,3 +192,6 @@ middle-drag pan · right click = negative point. `Enter`, `Esc` and `Z` act on t
     the transport, the other tools, Propagate and Cleanup are disabled until you Save (Enter) or Discard (Esc). After
     Save the frame shows a keyframe diamond; propagate from it and check the run stops at the next keyframe. Erase the
     whole mask on another frame and Save: the frame becomes empty. The brush works with the engine unloaded.
+17. Mask outline (right sidebar): untick "Class colour" and pick a contrasting colour, drag Thickness from 0 (no
+    outline) to 12; the stored mask, the frames arriving during a propagation and text-prompt candidates all follow it,
+    with no white halo outside the mask. Reload the page: the setting is kept. Reset restores the class colour at 5 px.

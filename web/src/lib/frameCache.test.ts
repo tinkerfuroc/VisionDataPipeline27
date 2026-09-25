@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { FrameStore, LruCache } from "./frameCache";
+import type { Outline } from "./mask";
+
+const OUT: Outline = { rgb: [255, 255, 255], edge: 5 };
 
 const img = (name: string) => ({ name }) as unknown as HTMLImageElement;
 const canvas = (name: string) => ({ name }) as unknown as HTMLCanvasElement;
@@ -37,25 +40,36 @@ describe("FrameStore", () => {
     const load = vi.fn(async (url: string) => img(url));
     const tint = vi.fn(() => canvas("layer"));
     const store = new FrameStore(load, tint);
-    await store.layer("/m/1?v=0.0", [255, 0, 0], 0.45);
-    await store.layer("/m/1?v=0.0", [255, 0, 0], 0.45);
-    await store.layer("/m/1?v=0.0", [0, 255, 0], 0.45);
+    await store.layer("/m/1?v=0.0", [255, 0, 0], 0.45, OUT);
+    await store.layer("/m/1?v=0.0", [255, 0, 0], 0.45, OUT);
+    await store.layer("/m/1?v=0.0", [0, 255, 0], 0.45, OUT);
     expect(tint).toHaveBeenCalledTimes(2);
+  });
+  it("re-tints when the outline colour or thickness changes", async () => {
+    const load = vi.fn(async (url: string) => img(url));
+    const tint = vi.fn(() => canvas("layer"));
+    const store = new FrameStore(load, tint);
+    await store.layer("/m/1?v=0.0", [255, 0, 0], 0.45, OUT);
+    await store.layer("/m/1?v=0.0", [255, 0, 0], 0.45, { ...OUT, rgb: [0, 0, 0] });
+    await store.layer("/m/1?v=0.0", [255, 0, 0], 0.45, { ...OUT, edge: 0 });
+    await store.layer("/m/1?v=0.0", [255, 0, 0], 0.45, { rgb: [255, 255, 255], edge: 5 });
+    expect(tint).toHaveBeenCalledTimes(3);
+    expect(tint).toHaveBeenLastCalledWith(img("/m/1?v=0.0"), [255, 0, 0], 0.45, { ...OUT, edge: 0 });
   });
   it("returns null for a mask that cannot be loaded", async () => {
     const store = new FrameStore(vi.fn(async () => null), vi.fn());
-    expect(await store.layer("/m/9?v=0.0", [1, 2, 3], 0.5)).toBeNull();
+    expect(await store.layer("/m/9?v=0.0", [1, 2, 3], 0.5, OUT)).toBeNull();
   });
   it("previews never evict mask layers", async () => {
     const load = vi.fn(async (url: string) => img(url));
     const tint = vi.fn(() => canvas("layer"));
     const store = new FrameStore(load, tint);
-    await store.layer("/m/1?v=0.0", [255, 0, 0], 0.45);
+    await store.layer("/m/1?v=0.0", [255, 0, 0], 0.45, OUT);
     for (let i = 0; i < 20; i++) {
-      await store.preview(`data:image/png;base64,p${i}`, [0, 255, 0], 0.55);
+      await store.preview(`data:image/png;base64,p${i}`, [0, 255, 0], 0.55, OUT);
     }
     tint.mockClear();
-    await store.layer("/m/1?v=0.0", [255, 0, 0], 0.45);
+    await store.layer("/m/1?v=0.0", [255, 0, 0], 0.45, OUT);
     expect(tint).not.toHaveBeenCalled();
   });
 });

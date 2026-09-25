@@ -1,4 +1,4 @@
-import { tintMask, type Rgb } from "./mask";
+import { tintMask, type Outline, type Rgb } from "./mask";
 
 export class LruCache<V> {
   private readonly map = new Map<string, V>();
@@ -38,14 +38,14 @@ export function loadImage(url: string): Promise<HTMLImageElement | null> {
 }
 
 /** Decode a mask image (white = object) into a canvas holding the coloured, semi-transparent, outlined overlay. */
-export function tintToCanvas(img: HTMLImageElement, rgb: Rgb, alpha: number): HTMLCanvasElement {
+export function tintToCanvas(img: HTMLImageElement, rgb: Rgb, alpha: number, outline: Outline): HTMLCanvasElement {
   const canvas = document.createElement("canvas");
   canvas.width = img.naturalWidth;
   canvas.height = img.naturalHeight;
   const ctx = canvas.getContext("2d", { willReadFrequently: true })!;
   ctx.drawImage(img, 0, 0);
   const data = ctx.getImageData(0, 0, canvas.width, canvas.height);
-  tintMask(data.data, rgb, alpha, { width: canvas.width, height: canvas.height });
+  tintMask(data.data, rgb, alpha, { width: canvas.width, height: canvas.height }, outline);
   ctx.putImageData(data, 0, 0);
   return canvas;
 }
@@ -69,7 +69,7 @@ export class FrameStore {
 
   constructor(
     private readonly load: (url: string) => Promise<HTMLImageElement | null> = loadImage,
-    private readonly tint: (img: HTMLImageElement, rgb: Rgb, alpha: number) => HTMLCanvasElement = tintToCanvas,
+    private readonly tint: (img: HTMLImageElement, rgb: Rgb, alpha: number, outline: Outline) => HTMLCanvasElement = tintToCanvas,
   ) {}
 
   image(url: string): Promise<HTMLImageElement | null> {
@@ -84,13 +84,13 @@ export class FrameStore {
     return pending;
   }
 
-  layer(url: string, rgb: Rgb, alpha: number): Promise<HTMLCanvasElement | null> {
-    return this.layerFrom(this.layers, url, rgb, alpha);
+  layer(url: string, rgb: Rgb, alpha: number, outline: Outline): Promise<HTMLCanvasElement | null> {
+    return this.layerFrom(this.layers, url, rgb, alpha, outline);
   }
 
   /** Like `layer()`, but cached separately so text-prompt candidate previews cannot evict stored mask layers. */
-  preview(dataUrl: string, rgb: Rgb, alpha: number): Promise<HTMLCanvasElement | null> {
-    return this.layerFrom(this.previews, dataUrl, rgb, alpha);
+  preview(dataUrl: string, rgb: Rgb, alpha: number, outline: Outline): Promise<HTMLCanvasElement | null> {
+    return this.layerFrom(this.previews, dataUrl, rgb, alpha, outline);
   }
 
   private layerFrom(
@@ -98,8 +98,9 @@ export class FrameStore {
     url: string,
     rgb: Rgb,
     alpha: number,
+    outline: Outline,
   ): Promise<HTMLCanvasElement | null> {
-    const key = `${url}|${rgb.join(",")}|${alpha}`;
+    const key = `${url}|${rgb.join(",")}|${alpha}|${outline.rgb.join(",")}|${outline.edge}`;
     let pending = cache.get(key);
     if (pending === undefined) {
       pending = this.load(url).then((img) => {
@@ -107,7 +108,7 @@ export class FrameStore {
           cache.delete(key);
           return null;
         }
-        return this.tint(img, rgb, alpha);
+        return this.tint(img, rgb, alpha, outline);
       });
       cache.set(key, pending);
     }

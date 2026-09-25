@@ -8,6 +8,7 @@ import { CleanupPanel, type Range } from "../components/CleanupPanel";
 import { ClipStats } from "../components/ClipStats";
 import { FrameCanvas } from "../components/FrameCanvas";
 import { ObjectPanel } from "../components/ObjectPanel";
+import { OverlayPanel } from "../components/OverlayPanel";
 import { PromptPanel } from "../components/PromptPanel";
 import { PropagatePanel } from "../components/PropagatePanel";
 import { Timeline } from "../components/Timeline";
@@ -23,6 +24,7 @@ import { usePrompting } from "../hooks/usePrompting";
 import { FrameStore, MASK_ALPHA } from "../lib/frameCache";
 import { isTerminal } from "../lib/jobReducer";
 import { hexToRgb } from "../lib/mask";
+import { loadStyle, outlineFor, saveStyle, type OverlayStyle } from "../lib/overlayStyle";
 import { clampFrame, findNext } from "../lib/timeline";
 
 const jobKey = (clipId: string) => `vsp.job.${clipId}`;
@@ -36,6 +38,7 @@ export function Label() {
   const [frame, setFrame] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [overlay, setOverlay] = useState(true);
+  const [overlayStyle, setOverlayStyle] = useState<OverlayStyle>(loadStyle);
   const [fitSignal, setFitSignal] = useState(0);
   const [range, setRange] = useState<Range | null>(null); // frames marked for clearing
   const [classId, setClassId] = useState<number | null>(null);
@@ -173,6 +176,11 @@ export function Label() {
   // hexToRgb allocates a new array every call: memoised so its identity is stable across renders that don't
   // change `color` (e.g. a health poll), since it feeds effect dependency arrays (useBrush's re-base effect).
   const rgb = useMemo(() => hexToRgb(color), [color]);
+  const outline = useMemo(() => outlineFor(overlayStyle, rgb), [overlayStyle, rgb]);
+  const changeStyle = useCallback((s: OverlayStyle) => {
+    setOverlayStyle(s);
+    saveStyle(s);
+  }, []);
   const hasMask = (i: number) => detail !== null && (detail.states[i] === "masked" || detail.states[i] === "keyframe");
   const maskVersion = clip.maskVersion;
   const prompting = usePrompting({ clipId, frame, enabled: disabledReason === null && detail !== null && mode === "prompt", clip, classId });
@@ -288,10 +296,10 @@ export function Label() {
     const ahead = playing ? 30 : 4;
     for (let i = frame + 1; i <= Math.min(frame + ahead, frameCount - 1); i++) {
       void store.image(frameUrl(clipId, i));
-      if (overlay && hasMask(i)) void store.layer(maskUrl(clipId, i, maskVersion(i)), rgb, MASK_ALPHA);
+      if (overlay && hasMask(i)) void store.layer(maskUrl(clipId, i, maskVersion(i)), rgb, MASK_ALPHA, outline);
     }
     // hasMask is derived from detail
-  }, [store, clipId, frame, playing, overlay, detail, rgb, frameCount, maskVersion, running]);
+  }, [store, clipId, frame, playing, overlay, detail, rgb, outline, frameCount, maskVersion, running]);
 
   const addClass = useCallback(
     async (name: string) => {
@@ -365,6 +373,7 @@ export function Label() {
             frameUrl={frameUrl(clipId, frame)}
             maskUrl={overlay && hasMask(frame) ? maskUrl(clipId, frame, maskVersion(frame)) : null}
             color={color}
+            outline={outline}
             tool={mode === "prompt" && disabledReason === null ? draft.tool : null}
             draft={draft}
             candidates={prompting.candidates}
@@ -408,6 +417,7 @@ export function Label() {
             onStop={stopPropagation}
             onFollow={setFollow}
           />
+          <OverlayPanel style={overlayStyle} classColor={color} onStyle={changeStyle} />
           <CleanupPanel
             frame={frame}
             states={detail.states}

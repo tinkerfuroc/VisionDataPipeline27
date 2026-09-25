@@ -24,6 +24,7 @@ const renderCanvas = (width: number, height: number, brush: { size: number; laye
       frameUrl="f"
       maskUrl={null}
       color="#22c55e"
+      outline={{ rgb: [34, 197, 94], edge: 5 }}
       tool={null}
       draft={emptyDraft()}
       candidates={[]}

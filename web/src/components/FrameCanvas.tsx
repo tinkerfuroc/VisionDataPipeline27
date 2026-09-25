@@ -5,7 +5,7 @@ import { MASK_ALPHA, PREVIEW_ALPHA, type FrameStore } from "../lib/frameCache";
 import {
   clampPoint, fitView, insideImage, normBox, panBy, pickCandidate, toImage, toScreen, zoomAt, type View,
 } from "../lib/geometry";
-import { hexToRgb } from "../lib/mask";
+import { hexToRgb, type Outline } from "../lib/mask";
 import type { Draft, Tool } from "../lib/promptState";
 
 type Props = {
@@ -18,6 +18,8 @@ type Props = {
   maskUrl: string | null;
   /** class colour, hex */
   color: string;
+  /** how mask and preview boundaries are drawn; keep its identity stable, it keys the layer cache lookups */
+  outline: Outline;
   /** null disables prompting input; zoom and pan always work */
   tool: Tool | null;
   draft: Draft;
@@ -53,7 +55,7 @@ type Drag = {
 };
 
 export function FrameCanvas(props: Props) {
-  const { store, width, height, frameUrl, maskUrl, color, tool, candidates, onPoint, onBox, onPickCandidate, fitSignal, brush } = props;
+  const { store, width, height, frameUrl, maskUrl, color, outline, tool, candidates, onPoint, onBox, onPickCandidate, fitSignal, brush } = props;
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const size = useRef({ w: 0, h: 0 });
@@ -217,7 +219,7 @@ export function FrameCanvas(props: Props) {
   // Swap the frame and its mask in together so the overlay never shows on the wrong frame.
   useEffect(() => {
     let live = true;
-    const mask = maskUrl === null ? Promise.resolve(null) : store.layer(maskUrl, rgb, MASK_ALPHA);
+    const mask = maskUrl === null ? Promise.resolve(null) : store.layer(maskUrl, rgb, MASK_ALPHA, outline);
     void Promise.all([store.image(frameUrl), mask]).then(([frame, layer]) => {
       if (!live) return;
       assets.current = { frame, mask: layer };
@@ -226,7 +228,7 @@ export function FrameCanvas(props: Props) {
     return () => {
       live = false;
     };
-  }, [store, frameUrl, maskUrl, rgb, draw]);
+  }, [store, frameUrl, maskUrl, rgb, outline, draw]);
 
   useEffect(() => {
     let live = true;
@@ -235,7 +237,7 @@ export function FrameCanvas(props: Props) {
       draw();
       return;
     }
-    const pending = candidates.map((c) => store.preview(`data:image/png;base64,${c.mask_png_b64}`, rgb, PREVIEW_ALPHA));
+    const pending = candidates.map((c) => store.preview(`data:image/png;base64,${c.mask_png_b64}`, rgb, PREVIEW_ALPHA, outline));
     void Promise.all(pending).then((items) => {
       if (!live) return;
       layers.current = { owner: candidates, items };
@@ -244,7 +246,7 @@ export function FrameCanvas(props: Props) {
     return () => {
       live = false;
     };
-  }, [store, candidates, rgb, draw]);
+  }, [store, candidates, rgb, outline, draw]);
 
   useEffect(draw); // points, box and candidate selection arrive as props
 
