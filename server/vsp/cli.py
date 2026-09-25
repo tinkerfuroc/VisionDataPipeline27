@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 from pathlib import Path
 
 from .config import DEFAULT_CONFIG_PATH, Settings
@@ -72,6 +73,144 @@ def _serve(settings: Settings, host: str | None, port: int | None) -> int:
     return 0
 
 
+def _fmt(v: float | None) -> str:
+    return "  -  " if v is None else f"{v:.3f}"
+
+
+def _train(settings: Settings, args, *, gpus=None, worker_cmd=None, poll: float = 2.0) -> int:
+    import signal
+    import threading
+    import time
+
+    from pydantic import ValidationError
+
+    from .labeling.errors import BadRequest, Conflict
+    from .store import NotFound
+    from .train.models import DEFAULT_MODELS, TrainParams, find_export, list_exports
+    from .train.results import BOX_MAP, MASK_MAP, MASK_MAP50, read_metrics
+    from .train.scheduler import WORKER_CMD, TrainScheduler, default_gpu, detect_gpus
+
+    data_root = settings.project.data_root
+    if args.list:
+        for e in list_exports(data_root):
+            print(f"{e.id}  {e.project_name}  train {e.train_images}  val {e.val_images}  "
+                  f"classes: {', '.join(e.classes)}")
+        return 0
+    if not args.export:
+        print("error: --export is required (see `vsp train --list`)")
+        return 2
+    try:
+        params = TrainParams(epochs=args.epochs, imgsz=args.imgsz, batch=args.batch, patience=args.patience,
+                             workers=args.workers, seed=args.seed, augment=args.augment)
+    except ValidationError as e:
+        print(f"error: {e}")
+        return 2
+    gpus = detect_gpus() if gpus is None else gpus
+    if not gpus:
+        print("FAIL: no CUDA GPU is available to train on")
+        return 1
+    if args.gpu is not None:
+        gpu = args.gpu
+    else:
+        try:
+            sam3 = pick_device(settings.sam3.device, cuda_capabilities())
+        except ValueError:
+            sam3 = None
+        gpu = default_gpu(gpus, int(sam3.split(":")[1]) if sam3 else None)
+    try:
+        export = find_export(data_root, args.export)
+        sched = TrainScheduler(data_root, gpus, worker_cmd=worker_cmd or WORKER_CMD)
+        ids = sched.submit(export, [(m, gpu) for m in (args.model or DEFAULT_MODELS)], params)
+    except (NotFound, BadRequest) as e:
+        print(f"error: {e}")
+        return 2
+    print(f"training {len(ids)} model(s) on cuda:{gpu} from export {export.id} ({export.project_name}); "
+          f"runs in {sched.runs.root}")
+    shown = {rid: 0 for rid in ids}
+    states = {rid: "queued" for rid in ids}
+
+    def report() -> None:
+        for rid in ids:
+            run = sched.runs.read(rid)
+            rows = read_metrics(sched.runs.dir(rid))
+            for row in rows[shown[rid]:]:
+                print(f"{run['model']:<12} epoch {row['epoch']:>3}/{run['params']['epochs']}  "
+                      f"mask mAP50-95 {_fmt(row.get(MASK_MAP))}  mask mAP50 {_fmt(row.get(MASK_MAP50))}  "
+                      f"box mAP50-95 {_fmt(row.get(BOX_MAP))}", flush=True)
+            shown[rid] = len(rows)
+            if run["status"] != states[rid]:
+                states[rid] = run["status"]
+                extra = f": {run['error']}" if run["status"] == "error" else ""
+                print(f"{run['model']:<12} {run['status']}{extra}", flush=True)
+
+    def _raise_interrupt(signum, frame) -> None:
+        raise KeyboardInterrupt
+
+    # Closing the terminal or `kill`ing this process sends SIGHUP/SIGTERM, not SIGINT; route them
+    # through the same cancel path as Ctrl-C so the workers are not left running unowned. Only the
+    # main thread may install signal handlers.
+    installed = threading.current_thread() is threading.main_thread()
+    previous_handlers = {}
+    if installed:
+        for sig in (signal.SIGTERM, signal.SIGHUP):
+            previous_handlers[sig] = signal.signal(sig, _raise_interrupt)
+
+    sched.start(recover=False)
+    try:
+        while not sched.idle():
+            report()
+            time.sleep(poll)
+    except KeyboardInterrupt:
+        print("stopping: cancelling this command's runs…", flush=True)
+        for rid in ids:
+            if sched.runs.read(rid)["status"] in ("queued", "running"):
+                with contextlib.suppress(Conflict):
+                    sched.cancel(rid)
+        while not sched.idle():
+            time.sleep(0.2)
+    finally:
+        for sig, handler in previous_handlers.items():
+            signal.signal(sig, handler)
+        sched.shutdown()
+    report()
+    print(f"\n{'model':<12} {'status':<11} {'best epoch':>10} {'mask mAP50':>10} {'mask mAP50-95':>13} "
+          f"{'box mAP50-95':>12}  run")
+    ok = True
+    for rid in ids:
+        run = sched.runs.read(rid)
+        b = run.get("best") or {}
+        ok = ok and run["status"] == "done"
+        print(f"{run['model']:<12} {run['status']:<11} {b.get('epoch', '-')!s:>10} "
+              f"{_fmt(b.get('mask_map50')):>10} {_fmt(b.get('mask_map50_95')):>13} "
+              f"{_fmt(b.get('box_map50_95')):>12}  {rid}")
+    return 0 if ok else 1
+
+
+def _backgrounds(settings: Settings, args) -> int:
+    from .augment.backgrounds import fetch_pool, pool_dir
+
+    data_root = settings.project.data_root
+    last_pct: dict[str, int] = {}
+
+    def progress(phase: str, done: int, total: int) -> None:
+        pct = int(done * 100 / total) if total else 100
+        if last_pct.get(phase) != pct:
+            last_pct[phase] = pct
+            print(f"{phase} {pct}%", flush=True)
+
+    try:
+        dest = pool_dir(data_root, args.name)
+        result = fetch_pool(data_root, args.name, force=args.force, progress=progress)
+    except Exception as e:  # noqa: BLE001
+        print(f"error: {e}")
+        return 1
+    if result["skipped"]:
+        print(f"skipped: {result['images']} images already in {dest} (use --force)")
+    else:
+        print(f"OK: {result['images']} images in {dest}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="vsp")
     parser.add_argument("--config", default=None, help="path to a YAML config (default: configs/default.yaml)")
@@ -92,6 +231,26 @@ def main(argv: list[str] | None = None) -> int:
     p_serve = sub.add_parser("serve", help="run the HTTP API (and the web UI when web/dist exists)")
     p_serve.add_argument("--host", default=None, help="bind address (default: server.host from the config)")
     p_serve.add_argument("--port", type=int, default=None, help="port (default: server.port from the config)")
+    p_train = sub.add_parser("train", help="train YOLO segmentation models on a yolo_seg export")
+    p_train.add_argument("--list", action="store_true", help="list the exports that have a yolo_seg dataset")
+    p_train.add_argument("--export", default=None, help="export id (a folder name under data/exports/)")
+    p_train.add_argument("--model", action="append", default=None,
+                         help="model to train, repeatable (default: yolo26s/m-seg and yolo11s/m-seg)")
+    p_train.add_argument("--gpu", type=int, default=None,
+                         help="CUDA index (default: the first GPU SAM3 is not on)")
+    p_train.add_argument("--epochs", type=int, default=100)
+    p_train.add_argument("--imgsz", type=int, default=960)
+    p_train.add_argument("--batch", type=int, default=8)
+    p_train.add_argument("--patience", type=int, default=30)
+    p_train.add_argument("--workers", type=int, default=8)
+    p_train.add_argument("--seed", type=int, default=0)
+    p_train.add_argument("--augment", choices=["default", "strong"], default="default")
+    p_bg = sub.add_parser("backgrounds", help="manage background image pools for synthetic composites")
+    bg_sub = p_bg.add_subparsers(dest="bg_cmd", required=True)
+    p_bg_fetch = bg_sub.add_parser("fetch", help="download and extract a background pool")
+    p_bg_fetch.add_argument("name", help="pool name (e.g. dtd)")
+    p_bg_fetch.add_argument("--force", action="store_true",
+                            help="redownload even if images are already present")
     args = parser.parse_args(argv)
     settings, config_path = _load_settings(args.config)
     if args.cmd == "doctor":
@@ -105,5 +264,9 @@ def main(argv: list[str] | None = None) -> int:
         return _report(problems, args.out)
     if args.cmd == "serve":
         return _serve(settings, args.host, args.port)
+    if args.cmd == "train":
+        return _train(settings, args)
+    if args.cmd == "backgrounds" and args.bg_cmd == "fetch":
+        return _backgrounds(settings, args)
     parser.error(f"unknown command {args.cmd}")
     return 2

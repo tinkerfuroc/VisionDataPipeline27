@@ -1,5 +1,5 @@
 import type {
-  Candidate, ClassDef, ClipDetail, ClipSummary, Direction, ExportRequest, Health, JobSnapshot, Project, PromptSpec,
+  AugmentRequest, BackgroundPool, Candidate, ClassDef, ClipDetail, ClipSummary, Direction, ExportInfo, ExportRequest, ExportSample, Health, JobSnapshot, PredictionFilter, PredictionPage, Project, PromptSpec, Run, RunDetail, StartRunsRequest, TrainStatus,
 } from "./types";
 
 /** The `job_id` the server reports while a prompt/accept/clear-range call holds the GPU lease. */
@@ -138,6 +138,10 @@ const post = (body?: unknown): RequestInit =>
 export const frameUrl = (clipId: string, idx: number) => `/api/clips/${clipId}/frames/${idx}`;
 export const thumbUrl = (clipId: string, idx: number) => `/api/clips/${clipId}/thumbs/${idx}`;
 export const maskUrl = (clipId: string, idx: number, version: string) => `/api/clips/${clipId}/masks/${idx}?v=${version}`;
+export const weightsUrl = (runId: string, file: "best.pt" | "best.onnx") => `/api/train/runs/${runId}/weights/${file}`;
+export const exportImageUrl = (exportId: string, split: "train" | "val", name: string) =>
+  `/api/exports/${exportId}/images/${split}/${encodeURIComponent(name)}`;
+export const valImageUrl = (exportId: string, name: string) => exportImageUrl(exportId, "val", name);
 export const wsUrl = (path: string) =>
   `${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.host}${path}`;
 
@@ -188,4 +192,23 @@ export const api = {
 
   startExport: (projectId: string, body: ExportRequest) =>
     request<{ job_id: string }>(`/api/projects/${projectId}/export`, post(body)),
+
+  trainStatus: () => request<TrainStatus>("/api/train/status"),
+  listExports: () => request<ExportInfo[]>("/api/exports"),
+  listRuns: () => request<Run[]>("/api/train/runs"),
+  getRun: (id: string) => request<RunDetail>(`/api/train/runs/${id}`),
+  startRuns: (body: StartRunsRequest) => request<{ run_ids: string[] }>("/api/train/runs", post(body)),
+  cancelRun: (id: string) => request<Run>(`/api/train/runs/${id}/cancel`, post()),
+  resumeRun: (id: string) => request<Run>(`/api/train/runs/${id}/resume`, post()),
+  exportOnnx: (id: string) => request<Run>(`/api/train/runs/${id}/onnx`, post()),
+  deleteRun: (id: string) => request<void>(`/api/train/runs/${id}`, { method: "DELETE" }),
+  predictions: (id: string, offset: number, limit: number, filter: PredictionFilter = "all") =>
+    request<PredictionPage>(`/api/train/runs/${id}/predictions?offset=${offset}&limit=${limit}&filter=${filter}`),
+
+  listBackgrounds: () => request<BackgroundPool[]>("/api/backgrounds"),
+  fetchBackgrounds: (name: string) => request<{ job_id: string }>(`/api/backgrounds/${name}/fetch`, post()),
+  augmentExport: (exportId: string, body: AugmentRequest) =>
+    request<{ job_id: string }>(`/api/exports/${exportId}/augment`, post(body)),
+  exportSamples: (exportId: string, limit: number, seed: number) =>
+    request<ExportSample[]>(`/api/exports/${exportId}/samples?limit=${limit}&seed=${seed}`),
 };

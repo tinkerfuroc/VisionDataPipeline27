@@ -1,0 +1,227 @@
+// @vitest-environment jsdom
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { api } from "../api/rest";
+import type { BackgroundPool, ExportInfo, ExportSample, Run, RunDetail, TrainStatus } from "../api/types";
+import { SERIES_COLORS } from "../lib/chart";
+import { runLabel } from "../lib/train";
+import { Train } from "./Train";
+
+vi.mock("../api/rest", async (original) => {
+  const real = await original<typeof import("../api/rest")>();
+  return {
+    ...real,
+    api: {
+      health: vi.fn(), trainStatus: vi.fn(), listExports: vi.fn(), listRuns: vi.fn(), getRun: vi.fn(), startRuns: vi.fn(),
+      cancelRun: vi.fn(), resumeRun: vi.fn(), exportOnnx: vi.fn(), deleteRun: vi.fn(), predictions: vi.fn(),
+      listBackgrounds: vi.fn(), fetchBackgrounds: vi.fn(), augmentExport: vi.fn(), exportSamples: vi.fn(),
+    },
+  };
+});
+
+const status: TrainStatus = {
+  available: true, error: null, sam3_gpu: 0,
+  gpus: [
+    { index: 0, name: "RTX 3080 Ti", memory_total: 12 * 2 ** 30, running: null, running_kind: null, queue: [] },
+    { index: 1, name: "RTX 2080 Ti", memory_total: 11 * 2 ** 30, running: "r1", running_kind: "train", queue: ["r2"] },
+  ],
+  models: ["yolo26n-seg", "yolo26s-seg", "yolo26m-seg", "yolo11s-seg", "yolo11m-seg"],
+  default_models: ["yolo26s-seg", "yolo26m-seg", "yolo11s-seg", "yolo11m-seg"],
+  defaults: { epochs: 100, imgsz: 960, batch: 8, patience: 30, workers: 8, seed: 0, augment: "default", aug: null },
+  aug_presets: {
+    default: {
+      degrees: 0, shear: 0, perspective: 0, flipud: 0, fliplr: 0.5, scale: 0.5, translate: 0.1,
+      hsv_h: 0.015, hsv_s: 0.7, hsv_v: 0.4, mosaic: 1.0, mixup: 0, copy_paste: 0, photometric: false,
+    },
+    strong: {
+      degrees: 15, shear: 5, perspective: 0.0005, flipud: 0.5, fliplr: 0.5, scale: 0.6, translate: 0.2,
+      hsv_h: 0.02, hsv_s: 0.7, hsv_v: 0.5, mosaic: 1.0, mixup: 0.1, copy_paste: 0.3, photometric: true,
+    },
+  },
+};
+const exp: ExportInfo = {
+  id: "20260924-040124-8336a8", project_name: "OpticsConverter1", created_at: "", classes: ["Module"],
+  train_images: 798, val_images: 252, formats: ["yolo_seg", "masks"], derived_from: null,
+};
+const derivedExp: ExportInfo = {
+  id: "20260924-040124-8336a6-aug3x-3385", project_name: "OpticsConverter1", created_at: "", classes: ["Module"],
+  train_images: 3192, val_images: 252, formats: ["yolo_seg", "masks"], derived_from: exp.id,
+};
+const pool: BackgroundPool = { name: "dtd", label: "DTD textures", images: 5640, size_bytes: 625_239_812, fetching: null };
+const run = (id: string, model: string, over: Partial<Run> = {}): Run => ({
+  id, created_at: "", started_at: null, finished_at: null, export_id: exp.id, project_name: "OpticsConverter1", model, gpu: 1,
+  params: status.defaults, status: "queued", error: null, resume: false, onnx: null, best: null, epochs_done: 0, progress: null,
+  resumable: false, has_best: false, has_onnx: false, ...over,
+});
+const r1 = run("r1", "yolo26s-seg", { status: "running", epochs_done: 2, progress: { phase: "train", epoch: 3, epochs: 100, batch: 5, batches: 100 } });
+const r2 = run("r2", "yolo26m-seg");
+const m = vi.mocked(api);
+
+const renderPage = () => render(<MemoryRouter><Train /></MemoryRouter>);
+
+beforeEach(() => {
+  Object.values(m).forEach((fn) => fn.mockReset());
+  m.trainStatus.mockResolvedValue(status);
+  m.listExports.mockResolvedValue([exp]);
+  m.listRuns.mockResolvedValue([r1, r2]);
+  m.listBackgrounds.mockResolvedValue([pool]);
+  m.exportSamples.mockResolvedValue([]);
+  m.getRun.mockImplementation(async (id: string) => ({ ...(id === "r1" ? r1 : r2), metrics: [
+    { epoch: 1, "metrics/mAP50-95(M)": 0.2, "metrics/mAP50(M)": 0.4 },
+    { epoch: 2, "metrics/mAP50-95(M)": 0.3, "metrics/mAP50(M)": 0.5 },
+  ] }) as RunDetail);
+  m.startRuns.mockResolvedValue({ run_ids: ["r3"] });
+  m.cancelRun.mockResolvedValue(r2);
+});
+afterEach(cleanup);
+
+describe("Train page", () => {
+  it("starts the default models on the non-SAM3 GPU with the export and params", async () => {
+    renderPage();
+    const start = await screen.findByRole("button", { name: "Start 4 runs" });
+    fireEvent.change(screen.getByLabelText("Epochs"), { target: { value: "50" } });
+    fireEvent.click(start);
+    await waitFor(() => expect(m.startRuns).toHaveBeenCalled());
+    const body = m.startRuns.mock.calls[0][0];
+    expect(body.export_id).toBe(exp.id);
+    expect(body.runs).toEqual([
+      { model: "yolo26s-seg", gpu: 1 }, { model: "yolo26m-seg", gpu: 1 }, { model: "yolo11s-seg", gpu: 1 }, { model: "yolo11m-seg", gpu: 1 },
+    ]);
+    expect(body.params.epochs).toBe(50);
+  });
+
+  it("starts with the strong augmentation preset and no custom aug values", async () => {
+    renderPage();
+    const start = await screen.findByRole("button", { name: "Start 4 runs" });
+    fireEvent.change(screen.getByLabelText("Augmentation"), { target: { value: "strong" } });
+    fireEvent.click(start);
+    await waitFor(() => expect(m.startRuns).toHaveBeenCalled());
+    const body = m.startRuns.mock.calls[0][0];
+    expect(body.params.augment).toBe("strong");
+    expect(body.params.aug).toBeNull();
+  });
+
+  it("starts with custom augmentation values prefilled from the strong preset", async () => {
+    renderPage();
+    const start = await screen.findByRole("button", { name: "Start 4 runs" });
+    fireEvent.change(screen.getByLabelText("Augmentation"), { target: { value: "custom" } });
+    fireEvent.change(screen.getByLabelText("degrees"), { target: { value: "7" } });
+    fireEvent.click(start);
+    await waitFor(() => expect(m.startRuns).toHaveBeenCalled());
+    const body = m.startRuns.mock.calls[0][0];
+    expect(body.params.aug?.degrees).toBe(7);
+    expect(body.params.aug?.mixup).toBe(0.1);
+  });
+
+  it("warns when a model is put on SAM3's GPU", async () => {
+    renderPage();
+    const select = await screen.findByLabelText("GPU for yolo26m-seg");
+    expect(screen.queryByText(/SAM3 runs on cuda:0/)).toBeNull();
+    fireEvent.change(select, { target: { value: "0" } });
+    expect(screen.getByText(/SAM3 runs on cuda:0/)).toBeTruthy();
+  });
+
+  it("shows the queues, cancels a queued run, and charts the selected run", async () => {
+    renderPage();
+    const queue = await screen.findByText("GPU queues");
+    const panel = queue.closest("section")!;
+    expect(within(panel).getByText(/yolo26s-seg · Epoch 3\/100/)).toBeTruthy();
+    fireEvent.click(within(panel).getByRole("button", { name: "Cancel queued yolo26m-seg" }));
+    await waitFor(() => expect(m.cancelRun).toHaveBeenCalledWith("r2"));
+    expect(await screen.findByRole("img", { name: "Mask mAP by epoch" })).toBeTruthy();
+    expect(m.getRun).toHaveBeenCalledWith("r1");
+  });
+
+  it("explains when training is unavailable", async () => {
+    m.trainStatus.mockResolvedValue({ ...status, available: false, error: "ultralytics is not installed in this environment; run `uv sync`" });
+    renderPage();
+    expect(await screen.findByText(/ultralytics is not installed/)).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Start 4 runs" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("shows GPU-busy notes for New runs and lists a foreign process's run in GPU queues", async () => {
+    const r3 = run("r3", "yolo11m-seg", {
+      status: "running", gpu: 0,
+      progress: { phase: "train", epoch: 5, epochs: 100, batch: 2, batches: 20 },
+    });
+    m.listRuns.mockResolvedValue([r1, r2, r3]);
+    renderPage();
+
+    // Every default-checked model starts on cuda:1 (the non-SAM3 GPU), which this server process
+    // is already training r1 ("yolo26s-seg") on.
+    expect(
+      await screen.findByText("cuda:1 is already training yolo26s-seg; this run will queue behind it."),
+    ).toBeTruthy();
+
+    // Putting a model on cuda:0 instead warns about the foreign `vsp train` run sitting there,
+    // which this server does not own (its own gpu-0 queue is empty).
+    fireEvent.change(await screen.findByLabelText("GPU for yolo26m-seg"), { target: { value: "0" } });
+    expect(await screen.findByText(/cuda:0 is busy with a vsp train run in another process/)).toBeTruthy();
+
+    const queue = await screen.findByText("GPU queues");
+    const panel = queue.closest("section")!;
+    const gpu0 = within(panel).getByText(/cuda:0 RTX 3080 Ti/).parentElement!.parentElement!;
+    expect(
+      within(gpu0).getByText("yolo11m-seg · Epoch 5/100 · running in another process (vsp train)"),
+    ).toBeTruthy();
+    expect(within(gpu0).queryByText("Idle")).toBeNull();
+    expect(within(gpu0).queryByRole("button", { name: "Cancel" })).toBeNull();
+  });
+
+  it("keeps a compared run's chart colour on its slot across removal, and hands a new run the freed slot", async () => {
+    const r3 = run("r3", "yolo26n-seg", { status: "done" });
+    const r4 = run("r4", "yolo11s-seg", { status: "done" });
+    const byId: Record<string, Run> = { r1, r2, r3, r4 };
+    m.listRuns.mockResolvedValue([r1, r2, r3, r4]);
+    m.getRun.mockImplementation(
+      async (id: string) =>
+        ({
+          ...byId[id],
+          metrics: [
+            { epoch: 1, "metrics/mAP50-95(M)": 0.1 },
+            { epoch: 2, "metrics/mAP50-95(M)": 0.2 },
+          ],
+        }) as RunDetail,
+    );
+
+    renderPage();
+    fireEvent.click(await screen.findByLabelText("Compare yolo26s-seg")); // r1 -> slot 0
+    fireEvent.click(screen.getByLabelText("Compare yolo26m-seg")); // r2 -> slot 1
+    fireEvent.click(screen.getByLabelText("Compare yolo26n-seg")); // r3 -> slot 2
+
+    const chart = await screen.findByRole("img", { name: "Mask mAP50-95, compared by epoch" });
+    const strokeOf = (r: Run) => chart.querySelector(`path[data-series="${runLabel(r)}"]`)?.getAttribute("stroke");
+    await waitFor(() => {
+      expect(strokeOf(r1)).toBe(SERIES_COLORS[0]);
+      expect(strokeOf(r2)).toBe(SERIES_COLORS[1]);
+      expect(strokeOf(r3)).toBe(SERIES_COLORS[2]);
+    });
+
+    fireEvent.click(screen.getByLabelText("Compare yolo26m-seg")); // remove r2, freeing slot 1
+    await waitFor(() => {
+      // Compare against a boolean, not the raw element: asserting a DOM node directly makes a failed retry's
+      // message inspect React's internal props on it, which trips React's dev-only "`key` is not a prop" trap.
+      expect(chart.querySelector(`path[data-series="${runLabel(r2)}"]`) === null).toBe(true);
+      expect(strokeOf(r1)).toBe(SERIES_COLORS[0]); // unchanged
+      expect(strokeOf(r3)).toBe(SERIES_COLORS[2]); // unchanged, did not shift down into slot 1
+    });
+
+    fireEvent.click(screen.getByLabelText("Compare yolo11s-seg")); // r4 takes r2's freed slot 1
+    await waitFor(() => expect(strokeOf(r4)).toBe(SERIES_COLORS[1]));
+  });
+
+  it("shows composite samples when the selected export is a derived (augmented) export", async () => {
+    m.listExports.mockResolvedValue([exp, derivedExp]);
+    const sample: ExportSample = {
+      name: "syn_0_000001.jpg", width: 640, height: 480, ground_truth: [{ class_id: 0, polygons: [[0.1, 0.1, 0.9, 0.9]] }],
+    };
+    m.exportSamples.mockResolvedValue([sample]);
+    renderPage();
+
+    expect(screen.queryByText(/Composite samples/)).toBeNull();
+    fireEvent.change(await screen.findByLabelText("Export"), { target: { value: derivedExp.id } });
+    expect(await screen.findByText(`Composite samples · ${derivedExp.id}`)).toBeTruthy();
+    expect(m.exportSamples).toHaveBeenCalledWith(derivedExp.id, 12, 0);
+  });
+});

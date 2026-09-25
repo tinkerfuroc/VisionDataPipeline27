@@ -21,6 +21,7 @@ class AppState:
     store: ProjectStore
     engine: Any  # an Engine; Sam3Engine additionally has load(), device, load_error
     jobs: JobManager
+    train: Any = None  # a TrainScheduler
 
 
 def get_state(request: Request) -> AppState:

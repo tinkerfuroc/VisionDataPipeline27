@@ -103,6 +103,47 @@ Polygon and box coordinates share one convention in every format: continuous ima
 deleted while an export is reading it (409), and a request that turns out to have no usable mask at all is
 reported as a failed job ("nothing to export"), because finding that out means reading the masks.
 
+### Training
+
+`uv sync` installs Ultralytics (YOLO26 and YOLO11 segmentation). Train from the Train page (header → Train) or from
+the terminal:
+
+    uv run vsp train --list                                  # exports that have a yolo_seg dataset
+    uv run vsp train --export <id> --gpu 1                   # yolo26s/m-seg and yolo11s/m-seg, one after another
+    uv run vsp train --export <id> --model yolo26s-seg --epochs 150 --imgsz 960 --batch 8
+
+Each run lives in `data/runs/<run_id>/`: `run.json` (request and status), `worker.log`, Ultralytics' own output under
+`train/` (`weights/best.pt`, `last.pt`, `results.csv`, plots) and `predictions.json` (best.pt on every val image, conf
+≥ 0.25). Pretrained checkpoints are cached in `data/train_weights/`. A run is a separate process
+(`python -m vsp.train.worker`) with `CUDA_VISIBLE_DEVICES` set to its GPU, so a crash or out-of-memory error ends
+that run only.
+
+The server keeps one queue per GPU: one run at a time per GPU, GPUs in parallel. The default GPU is the one SAM3 is not
+on; choosing SAM3's GPU is allowed but shares its VRAM. Cancel stops a run after SIGTERM (SIGKILL after 30 s) and keeps
+`last.pt`, so Resume continues from the last finished epoch. A run that was training when the server stopped is shown
+as "interrupted" and can be resumed; queued runs are queued again. `vsp train` runs in the foreground and owns its
+runs; Ctrl-C, SIGTERM and SIGHUP (a closed terminal, `kill`) all cancel them the same way. Do not start it on a GPU
+the server is also training on. Do not set `CUDA_VISIBLE_DEVICES` for the server process itself — GPU indexes (from
+`vsp doctor`, the Train page and `vsp train --gpu`) are passed to each worker as-is, so setting it on the server
+would remap or hide devices under it. A run started by `vsp train` shows on the Train page's GPU queues as "running
+in another process (vsp train)"; it can only be cancelled from the terminal it was started in.
+
+Defaults: 100 epochs, early stop after 30 epochs without improvement, 960 px, batch 8, COCO-pretrained weights,
+Ultralytics' default augmentation. Metrics come from `results.csv`; the comparison table ranks runs by the best mask
+mAP50-95 epoch. ONNX export (`best.onnx`, static, square at the run's image size, 960 × 960 by default) runs on the run's GPU queue.
+
+### Augmentation
+
+**Presets:** `uv run vsp train --export <id> --augment strong` (or `default`, on the Train page select Default / Strong / Custom). The **Strong** preset raises geometric, photometric and copy-paste augmentation above Ultralytics' defaults: degrees 15, shear 5, perspective 0.0005, flip up 0.5, flip horizontal 0.5, scale 0.6, translate 0.2, HSV hue 0.02, saturation 0.7, value 0.5, mosaic 1.0, mixup 0.1, copy_paste 0.3, plus RandomBrightnessContrast, MotionBlur, GaussianBlur, GaussNoise, ImageCompression and CLAHE. The Custom preset on the GUI allows per-field adjustment.
+
+Installing `albumentations` (a dependency since this branch, `uv sync` pulls it in) also lets Ultralytics enable its own built-in low-probability Blur, MedianBlur, ToGray and CLAHE transforms, independent of the preset above — so a **Default** run on this branch is not pixel-identical to a default run from before it.
+
+**Background pools:** `uv run vsp backgrounds fetch dtd` (CLI, ~625 MB) or `POST /api/backgrounds/dtd/fetch` (web job) downloads the Describable Textures Dataset (5,640 images, one category per folder) to `data/backgrounds/dtd/`. The `--force` flag redownloads even if images are present.
+
+**Augmented copies:** From the Train page, when an export has the `masks` format, an "Augmented copy" panel creates a new export with real train frames plus `per_image × (frame count)` synthetic composites named `syn_*`, seeded by a "Seed" field (0 by default, so two copies of the same export can differ). Each composite pastes `1–3` (user configurable) cutouts cut from real frames' mask regions (per-class, so two objects of the same class in one frame are cut together) onto random background textures, scaled, rotated, positioned and colour-matched. Val frames are unchanged (images hard-linked, labels copied verbatim per format). The source export is never modified and cannot itself be augmented if it is already derived. The copy carries over whichever of `yolo_seg`, `yolo_det`, `coco` and `masks` the source export has — not always all four. The copy's `export.json` names its source in a `derived_from` field (`null` for an ordinary export).
+
+**Prediction strip:** On the Train page, when a run finishes, a "Validation predictions" gallery shows four images at a time, scrollable. Filter chips select All / Missed (ground truth present but no prediction) / Worst IoU. Click a card to enlarge it. Keyboard `←/→` pages the strip by four images at a time; once a card is enlarged, the same keys instead step one image at a time through the current filter, and `Esc` (or "Back to strip") returns to the strip positioned on that card. The overlay shows ground truth as a dashed outline and predictions filled blue with confidence scores. IoU values per image are computed with the export's polygon convention and cached in `<run_dir>/predictions_iou.json`, rebuilt when `predictions.json` changes.
+
 ### Keyboard
 
 `Enter` accept · `Esc` clear · `Z` undo click · `←/→` step · `Shift+←/→` ±10 · `Space` play/pause · `K` / `Shift+K`

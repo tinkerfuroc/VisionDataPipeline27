@@ -79,3 +79,114 @@ export type Health = {
   /** Absent on an older server: the GUI then skips its own size check and lets the server refuse. */
   upload?: { max_bytes: number };
 };
+
+export type AugmentMode = "default" | "strong" | "custom";
+export type AugParams = {
+  degrees: number;
+  shear: number;
+  perspective: number;
+  flipud: number;
+  fliplr: number;
+  scale: number;
+  translate: number;
+  hsv_h: number;
+  hsv_s: number;
+  hsv_v: number;
+  mosaic: number;
+  mixup: number;
+  copy_paste: number;
+  photometric: boolean;
+};
+export type TrainParams = {
+  epochs: number;
+  imgsz: number;
+  batch: number;
+  patience: number;
+  workers: number;
+  seed: number;
+  /** Absent on an older run's stored params: the GUI treats that as "default". */
+  augment?: AugmentMode;
+  aug?: AugParams | null;
+};
+export type GpuQueue = {
+  index: number;
+  name: string;
+  memory_total: number;
+  running: string | null;
+  running_kind: "train" | "onnx" | null;
+  queue: string[];
+};
+export type TrainStatus = {
+  available: boolean;
+  error: string | null;
+  gpus: GpuQueue[];
+  sam3_gpu: number | null;
+  models: string[];
+  default_models: string[];
+  defaults: TrainParams;
+  aug_presets: { default: AugParams; strong: AugParams };
+};
+export type ExportInfo = {
+  id: string;
+  project_name: string;
+  created_at: string;
+  classes: string[];
+  train_images: number;
+  val_images: number;
+  formats: string[];
+  derived_from: string | null;
+};
+export type BackgroundPool = { name: string; label: string; images: number; size_bytes: number; fetching: string | null };
+export type ExportSample = { name: string; width: number; height: number; ground_truth: Instance[] };
+export type AugmentRequest = { per_image: number; max_objects: number; seed: number; pool: string };
+export type RunStatus = "queued" | "running" | "done" | "error" | "cancelled" | "interrupted";
+export type RunBest = {
+  epoch: number;
+  mask_map50: number | null;
+  mask_map50_95: number | null;
+  box_map50: number | null;
+  box_map50_95: number | null;
+  train_seconds: number | null;
+};
+export type RunProgress = { phase: "setup" | "train" | "val" | "predict"; epoch: number; epochs: number; batch: number; batches: number };
+export type Run = {
+  id: string;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  export_id: string;
+  project_name: string;
+  model: string;
+  gpu: number;
+  params: TrainParams;
+  status: RunStatus;
+  error: string | null;
+  resume: boolean;
+  onnx: string | null;
+  best: RunBest | null;
+  epochs_done: number;
+  progress: RunProgress | null;
+  resumable: boolean;
+  has_best: boolean;
+  has_onnx: boolean;
+};
+export type MetricRow = { epoch: number } & Record<string, number>;
+export type RunDetail = Run & { metrics: MetricRow[] };
+export type Instance = { class_id: number; score?: number; polygons: number[][] };
+export type PredictionFilter = "all" | "missed" | "worst";
+export type PredictionItem = {
+  index: number;
+  name: string;
+  width: number;
+  height: number;
+  predictions: Instance[];
+  ground_truth: Instance[];
+  iou: number | null;
+};
+export type PredictionPage = {
+  total: number;
+  conf: number | null;
+  counts: { all: number; missed: number; worst: number };
+  items: PredictionItem[];
+};
+export type StartRunsRequest = { export_id: string; runs: { model: string; gpu: number }[]; params: TrainParams };

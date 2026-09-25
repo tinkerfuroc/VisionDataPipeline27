@@ -20,7 +20,12 @@ dependencies = [
     "torch==2.14.0+cu126",
     "torchvision==0.29.0+cu126",
     "transformers==5.17.0",
+    "ultralytics>=8.4.161,<8.5",
+    "onnx>=1.17",
+    "onnxslim>=0.1.82",
+    "onnxruntime>=1.20",
     "uvicorn[standard]>=0.30",
+    "albumentations>=2.0",
 ]
 
 [dependency-groups]
@@ -40,6 +45,9 @@ packages = ["server/vsp"]
 [tool.uv]
 # torch "+cu126" wheels do not exist for macOS; restrict the lock to this platform.
 environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
+# ultralytics requires opencv-python; opencv-python-headless provides the same cv2 module, and installing both
+# makes them overwrite each other's files. Drop the GUI build.
+override-dependencies = ["opencv-python; sys_platform == 'never'"]
 
 [[tool.uv.index]]
 name = "pytorch-cu126"

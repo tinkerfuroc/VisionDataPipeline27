@@ -17,6 +17,9 @@ export function AppHeader({ children }: { children?: ReactNode }) {
           Vision Sampler
         </Link>
         <div className="flex min-w-0 flex-1 items-center gap-3">{children}</div>
+        <Link to="/train" className="shrink-0 font-cond text-dim hover:text-ink">
+          Train
+        </Link>
         {engine?.loaded && (
           <span className="flex shrink-0 items-center gap-1.5 font-cond text-dim">
             <span aria-hidden className="inline-block h-1.5 w-1.5 rounded-full bg-ink" />
