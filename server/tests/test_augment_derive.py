@@ -7,7 +7,13 @@ from pathlib import Path
 import cv2
 import numpy as np
 import pytest
-from vsp.augment.derive import AugmentOptions, _merged_format_summaries, check_augment, run_augment
+from vsp.augment.derive import (
+    AugmentOptions,
+    _cutouts_and_sizes,
+    _merged_format_summaries,
+    check_augment,
+    run_augment,
+)
 from vsp.export import ExportCancelled, ExportOptions, run_export
 from vsp.export.base import ExportSummary
 from vsp.export.mask_png import MaskSummary
@@ -412,3 +418,50 @@ def test_the_derived_mask_summary_carries_the_source_overlap(store, make_clip, t
     # _multi: m1&m2 share column 29 on rows 10-19 (10 px), and rows 20-29, columns 20-44 hold 2+ objects (250 px)
     assert src_masks["overlap_px"] == 6 * 260
     assert new_masks["overlap_px"] == src_masks["overlap_px"]  # composites never overlap: one owner per pixel
+
+
+def _train_images(src) -> int:
+    return json.loads((Path(src["path"]) / "export.json").read_text())["counts"]["train"]["images"]
+
+
+def test_cutouts_are_per_object_when_the_source_has_coco(store, make_clip, tmp_path):
+    project, clip = _multi(store, make_clip)  # two touching "a" objects and an overlapping "b" on every frame
+    data_root = tmp_path / "data"
+    formats = ["yolo_seg", "coco", "masks"]
+    src = _export(store, project, clip, formats, data_root)
+    ticks = []
+    cutouts, sizes, mode = _cutouts_and_sizes(Path(src["path"]), formats, 64, lambda: ticks.append(1))
+    n = _train_images(src)
+    assert mode == "per_object"
+    assert sizes == [(120, 60)] * n and len(ticks) == n
+    assert len(cutouts) == 3 * n
+    # each object minus the pixels another object also claims: m1 (rows 10-29, cols 5-29) loses col 29 to m2 and
+    # rows 20-29 x cols 20-29 to m3 -> 500 - 110 = 390; m2 (cols 29-49) loses col 29 and rows 20-29 x cols 29-44 ->
+    # 420 - 170 = 250; m3 (rows 20-44, cols 20-44) loses rows 20-29 x cols 20-44 -> 625 - 250 = 375
+    assert sorted((c.class_id, int(c.mask.sum())) for c in cutouts[:3]) == [(0, 250), (0, 390), (1, 375)]
+
+
+def test_cutouts_fall_back_to_class_regions_without_coco(store, make_clip, tmp_path):
+    project, clip = _multi(store, make_clip)
+    data_root = tmp_path / "data"
+    formats = ["yolo_seg", "masks"]
+    src = _export(store, project, clip, formats, data_root)
+    cutouts, _sizes, mode = _cutouts_and_sizes(Path(src["path"]), formats, 64, lambda: None)
+    assert mode == "per_class_region"
+    assert len(cutouts) == 2 * _train_images(src)
+    # the two touching "a" objects come out as one 20x45 region; "b" keeps only what the mask PNG shows of it
+    assert sorted((c.class_id, int(c.mask.sum())) for c in cutouts[:2]) == [(0, 900), (1, 375)]
+
+
+def test_the_derived_manifest_records_how_cutouts_were_made(store, make_clip, tmp_path):
+    project, clip = _labelled(store, make_clip)
+    data_root = tmp_path / "data"
+    with_coco = _export(store, project, clip, ["yolo_seg", "coco", "masks"], data_root)
+    without = _export(store, project, clip, ["yolo_seg", "masks"], data_root)
+    _make_pool(data_root)
+    per_object = run_augment(data_root, with_coco["export_id"], AugmentOptions(per_image=1, seed=0))
+    fallback = run_augment(data_root, without["export_id"], AugmentOptions(per_image=1, seed=0))
+    assert per_object["cutouts"] == "per_object" and fallback["cutouts"] == "per_class_region"
+    assert json.loads((Path(per_object["path"]) / "export.json").read_text())["augment"]["cutouts"] == "per_object"
+    assert json.loads((Path(fallback["path"]) / "export.json").read_text())["augment"]["cutouts"] == \
+        "per_class_region"

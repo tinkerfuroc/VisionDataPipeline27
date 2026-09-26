@@ -250,4 +250,14 @@ describe("AugmentPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "Make augmented copy" }));
     expect(await screen.findByText("Cancelled. Nothing was written.")).toBeTruthy();
   });
+
+  it("notes that an export without COCO cuts objects per class region", async () => {
+    m.listBackgrounds.mockResolvedValue([pool({ images: 5640 })]);
+    render(<AugmentPanel exportInfo={exp()} onCreated={vi.fn()} />);
+    expect(await screen.findByText(/has no COCO format, so composites cut objects per class region/)).toBeTruthy();
+    cleanup();
+    render(<AugmentPanel exportInfo={exp({ formats: ["yolo_seg", "coco", "masks"] })} onCreated={vi.fn()} />);
+    await screen.findByText("DTD textures · 5,640 images");
+    expect(screen.queryByText(/has no COCO format/)).toBeNull();
+  });
 });
