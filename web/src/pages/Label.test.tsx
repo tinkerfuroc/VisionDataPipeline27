@@ -245,7 +245,7 @@ describe("Label page (propagation, cleanup, keyboard)", () => {
     renderLabel();
     await screen.findByText("bench.mp4");
     fireEvent.click(screen.getByRole("button", { name: "Forward ▶" }));
-    await waitFor(() => expect(api.propagate).toHaveBeenCalledWith("c1", 0, "forward"));
+    await waitFor(() => expect(api.propagate).toHaveBeenCalledWith("c1", 0, "forward", "all"));
     await waitFor(() => expect(FakeSocket.last?.url).toMatch(/j1$/));
     expect(sessionStorage.getItem("vsp.job.c1")).toBe("j1");
     FakeSocket.last!.emit({ seq: 0, type: "progress", done: 0, total: 39 });
@@ -255,10 +255,10 @@ describe("Label page (propagation, cleanup, keyboard)", () => {
     expect(screen.getByText(/20 masked/)).toBeTruthy();
     expect(screen.getByText("A propagation is running. Stop it to prompt.")).toBeTruthy();
     const loads = vi.mocked(api.getClip).mock.calls.length;
-    FakeSocket.last!.emit({ seq: 2, type: "done", processed: 39, written: 38, lost_at: 33, cancelled: false });
+    FakeSocket.last!.emit({ seq: 2, type: "done", processed: 39, written: 38, lost_at: 33, lost: { "1": 33 }, skipped: [], cancelled: false });
     await waitFor(() => expect(vi.mocked(api.getClip).mock.calls.length).toBe(loads + 1));
     expect(await screen.findByText("frame 33 / 39")).toBeTruthy();
-    expect(screen.getByText(/lost the object at frame 33/i)).toBeTruthy();
+    expect(screen.getByText(/lost #1 connector at frame 33/i)).toBeTruthy();
     expect(sessionStorage.getItem("vsp.job.c1")).toBeNull();
   });
 
@@ -472,7 +472,7 @@ describe("Label page (propagation, cleanup, keyboard)", () => {
     fireEvent.keyDown(window, { key: "]" });
     expect(screen.getByText(/Removes 11 propagated masks/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Clear masks in frames 1 to 11" }));
-    await waitFor(() => expect(api.clearRange).toHaveBeenCalledWith("c1", 1, 11));
+    await waitFor(() => expect(api.clearRange).toHaveBeenCalledWith("c1", 1, 11, [1]));
     expect(await screen.findByRole("button", { name: "Clear masks in frame 11" })).toBeTruthy(); // unmarked on success
   });
 
@@ -506,7 +506,7 @@ describe("Label page (propagation, cleanup, keyboard)", () => {
     fireEvent.change(screen.getByLabelText("Range start"), { target: { value: "5" } });
     fireEvent.change(screen.getByLabelText("Range end"), { target: { value: "9" } });
     fireEvent.click(screen.getByRole("button", { name: /Clear masks/ }));
-    await waitFor(() => expect(api.clearRange).toHaveBeenCalledWith("c1", 5, 9));
+    await waitFor(() => expect(api.clearRange).toHaveBeenCalledWith("c1", 5, 9, [1]));
   });
 });
 
@@ -643,5 +643,39 @@ describe("Label page (objects)", () => {
     await screen.findByText("bench.mp4");
     fireEvent.click(screen.getByRole("button", { name: "#2 cup" })); // the name in the timeline's gutter
     expect(row(/^#2 cup/).getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("propagates the selected object alone when chosen", async () => {
+    vi.mocked(api.getClip).mockResolvedValue(two);
+    vi.mocked(api.propagate).mockResolvedValue({ job_id: "j3" });
+    renderLabel();
+    await screen.findByText("bench.mp4");
+    fireEvent.click(within(screen.getByRole("group", { name: "Objects to propagate" })).getByRole("radio", { name: "Selected: #1 connector" }));
+    fireEvent.click(screen.getByRole("button", { name: "Forward ▶" }));
+    await waitFor(() => expect(api.propagate).toHaveBeenCalledWith("c1", 0, "forward", [1]));
+  });
+
+  it("checks the selected object's own mask before propagating it alone, and any object's for All objects", async () => {
+    vi.mocked(api.getClip).mockResolvedValue(two);
+    renderLabel();
+    await screen.findByText("bench.mp4");
+    fireEvent.click(row(/^#2 cup/));
+    for (let i = 0; i < 10; i++) fireEvent.keyDown(window, { key: "ArrowRight" }); // frame 10: #1 masked, #2 empty
+    expect((screen.getByRole("button", { name: "Forward ▶" }) as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(within(screen.getByRole("group", { name: "Objects to propagate" })).getByRole("radio", { name: "Selected: #2 cup" }));
+    expect((screen.getByRole("button", { name: "Forward ▶" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText(/#2 cup has no mask on this frame/)).toBeTruthy();
+  });
+
+  it("clears the active object's masks by default, or every object's when chosen", async () => {
+    vi.mocked(api.getClip).mockResolvedValue(two);
+    vi.mocked(api.clearRange).mockResolvedValue(two);
+    renderLabel();
+    await screen.findByText("bench.mp4");
+    fireEvent.click(screen.getByRole("button", { name: "Clear masks in frame 0" }));
+    await waitFor(() => expect(api.clearRange).toHaveBeenLastCalledWith("c1", 0, 0, [1]));
+    fireEvent.click(within(screen.getByRole("group", { name: "Objects to clear" })).getByRole("radio", { name: "All objects" }));
+    fireEvent.click(screen.getByRole("button", { name: "Clear masks in frame 0" }));
+    await waitFor(() => expect(api.clearRange).toHaveBeenLastCalledWith("c1", 0, 0, "all"));
   });
 });

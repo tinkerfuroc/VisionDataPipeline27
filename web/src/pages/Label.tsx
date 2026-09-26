@@ -1,16 +1,16 @@
 import { useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { ApiError, INTERACTIVE, api, frameUrl, objectMaskUrl, retryInteractive, thumbUrl } from "../api/rest";
-import type { ClipDetail, Direction, JobEvent } from "../api/types";
+import type { ClipDetail, Direction, JobEvent, ObjectSelection } from "../api/types";
 import { AppHeader } from "../components/AppHeader";
 import { BrushPanel } from "../components/BrushPanel";
-import { CleanupPanel, type Range } from "../components/CleanupPanel";
+import { CleanupPanel, type ClearScope, type Range } from "../components/CleanupPanel";
 import { ClipStats } from "../components/ClipStats";
 import { FrameCanvas } from "../components/FrameCanvas";
 import { ObjectsPanel } from "../components/ObjectsPanel";
 import { OverlayPanel } from "../components/OverlayPanel";
 import { PromptPanel } from "../components/PromptPanel";
-import { PropagatePanel } from "../components/PropagatePanel";
+import { PropagatePanel, type PropagateScope } from "../components/PropagatePanel";
 import { Timeline } from "../components/Timeline";
 import { ToolRail, type RailTool } from "../components/ToolRail";
 import { Transport } from "../components/Transport";
@@ -26,7 +26,7 @@ import { initialSelection } from "../lib/activeObject";
 import { FrameStore } from "../lib/frameCache";
 import { isTerminal } from "../lib/jobReducer";
 import { hexToRgb } from "../lib/mask";
-import { FALLBACK_COLOR, className, classColor, isLabeled, labeledCount, laneOf, lanesFor, maskParts, objectLabel, parseFrameEvent, type FrameEvent } from "../lib/objects";
+import { FALLBACK_COLOR, className, classColor, isLabeled, labeledCount, laneOf, lanesFor, maskParts, objectLabel, parseFrameEvent, sortedObjects, type FrameEvent } from "../lib/objects";
 import { loadStyle, outlineFor, saveStyle, type OverlayStyle } from "../lib/overlayStyle";
 import { clampFrame, findNext } from "../lib/timeline";
 
@@ -49,6 +49,8 @@ export function Label() {
   const [propagateError, setPropagateError] = useState<string | null>(null);
   const [cleanupError, setCleanupError] = useState<string | null>(null);
   const [mode, setMode] = useState<"prompt" | "brush">("prompt");
+  const [propagateScope, setPropagateScope] = useState<PropagateScope>("all");
+  const [clearScope, setClearScope] = useState<ClearScope>("active");
 
   const detail = clip.detail;
   const frameCount = detail?.clip.frame_count ?? 0;
@@ -60,6 +62,7 @@ export function Label() {
   const activeId = objects.activeId;
   // K, G and every "has a mask here" check follow the active object's lane, not the whole clip's states
   const activeLane = useMemo(() => (detail === null ? [] : laneOf(detail, activeId)), [detail, activeId]);
+  const scope: PropagateScope = activeId === null ? "all" : propagateScope; // "Selected" needs an existing object
   const [objectsError, setObjectsError] = useState<string | null>(null);
 
   // ---- propagation job -------------------------------------------------------------------------------------------
@@ -158,7 +161,8 @@ export function Label() {
       if (starting) return; // a second click while the request (including its interactive retries) is in flight
       setPropagateError(null);
       setStarting(true);
-      retryInteractive(() => api.propagate(clipId, frame, direction)).then(
+      const which: ObjectSelection = scope === "selected" && activeId !== null ? [activeId] : "all";
+      retryInteractive(() => api.propagate(clipId, frame, direction, which)).then(
         (r) => {
           setStarting(false);
           attach(r.job_id, true);
@@ -170,7 +174,7 @@ export function Label() {
         },
       );
     },
-    [clipId, frame, attach, starting],
+    [clipId, frame, attach, starting, scope, activeId],
   );
 
   const stopPropagation = useCallback(() => {
@@ -254,14 +258,16 @@ export function Label() {
   }, [cleanup, clipId, frame]);
   const clearRange = useCallback(
     (start: number, end: number) => {
+      const which: ObjectSelection | null = clearScope === "all" ? "all" : activeId === null ? null : [activeId];
+      if (which === null) return; // a new object has no masks yet
       // the mark goes only once the masks are gone, so a failed request can be retried without marking again
-      const cleared = api.clearRange(clipId, start, end).then((next) => {
+      const cleared = api.clearRange(clipId, start, end, which).then((next) => {
         setRange(null);
         return next;
       });
       cleanup(cleared, true);
     },
-    [cleanup, clipId],
+    [cleanup, clipId, clearScope, activeId],
   );
 
   // ---- navigation and keyboard -----------------------------------------------------------------------------------
@@ -395,13 +401,24 @@ export function Label() {
     );
   }
 
+  // "Selected" needs the active object's own mask here; "All objects" needs any object's (the server skips the rest)
+  const fromState = scope === "selected" ? (activeLane[frame] ?? "empty") : state;
   const propagateBlocked = !engineReady(health)
     ? "The SAM3 engine is not loaded."
     : state === "deleted"
       ? "This frame is deleted. Restore it, or go to a masked frame, to propagate from it."
-      : state !== "keyframe" && state !== "masked"
-        ? "This frame has no mask. Go to a masked frame, or prompt here, to propagate from it."
+      : !isLabeled(fromState)
+        ? scope === "selected" && objects.active !== null
+          ? `${objectLabel(detail, objects.active)} has no mask on this frame. Go to a frame where it has one, or prompt here, to propagate it.`
+          : "This frame has no mask. Go to a masked frame, or prompt here, to propagate from it."
         : null;
+  const objectName = (id: number) => {
+    const o = detail.clip.objects.find((x) => x.id === id);
+    return o === undefined ? `#${id}` : objectLabel(detail, o);
+  };
+  const clearLanes =
+    clearScope === "all" ? sortedObjects(detail).map((o) => laneOf(detail, o.id)) : activeId === null ? [] : [activeLane];
+  const activeLabel = objects.active === null ? null : objectLabel(detail, objects.active);
   const { draft, dispatch } = prompting;
   const newClass = className(detail, objects.classId);
   const promptTarget =
@@ -499,6 +516,11 @@ export function Label() {
             blockedReason={lockReason ?? propagateBlocked}
             follow={follow}
             error={propagateError}
+            scope={scope}
+            selectedLabel={activeLabel}
+            objectName={objectName}
+            onScope={setPropagateScope}
+            ownResult={ownJob.current}
             onStart={startPropagation}
             onStop={stopPropagation}
             onFollow={setFollow}
@@ -507,6 +529,10 @@ export function Label() {
           <CleanupPanel
             frame={frame}
             states={detail.states}
+            lanes={clearLanes}
+            scope={clearScope}
+            activeLabel={activeLabel}
+            onScope={setClearScope}
             range={range}
             clearBlockedReason={running ? "Masks cannot be cleared while a propagation runs." : null}
             lockReason={lockReason}

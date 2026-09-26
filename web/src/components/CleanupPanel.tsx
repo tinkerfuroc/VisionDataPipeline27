@@ -3,9 +3,19 @@ import type { FrameState } from "../api/types";
 /** Frames marked for clearing, inclusive. Start may exceed end while the numbers are being typed. */
 export type Range = [number, number];
 
+/** what "Clear masks" removes: the active object's masks (default) or every object's */
+export type ClearScope = "active" | "all";
+
 type Props = {
   frame: number;
+  /** the whole clip's states: Delete / Restore, and the deleted frames a clear covers */
   states: FrameState[];
+  /** the lanes "Clear masks" acts on: [the active object's lane], every object's lane, or none (a New object row) */
+  lanes: FrameState[][];
+  scope: ClearScope;
+  /** "#1 cup"; null on a "New object" row */
+  activeLabel: string | null;
+  onScope: (scope: ClearScope) => void;
   /** null: nothing is marked, so clearing acts on the current frame only */
   range: Range | null;
   /** why clearing is unavailable (a job is running), or null */
@@ -19,7 +29,10 @@ type Props = {
   onClearRange: (start: number, end: number) => void;
 };
 
-export function CleanupPanel({ frame, states, range, clearBlockedReason, lockReason, error, onRange, onToggleDelete, onPrune, onClearRange }: Props) {
+export function CleanupPanel({
+  frame, states, lanes, scope, activeLabel, onScope, range, clearBlockedReason, lockReason, error, onRange,
+  onToggleDelete, onPrune, onClearRange,
+}: Props) {
   const last = Math.max(0, states.length - 1);
   const clampIndex = (v: string) => Math.max(0, Math.min(last, Math.floor(Number(v)) || 0));
   const [start, end] = range ?? [frame, frame];
@@ -27,10 +40,12 @@ export function CleanupPanel({ frame, states, range, clearBlockedReason, lockRea
   // What the button would actually remove. Keyframes go too (clearing is the only way to remove one), so they are
   // counted out loud. A deleted frame may still hold a mask (deleting only flags the frame) and the server clears
   // those too, so they keep the button live.
-  const marked = valid ? states.slice(start, end + 1) : [];
-  const masks = marked.filter((s) => s === "masked").length;
-  const keyframes = marked.filter((s) => s === "keyframe").length;
-  const deleted = marked.filter((s) => s === "deleted").length;
+  const slice = (lane: FrameState[]) => (valid ? lane.slice(start, end + 1) : []);
+  const count = (want: FrameState) => lanes.reduce((n, lane) => n + slice(lane).filter((s) => s === want).length, 0);
+  const masks = count("masked");
+  const keyframes = count("keyframe");
+  // deleted frames are the clip's (deleted in every lane); they only matter when some object is cleared
+  const deleted = lanes.length === 0 ? 0 : slice(states).filter((s) => s === "deleted").length;
   const where = start === end ? `frame ${start}` : `frames ${start} to ${end}`;
   const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
   const parts = [
@@ -67,6 +82,17 @@ export function CleanupPanel({ frame, states, range, clearBlockedReason, lockRea
               onChange={(e) => onRange([start, clampIndex(e.target.value)])} />
             {range !== null && <button type="button" className="btn ml-auto" onClick={() => onRange(null)}>Unmark</button>}
           </div>
+          <fieldset className="flex flex-wrap gap-x-3 gap-y-1 text-xs">
+            <legend className="sr-only">Objects to clear</legend>
+            <label className="flex items-center gap-1.5">
+              <input type="radio" name="clear-scope" checked={scope === "active"} onChange={() => onScope("active")} />
+              {activeLabel === null ? "Active object" : `Active object (${activeLabel})`}
+            </label>
+            <label className="flex items-center gap-1.5">
+              <input type="radio" name="clear-scope" checked={scope === "all"} onChange={() => onScope("all")} />
+              All objects
+            </label>
+          </fieldset>
           <button type="button" className="btn" disabled={!valid || parts.length === 0 || clearBlockedReason !== null || lockReason !== null}
             onClick={() => onClearRange(start, end)}>
             Clear masks in {where}
