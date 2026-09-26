@@ -1,6 +1,7 @@
 import { objectMaskUrl } from "../api/rest";
 import type { ClipDetail, FrameState, JobEvent, LabelObject } from "../api/types";
 import type { MaskPart } from "./frameCache";
+import type { Lane } from "./lanes";
 import { hexToRgb } from "./mask";
 import { outlineFor, type OverlayStyle } from "./overlayStyle";
 import { applyFrameEvent } from "./timeline";
@@ -141,4 +142,15 @@ export function maskParts(
   }
   if (active !== null) parts.push(active);
   return parts;
+}
+
+/** The Timeline's lanes: one per object in id order (spec §9). */
+export function lanesFor(detail: ClipDetail, hidden: ReadonlySet<number>): Lane[] {
+  return sortedObjects(detail).map((o) => ({
+    id: o.id,
+    label: objectLabel(detail, o),
+    color: classColor(detail, o.class_id),
+    states: laneOf(detail, o.id),
+    hidden: hidden.has(o.id),
+  }));
 }

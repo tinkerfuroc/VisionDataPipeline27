@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ClipDetail, FrameState, JobEvent } from "../api/types";
 import {
-  aggregateAt, classColor, className, emptyLane, FALLBACK_COLOR, labeledCount, laneOf, maskParts, objectLabel,
+  aggregateAt, classColor, className, emptyLane, FALLBACK_COLOR, labeledCount, lanesFor, laneOf, maskParts, objectLabel,
   parseFrameEvent, patchObjectFrames, sortedObjects,
 } from "./objects";
 
@@ -140,5 +140,16 @@ describe("maskParts", () => {
       style: { color: "#0000ff", thickness: 2 },
     });
     expect(active.outline).toEqual({ rgb: [0, 0, 255], edge: 2 });
+  });
+});
+
+describe("lanesFor", () => {
+  it("gives one lane per object in id order, named, coloured and marked hidden", () => {
+    const d = detail();
+    d.clip.objects.reverse();
+    expect(lanesFor(d, new Set([2]))).toEqual([
+      { id: 1, label: "#1 cup", color: "#ff0000", states: S("keed"), hidden: false },
+      { id: 2, label: "#2 bowl", color: "#00ff00", states: S("emed"), hidden: true },
+    ]);
   });
 });

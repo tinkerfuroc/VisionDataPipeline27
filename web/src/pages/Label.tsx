@@ -26,7 +26,7 @@ import { initialSelection } from "../lib/activeObject";
 import { FrameStore } from "../lib/frameCache";
 import { isTerminal } from "../lib/jobReducer";
 import { hexToRgb } from "../lib/mask";
-import { FALLBACK_COLOR, className, classColor, isLabeled, labeledCount, laneOf, maskParts, objectLabel, parseFrameEvent, type FrameEvent } from "../lib/objects";
+import { FALLBACK_COLOR, className, classColor, isLabeled, labeledCount, laneOf, lanesFor, maskParts, objectLabel, parseFrameEvent, type FrameEvent } from "../lib/objects";
 import { loadStyle, outlineFor, saveStyle, type OverlayStyle } from "../lib/overlayStyle";
 import { clampFrame, findNext } from "../lib/timeline";
 
@@ -338,6 +338,8 @@ export function Label() {
     }
   }, [store, clipId, frame, playing, overlay, detail, overlayStyle, activeId, editing, frameCount, maskVersion, running, hidden]);
 
+  const lanes = useMemo(() => (detail === null ? [] : lanesFor(detail, hidden)), [detail, hidden]);
+
   const addClass = useCallback(
     async (name: string) => {
       if (detail === null) return;
@@ -535,12 +537,14 @@ export function Label() {
         </div>
         <Timeline
           states={detail.states}
+          lanes={lanes}
+          activeId={activeId}
           frame={frame}
-          color={color}
           thumb={{ url: (i) => thumbUrl(clipId, i), aspect: width / height }}
           range={range}
           onSeek={lockReason === null ? seek : () => {}}
           onRange={setRange}
+          onSelect={lockReason === null ? select : undefined}
         />
       </footer>
     </div>

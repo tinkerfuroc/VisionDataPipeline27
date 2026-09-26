@@ -636,4 +636,12 @@ describe("Label page (objects)", () => {
     await waitFor(() => expect(api.deleteObject).toHaveBeenCalledWith("c1", 1));
     expect((await panel().findByRole("button", { name: /^#2 cup/ })).getAttribute("aria-pressed")).toBe("true");
   });
+
+  it("shows one timeline lane per object; a lane's name selects its object", async () => {
+    vi.mocked(api.getClip).mockResolvedValue(two);
+    renderLabel();
+    await screen.findByText("bench.mp4");
+    fireEvent.click(screen.getByRole("button", { name: "#2 cup" })); // the name in the timeline's gutter
+    expect(row(/^#2 cup/).getAttribute("aria-pressed")).toBe("true");
+  });
 });
