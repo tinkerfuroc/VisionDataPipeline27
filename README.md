@@ -119,7 +119,7 @@ reported as a failed job ("nothing to export"), because finding that out means r
 `uv sync` installs Ultralytics (YOLO26 and YOLO11 segmentation). Train from the Train page (header → Train) or from
 the terminal:
 
-    uv run vsp train --list                                  # exports that have a yolo_seg dataset (shows name, folder id, and available models)
+    uv run vsp train --list                                  # exports that have a yolo_seg dataset (shows each export's folder id, name, project, image counts and classes)
     uv run vsp train --export <folder_id> --gpu 1            # yolo26s/m-seg and yolo11s/m-seg, one after another
     uv run vsp train --export <folder_id> --model yolo26s-seg --epochs 150 --imgsz 960 --batch 8
 
