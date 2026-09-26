@@ -93,6 +93,17 @@ contiguous (the tail of every clip held out), never random per frame: neighbouri
 nearly identical, so a random per-frame split would leak validation frames into training. A cancelled or
 failed export removes its directory rather than leaving a partial dataset behind.
 
+When you create an export, the Export page's right sidebar has a "Dataset name" field (optional, up to 80
+characters). If you provide a name, the export folder is named using that name, lowercased, with any
+characters outside `a-z 0-9 . _ -` converted to `-`, and truncated to 48 characters at most. If that folder
+name already exists, the system appends `-2`, `-3`, etc. to avoid collision. If you leave the field empty or
+the name contains no usable characters, the folder is named with a timestamp ID instead. The name is stored in
+`export.json` under the `name` field and is displayed on the Train page (in the export list and Runs table)
+alongside the folder ID. You can rename an export on the Train page using the "Rename export" field below
+the export list, or via the API with `PATCH /api/exports/{id}` passing `{"name": ...}`. The folder ID never
+changes when you rename, so existing training runs continue to work. Augmented copies are named
+"`<source name or id> ×N augmented`".
+
 Noise is removed once, the same way for every format: connected blobs of a mask smaller than `min_area_px`
 (64 by default) are dropped, what is left is the object for the polygon, the box, the area and the mask image alike,
 and an object with nothing left counts as absent. With "include frames without a mask" off, the validation tail of
@@ -108,9 +119,9 @@ reported as a failed job ("nothing to export"), because finding that out means r
 `uv sync` installs Ultralytics (YOLO26 and YOLO11 segmentation). Train from the Train page (header → Train) or from
 the terminal:
 
-    uv run vsp train --list                                  # exports that have a yolo_seg dataset
-    uv run vsp train --export <id> --gpu 1                   # yolo26s/m-seg and yolo11s/m-seg, one after another
-    uv run vsp train --export <id> --model yolo26s-seg --epochs 150 --imgsz 960 --batch 8
+    uv run vsp train --list                                  # exports that have a yolo_seg dataset (shows name, folder id, and available models)
+    uv run vsp train --export <folder_id> --gpu 1            # yolo26s/m-seg and yolo11s/m-seg, one after another
+    uv run vsp train --export <folder_id> --model yolo26s-seg --epochs 150 --imgsz 960 --batch 8
 
 Each run lives in `data/runs/<run_id>/`: `run.json` (request and status), `worker.log`, Ultralytics' own output under
 `train/` (`weights/best.pt`, `last.pt`, `results.csv`, plots) and `predictions.json` (best.pt on every val image, conf
@@ -195,3 +206,5 @@ middle-drag pan · right click = negative point. `Enter`, `Esc` and `Z` act on t
 17. Mask outline (right sidebar): untick "Class colour" and pick a contrasting colour, drag Thickness from 0 (no
     outline) to 12; the stored mask, the frames arriving during a propagation and text-prompt candidates all follow it,
     with no white halo outside the mask. Reload the page: the setting is kept. Reset restores the class colour at 5 px.
+18. Named datasets: export twice with the name "Cups v2"; the folders are `cups-v2` and `cups-v2-2`; rename one on the
+    Train page; the Runs table shows the new name.
