@@ -4,6 +4,7 @@ import { ApiError, api, thumbUrl } from "../api/rest";
 import type { ClipSummary, ExportFormat, ExportRequest, ExportResult, Project } from "../api/types";
 import { AppHeader } from "../components/AppHeader";
 import { useJob } from "../hooks/useJob";
+import { slug } from "../lib/exportName";
 import { defaultValClips, exportProblem, splitModeFor } from "../lib/exportSelection";
 import { isTerminal } from "../lib/jobReducer";
 import { percentLabeled } from "../lib/timeline";
@@ -38,6 +39,7 @@ export function Export() {
   const [valSharePercent, setValSharePercent] = useState(20);
   const [stride, setStride] = useState(1);
   const [includeEmpty, setIncludeEmpty] = useState(true);
+  const [name, setName] = useState("");
 
   const [jobId, setJobId] = useState<string | null>(null);
   const [startError, setStartError] = useState<string | null>(null);
@@ -143,7 +145,12 @@ export function Export() {
       split_mode: mode, val_fraction: valSharePercent / 100, stride, include_empty: includeEmpty,
       ...(mode === "per_clip" ? { val_clips: orderedVal } : {}),
     };
-    api.startExport(projectId, { clips: orderedIncluded, formats: orderedFormats, options }).then(
+    api.startExport(projectId, {
+      clips: orderedIncluded,
+      formats: orderedFormats,
+      options,
+      name: name.trim() === "" ? null : name.trim(),
+    }).then(
       (r) => {
         startingRef.current = false;
         if (!mounted.current) return; // left the page while the request was in flight
@@ -289,6 +296,15 @@ export function Export() {
 
           <section className="flex flex-col gap-2">
             <h2 className="heading">Start</h2>
+            <label className="flex flex-col gap-1 text-sm text-dim">
+              Dataset name
+              <input aria-label="Dataset name" className="field" maxLength={80} placeholder="Optional, e.g. Cups v2"
+                value={name} onChange={(e) => setName(e.target.value)} />
+            </label>
+            <p className="note">
+              Folder: {slug(name) !== "" ? slug(name) : "a timestamp, e.g. 20260926-104433-…"}
+              {slug(name) !== "" ? " (a number is added if it is taken)" : ""}
+            </p>
             {problem !== null && <p className="note text-ink">{problem}</p>}
             {startError !== null && (
               <p role="alert" className="alert">
@@ -314,6 +330,7 @@ export function Export() {
             {job.status === "done" && result !== null && (
               <div className="flex flex-col gap-1.5">
                 <h3 className="heading">Dataset written</h3>
+                {result.name !== null && <p className="text-sm text-ink">{result.name}</p>}
                 {/* a textarea, so a long path wraps instead of being cut off; focus selects it for copying */}
                 <textarea aria-label="Dataset folder" readOnly rows={3} className="field resize-none break-all font-cond"
                   value={result.path} onFocus={(e) => e.target.select()} />

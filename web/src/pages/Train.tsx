@@ -116,7 +116,7 @@ export function Train() {
           )}
           <section className="flex flex-col gap-2">
             <h2 className="heading">Runs</h2>
-            <RunsTable runs={list} selectedId={selectedId} compareIds={compareIds} onSelect={setPickedId}
+            <RunsTable runs={list} selectedId={selectedId} compareIds={compareIds} exports={exportsList} onSelect={setPickedId}
               onToggleCompare={toggleCompare} onCancel={(id) => act(() => api.cancelRun(id))}
               onResume={(id) => act(() => api.resumeRun(id))} onOnnx={(id) => act(() => api.exportOnnx(id))} onDelete={onDelete} />
           </section>

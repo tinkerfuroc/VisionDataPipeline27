@@ -1,4 +1,4 @@
-import type { Run, RunBest } from "../api/types";
+import type { ExportInfo, Run, RunBest } from "../api/types";
 import { weightsUrl } from "../api/rest";
 import { bestRunIds, formatDuration, statusText } from "../lib/train";
 
@@ -14,6 +14,7 @@ type Props = {
   runs: Run[];
   selectedId: string | null;
   compareIds: string[];
+  exports?: ExportInfo[];
   onSelect: (id: string) => void;
   onToggleCompare: (id: string) => void;
   onCancel: (id: string) => void;
@@ -34,7 +35,7 @@ function OnnxCell({ run, onOnnx }: { run: Run; onOnnx: (id: string) => void }) {
   );
 }
 
-export function RunsTable({ runs, selectedId, compareIds, onSelect, onToggleCompare, onCancel, onResume, onOnnx, onDelete }: Props) {
+export function RunsTable({ runs, selectedId, compareIds, exports = [], onSelect, onToggleCompare, onCancel, onResume, onOnnx, onDelete }: Props) {
   const best = Object.fromEntries(METRICS.map((m) => [m.key, bestRunIds(runs, m.key)]));
   if (runs.length === 0) return <p className="note">No training runs yet. Start one from the panel on the right.</p>;
   return (
@@ -71,7 +72,7 @@ export function RunsTable({ runs, selectedId, compareIds, onSelect, onToggleComp
                 <td className="px-2 py-1.5 font-medium">{r.model}</td>
                 <td className="px-2 py-1.5 text-dim">
                   <div className="flex flex-col">
-                    <span>{r.project_name}</span>
+                    <span>{exports.find((e) => e.id === r.export_id)?.name ?? r.project_name}</span>
                     <span className="note font-cond text-dim">{r.export_id}</span>
                   </div>
                 </td>

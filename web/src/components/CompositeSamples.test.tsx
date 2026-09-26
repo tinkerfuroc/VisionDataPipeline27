@@ -12,7 +12,7 @@ vi.mock("../api/rest", async (original) => {
 const m = vi.mocked(api);
 
 const exp = (over: Partial<ExportInfo> = {}): ExportInfo => ({
-  id: "expA", project_name: "OpticsConverter1", created_at: "", classes: ["Module"],
+  id: "expA", name: null, project_name: "OpticsConverter1", created_at: "", classes: ["Module"],
   train_images: 3192, val_images: 252, formats: ["yolo_seg", "masks"], derived_from: "src", ...over,
 });
 const sample = (n: number): ExportSample => ({

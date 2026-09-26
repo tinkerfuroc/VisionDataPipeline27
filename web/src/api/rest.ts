@@ -135,6 +135,12 @@ const post = (body?: unknown): RequestInit =>
     ? { method: "POST" }
     : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
 
+const patch = (body: unknown): RequestInit => ({
+  method: "PATCH",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify(body),
+});
+
 export const frameUrl = (clipId: string, idx: number) => `/api/clips/${clipId}/frames/${idx}`;
 export const thumbUrl = (clipId: string, idx: number) => `/api/clips/${clipId}/thumbs/${idx}`;
 export const maskUrl = (clipId: string, idx: number, version: string) => `/api/clips/${clipId}/masks/${idx}?v=${version}`;
@@ -195,6 +201,8 @@ export const api = {
 
   trainStatus: () => request<TrainStatus>("/api/train/status"),
   listExports: () => request<ExportInfo[]>("/api/exports"),
+  renameExport: (exportId: string, name: string | null) =>
+    request<ExportInfo>(`/api/exports/${exportId}`, patch({ name })),
   listRuns: () => request<Run[]>("/api/train/runs"),
   getRun: (id: string) => request<RunDetail>(`/api/train/runs/${id}`),
   startRuns: (body: StartRunsRequest) => request<{ run_ids: string[] }>("/api/train/runs", post(body)),

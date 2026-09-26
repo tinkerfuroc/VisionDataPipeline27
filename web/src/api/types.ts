@@ -68,9 +68,17 @@ export type ExportRequest = {
   clips: string[];
   formats: ExportFormat[];
   options: { split_mode: SplitMode; val_clips?: string[]; val_fraction: number; stride: number; include_empty: boolean };
+  name?: string | null;
 };
 export type SplitCounts = { images: number; annotated: number; empty: number };
-export type ExportResult = { export_id: string; path: string; formats: ExportFormat[]; counts: { train: SplitCounts; val: SplitCounts }; linked: boolean };
+export type ExportResult = {
+  export_id: string;
+  name: string | null;
+  path: string;
+  formats: ExportFormat[];
+  counts: { train: SplitCounts; val: SplitCounts };
+  linked: boolean;
+};
 
 export type Health = {
   status: string;
@@ -128,6 +136,7 @@ export type TrainStatus = {
 };
 export type ExportInfo = {
   id: string;
+  name: string | null;
   project_name: string;
   created_at: string;
   classes: string[];

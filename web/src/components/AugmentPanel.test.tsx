@@ -25,7 +25,7 @@ const idle: JobHandle = {
 const jobs: Record<string, JobHandle> = {};
 
 const exp = (over: Partial<ExportInfo> = {}): ExportInfo => ({
-  id: "20260924-040124-8336a8", project_name: "OpticsConverter1", created_at: "", classes: ["Module"],
+  id: "20260924-040124-8336a8", name: null, project_name: "OpticsConverter1", created_at: "", classes: ["Module"],
   train_images: 798, val_images: 252, formats: ["yolo_seg", "masks"], derived_from: null, ...over,
 });
 const pool = (over: Partial<BackgroundPool> = {}): BackgroundPool => ({

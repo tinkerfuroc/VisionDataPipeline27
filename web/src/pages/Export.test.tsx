@@ -87,8 +87,46 @@ describe("Export page", () => {
         clips: ["a", "b", "c"],
         formats: ["yolo_seg", "yolo_det", "coco", "masks"],
         options: { split_mode: "per_clip", val_clips: ["b"], val_fraction: 0.2, stride: 1, include_empty: true },
+        name: null,
       }),
     );
+  });
+
+  it("names the dataset, showing the resulting folder id, and sends it with the export", async () => {
+    m.startExport.mockResolvedValue({ job_id: "j1" });
+    renderPage();
+    await screen.findByText("a.mp4");
+
+    expect(screen.getByText(/Folder: a timestamp, e\.g\. 20260926-104433-…/)).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText("Dataset name"), { target: { value: "Cups v2" } });
+    expect(screen.getByText("Folder: cups-v2 (a number is added if it is taken)")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Export 3 clips" }));
+    await waitFor(() =>
+      expect(m.startExport).toHaveBeenCalledWith(
+        "p1",
+        expect.objectContaining({ name: "Cups v2" }),
+      ),
+    );
+  });
+
+  it("sends no name for a blank field, and for one that slugs to nothing", async () => {
+    m.startExport.mockResolvedValue({ job_id: "j1" });
+    renderPage();
+    await screen.findByText("a.mp4");
+
+    fireEvent.click(screen.getByRole("button", { name: "Export 3 clips" }));
+    await waitFor(() => expect(m.startExport).toHaveBeenCalledWith("p1", expect.objectContaining({ name: null })));
+
+    cleanup();
+    m.startExport.mockClear();
+    renderPage();
+    await screen.findByText("a.mp4");
+    fireEvent.change(screen.getByLabelText("Dataset name"), { target: { value: "杯子" } });
+    expect(screen.getByText(/Folder: a timestamp, e\.g\. 20260926-104433-…/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Export 3 clips" }));
+    await waitFor(() => expect(m.startExport).toHaveBeenCalledWith("p1", expect.objectContaining({ name: "杯子" })));
   });
 
   it("lets the user move a clip between training and validation", async () => {
@@ -178,6 +216,38 @@ describe("Export page", () => {
     expect(screen.getByText("32 training images, 2 without a mask")).toBeTruthy();
     expect(screen.getByText("8 validation images")).toBeTruthy();
     expect(screen.queryByText(/hardlinks/)).toBeNull();
+  });
+
+  it("shows the dataset name above the folder path once written, and nothing when it has none", async () => {
+    m.startExport.mockResolvedValue({ job_id: "j1" });
+    renderPage();
+    await screen.findByText("a.mp4");
+    fireEvent.click(screen.getByRole("button", { name: "Export 3 clips" }));
+    await waitFor(() => expect(FakeSocket.last?.url).toMatch(/j1$/));
+    act(() =>
+      FakeSocket.last!.onmessage!({
+        data: JSON.stringify({
+          type: "done", seq: 0, export_id: "cups-v2", name: "Cups v2", path: "/data/exports/cups-v2", formats: ["coco"],
+          counts: { train: { images: 4, annotated: 4, empty: 0 }, val: { images: 1, annotated: 1, empty: 0 } }, linked: true,
+        }),
+      }),
+    );
+    expect(await screen.findByDisplayValue("/data/exports/cups-v2")).toBeTruthy();
+    expect(screen.getByText("Cups v2")).toBeTruthy();
+
+    m.startExport.mockResolvedValue({ job_id: "j2" });
+    fireEvent.click(screen.getByRole("button", { name: "Export 3 clips" }));
+    await waitFor(() => expect(FakeSocket.last?.url).toMatch(/j2$/));
+    act(() =>
+      FakeSocket.last!.onmessage!({
+        data: JSON.stringify({
+          type: "done", seq: 0, export_id: "e2", name: null, path: "/data/exports/e2", formats: ["coco"],
+          counts: { train: { images: 4, annotated: 4, empty: 0 }, val: { images: 1, annotated: 1, empty: 0 } }, linked: true,
+        }),
+      }),
+    );
+    expect(await screen.findByDisplayValue("/data/exports/e2")).toBeTruthy();
+    expect(screen.queryByText("Cups v2")).toBeNull();
   });
 
   it("warns when no clip is left for validation, without blocking the export", async () => {

@@ -15,7 +15,7 @@ vi.mock("../api/rest", async (original) => {
     api: {
       health: vi.fn(), trainStatus: vi.fn(), listExports: vi.fn(), listRuns: vi.fn(), getRun: vi.fn(), startRuns: vi.fn(),
       cancelRun: vi.fn(), resumeRun: vi.fn(), exportOnnx: vi.fn(), deleteRun: vi.fn(), predictions: vi.fn(),
-      listBackgrounds: vi.fn(), fetchBackgrounds: vi.fn(), augmentExport: vi.fn(), exportSamples: vi.fn(),
+      listBackgrounds: vi.fn(), fetchBackgrounds: vi.fn(), augmentExport: vi.fn(), exportSamples: vi.fn(), renameExport: vi.fn(),
     },
   };
 });
@@ -41,11 +41,11 @@ const status: TrainStatus = {
   },
 };
 const exp: ExportInfo = {
-  id: "20260924-040124-8336a8", project_name: "OpticsConverter1", created_at: "", classes: ["Module"],
+  id: "20260924-040124-8336a8", name: null, project_name: "OpticsConverter1", created_at: "", classes: ["Module"],
   train_images: 798, val_images: 252, formats: ["yolo_seg", "masks"], derived_from: null,
 };
 const derivedExp: ExportInfo = {
-  id: "20260924-040124-8336a6-aug3x-3385", project_name: "OpticsConverter1", created_at: "", classes: ["Module"],
+  id: "20260924-040124-8336a6-aug3x-3385", name: null, project_name: "OpticsConverter1", created_at: "", classes: ["Module"],
   train_images: 3192, val_images: 252, formats: ["yolo_seg", "masks"], derived_from: exp.id,
 };
 const pool: BackgroundPool = { name: "dtd", label: "DTD textures", images: 5640, size_bytes: 625_239_812, fetching: null };
@@ -223,5 +223,36 @@ describe("Train page", () => {
     fireEvent.change(await screen.findByLabelText("Export"), { target: { value: derivedExp.id } });
     expect(await screen.findByText(`Composite samples · ${derivedExp.id}`)).toBeTruthy();
     expect(m.exportSamples).toHaveBeenCalledWith(derivedExp.id, 12, 0);
+  });
+
+  it("shows the export's name at the start of its select option, else the project name", async () => {
+    const named: ExportInfo = { ...exp, id: "cups-v2", name: "Cups v2" };
+    m.listExports.mockResolvedValue([exp, named]);
+    renderPage();
+    const select = (await screen.findByLabelText("Export")) as HTMLSelectElement;
+    const optionTexts = Array.from(select.options).map((o) => o.text);
+    expect(optionTexts.some((t) => t.startsWith(`Cups v2 · ${named.id}`))).toBe(true);
+    expect(optionTexts.some((t) => t.startsWith(`${exp.project_name} · ${exp.id}`))).toBe(true);
+  });
+
+  it("renames the selected export: prefilled field, Save disabled until changed, then refreshes the exports", async () => {
+    const named: ExportInfo = { ...exp, name: "Cups v2" };
+    m.listExports.mockResolvedValue([named]);
+    m.renameExport.mockResolvedValue({ ...named, name: "Better" });
+    renderPage();
+    await screen.findByLabelText("Export");
+
+    const input = screen.getByLabelText("Rename export") as HTMLInputElement;
+    expect(input.value).toBe("Cups v2");
+    const save = screen.getByRole("button", { name: "Save" }) as HTMLButtonElement;
+    expect(save.disabled).toBe(true);
+
+    fireEvent.change(input, { target: { value: "Better" } });
+    expect(save.disabled).toBe(false);
+    expect(m.listExports).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(save);
+    await waitFor(() => expect(m.renameExport).toHaveBeenCalledWith(named.id, "Better"));
+    await waitFor(() => expect(m.listExports).toHaveBeenCalledTimes(2));
   });
 });

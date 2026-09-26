@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { Run } from "../api/types";
+import type { ExportInfo, Run } from "../api/types";
 import { RunsTable } from "./RunsTable";
 
 afterEach(cleanup);
@@ -43,6 +43,26 @@ describe("RunsTable", () => {
     const rows = screen.getAllByText("Optics").map((el) => el.closest("tr")!);
     expect(within(rows[0]).getByText("e")).toBeTruthy();
     expect(within(rows[1]).getByText("e-aug3x-3385")).toBeTruthy();
+  });
+
+  it("shows the export's name from `exports`, falling back to the project name when unknown or unnamed", () => {
+    const named: Run = { ...base, id: "20260924-120000-yolo26s-seg-gggg", export_id: "cups-v2" };
+    const unnamed: Run = { ...base, id: "20260924-120000-yolo26s-seg-hhhh", export_id: "e-plain" };
+    const unknown: Run = { ...base, id: "20260924-120000-yolo26s-seg-iiii", export_id: "e-gone" };
+    const exports: ExportInfo[] = [
+      { id: "cups-v2", name: "Cups v2", project_name: "Optics", created_at: "", classes: [], train_images: 0, val_images: 0, formats: [], derived_from: null },
+      { id: "e-plain", name: null, project_name: "Optics", created_at: "", classes: [], train_images: 0, val_images: 0, formats: [], derived_from: null },
+    ];
+    const on = { onSelect: vi.fn(), onToggleCompare: vi.fn(), onCancel: vi.fn(), onResume: vi.fn(), onOnnx: vi.fn(), onDelete: vi.fn() };
+    render(<RunsTable runs={[named, unnamed, unknown]} selectedId={null} compareIds={[]} exports={exports} {...on} />);
+
+    const namedRow = screen.getByText("Cups v2").closest("tr")!;
+    expect(within(namedRow).getByText("cups-v2")).toBeTruthy();
+
+    const fallbackRows = screen.getAllByText("Optics").map((el) => el.closest("tr")!);
+    expect(fallbackRows).toHaveLength(2);
+    expect(within(fallbackRows[0]).getByText("e-plain")).toBeTruthy();
+    expect(within(fallbackRows[1]).getByText("e-gone")).toBeTruthy();
   });
 
   it("shows the Aug column from params.augment, defaulting to default", () => {
