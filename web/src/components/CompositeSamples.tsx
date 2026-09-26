@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api, exportImageUrl } from "../api/rest";
 import type { ExportInfo, ExportSample } from "../api/types";
+import { exportLabel } from "../lib/exportName";
 import { GalleryCard } from "./GalleryCard";
 
 const VISIBLE = 4;
@@ -49,7 +50,7 @@ export function CompositeSamples({ exportInfo }: { exportInfo: ExportInfo }) {
   return (
     <section className="flex flex-col gap-2">
       <div className="flex flex-wrap items-center gap-2">
-        <h2 className="heading">Composite samples · {exportInfo.id}</h2>
+        <h2 className="heading">Composite samples · {exportLabel(exportInfo)}</h2>
         <span className="flex-1" />
         <button type="button" className="btn" onClick={() => setSeed((s) => s + 1)}>Shuffle</button>
       </div>

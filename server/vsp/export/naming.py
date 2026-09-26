@@ -18,7 +18,9 @@ _DASHES = re.compile(r"-{2,}")
 
 
 def clean_name(name: str | None) -> str | None:
-    """The name as stored: stripped, or None when blank."""
+    """The name as stored: stripped, or None when blank. Raises `BadRequest` for a name over `MAX_NAME`
+    characters, and for one containing control characters (category `Cc`) or Unicode line/paragraph
+    separators (categories `Zl`/`Zp`, e.g. U+2028/U+2029)."""
     if name is None:
         return None
     name = name.strip()
@@ -26,7 +28,7 @@ def clean_name(name: str | None) -> str | None:
         return None
     if len(name) > MAX_NAME:
         raise BadRequest(f"the name must be at most {MAX_NAME} characters")
-    if any(unicodedata.category(c) == "Cc" for c in name):
+    if any(unicodedata.category(c) in ("Cc", "Zl", "Zp") for c in name):
         raise BadRequest("the name must not contain control characters (such as line breaks)")
     return name
 

@@ -9,6 +9,7 @@ import { PredictionGallery } from "../components/PredictionGallery";
 import { RunsTable } from "../components/RunsTable";
 import { TrainSidebar } from "../components/TrainSidebar";
 import { usePoll } from "../hooks/usePoll";
+import { exportLabel } from "../lib/exportName";
 import { statusText } from "../lib/train";
 
 const POLL_MS = 2000;
@@ -41,6 +42,11 @@ export function Train() {
   const list = runs.data ?? [];
   const selectedId = pickedId ?? list.find((r) => r.status === "running")?.id ?? list[0]?.id ?? null;
   const selected = list.find((r) => r.id === selectedId) ?? null;
+  const selectedRunExport = selected !== null ? exportsList.find((e) => e.id === selected.export_id) : undefined;
+  // Same ruling as the Runs table: an unnamed export falls back to the run's own project name, not its id.
+  const selectedRunLabel =
+    selected === null ? "" : selectedRunExport !== undefined && selectedRunExport.name !== null
+      ? exportLabel(selectedRunExport) : selected.project_name;
   const detail = usePoll<RunDetail | null>(
     () => (selectedId ? api.getRun(selectedId) : Promise.resolve(null)),
     selected?.status === "running" ? POLL_MS : null,
@@ -132,7 +138,7 @@ export function Train() {
           {selected !== null && (
             <section className="flex flex-col gap-2">
               <h2 className="heading">
-                {selected.model} on {selected.project_name} · {statusText(selected)}
+                {selected.model} on {selectedRunLabel} · {statusText(selected)}
               </h2>
               {selected.error !== null && (
                 <pre className="alert max-h-40 overflow-auto whitespace-pre-wrap font-cond text-xs">{selected.error}</pre>

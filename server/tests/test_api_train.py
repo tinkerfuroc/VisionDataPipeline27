@@ -58,6 +58,12 @@ def test_rename_export(client):
     assert client.patch("/api/exports/nope", json={"name": "x"}).status_code == 404
     assert client.patch(f"/api/exports/{EXPORT_ID}", json={"name": "a" * 81}).status_code == 400
 
+    assert client.patch(f"/api/exports/{EXPORT_ID}", json={}).status_code == 422
+
+    cleared = client.patch(f"/api/exports/{EXPORT_ID}", json={"name": None})
+    assert cleared.status_code == 200, cleared.text
+    assert cleared.json()["name"] is None
+
 
 def test_run_lifecycle_metrics_predictions_weights(client):
     rid = start(client)

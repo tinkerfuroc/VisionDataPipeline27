@@ -27,6 +27,8 @@ def test_clean_name():
         clean_name("a" * 81)
     with pytest.raises(BadRequest, match="control"):
         clean_name("two\nlines")
+    with pytest.raises(BadRequest, match="control"):
+        clean_name("two lines")  # U+2028 LINE SEPARATOR (category Zl)
 
 
 def test_reserve_uses_the_slug_then_numbers(tmp_path):

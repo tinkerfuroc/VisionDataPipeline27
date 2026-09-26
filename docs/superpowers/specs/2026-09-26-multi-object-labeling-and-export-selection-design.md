@@ -209,9 +209,10 @@ defaults to `"all"`; "all" includes objects hidden in the GUI).
   set, with the id beneath; otherwise the id. Runs store only `export_id` (run.json), so the Runs table and the
   prediction gallery look the name up in the `/api/exports` list; without a name the Runs table keeps today's
   project name over the id.
-- Rename: `PATCH /api/exports/{id}` `{name}` rewrites `export.json`'s `name` atomically under a per-export lock (the
-  folder id never changes, so runs that reference it stay valid). Train page: a rename field for the selected export
-  in the sidebar.
+- Rename: `PATCH /api/exports/{id}` `{name}` rewrites `export.json`'s `name` atomically under one global lock, not a
+  per-export one (renames are rare, so a single lock is the simpler choice); the folder id never changes, so runs
+  that reference it stay valid. Applies to exports listed on the Train page: those with a yolo_seg dataset. Train
+  page: a rename field for the selected export in the sidebar.
 - `list_exports` sorts by the manifest's `created_at`, newest first, ties broken by id (its docstring no longer says
   ids start with a timestamp).
 - Derived copies keep their id rules (`<source id>-aug<N>x-<4hex>`, and `<source id>-neg<N>-<4hex>` if the

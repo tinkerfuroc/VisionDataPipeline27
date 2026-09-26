@@ -140,11 +140,15 @@ def list_exports(data_root: Path) -> list[ExportInfo]:
     return sorted(out, key=lambda e: (e.created_at, e.id), reverse=True)
 
 
-_RENAME_LOCK = threading.Lock()  # renames are rare; one lock keeps two concurrent renames from losing an update
+# One process-wide lock, deliberately not one per export: renames are rare, so a single lock serialising all
+# of them (rather than the bookkeeping of a lock per export id) is the simpler choice and costs nothing in practice.
+_RENAME_LOCK = threading.Lock()
 
 
 def rename_export(data_root: Path, export_id: str, name: str | None) -> ExportInfo:
-    """Set (or clear, with None/blank) an export's display name. The folder id never changes, so runs keep working."""
+    """Set (or clear, with None/blank) an export's display name. The folder id never changes, so runs keep
+    working. Goes through `find_export`, so this works for any export with a yolo_seg dataset (the same set
+    listed on the Train page), and 404s / 400s exactly as `find_export` would."""
     from .runs import atomic_write_json
 
     name = clean_name(name)

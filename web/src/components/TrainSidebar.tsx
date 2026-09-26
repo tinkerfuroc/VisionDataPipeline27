@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../api/rest";
 import type { AugmentMode, AugParams, ExportInfo, GpuQueue, Run, StartRunsRequest, TrainParams, TrainStatus } from "../api/types";
+import { exportLabel } from "../lib/exportName";
 import { defaultGpu, startProblem, statusText } from "../lib/train";
 import { AugmentPanel } from "./AugmentPanel";
 
@@ -134,7 +135,7 @@ export function TrainSidebar({ status, exports, runs, exportId, onExportChange, 
             {exports.length === 0 && <option value="">No yolo_seg export yet</option>}
             {exports.map((e) => (
               <option key={e.id} value={e.id}>
-                {e.name !== null ? `${e.name} · ${e.id}` : `${e.project_name} · ${e.id}`} ·{" "}
+                {e.name !== null ? exportLabel(e) : e.project_name} · {e.id} ·{" "}
                 {e.train_images} train / {e.val_images} val
               </option>
             ))}

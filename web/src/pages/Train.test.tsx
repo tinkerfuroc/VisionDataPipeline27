@@ -235,6 +235,21 @@ describe("Train page", () => {
     expect(optionTexts.some((t) => t.startsWith(`${exp.project_name} · ${exp.id}`))).toBe(true);
   });
 
+  it("shows the selected run's export name in the run-detail heading, else the project name", async () => {
+    const named: ExportInfo = { ...exp, id: "cups-v2", name: "Cups v2" };
+    m.listExports.mockResolvedValue([exp, named]);
+    m.listRuns.mockResolvedValue([r1, { ...r2, export_id: named.id }]);
+    renderPage();
+
+    // r1 is running, so it is selected by default; its export (`exp`) has no name, so the heading
+    // falls back to the run's project name.
+    expect(await screen.findByText(`yolo26s-seg on ${exp.project_name} · Epoch 3/100`)).toBeTruthy();
+
+    // Selecting r2 (whose export is named) switches the heading to the export's name.
+    fireEvent.click(screen.getByRole("checkbox", { name: "Compare yolo26m-seg" }).closest("tr")!);
+    expect(await screen.findByText("yolo26m-seg on Cups v2 · Queued")).toBeTruthy();
+  });
+
   it("renames the selected export: prefilled field, Save disabled until changed, then refreshes the exports", async () => {
     const named: ExportInfo = { ...exp, name: "Cups v2" };
     m.listExports.mockResolvedValue([named]);

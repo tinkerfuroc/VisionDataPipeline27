@@ -26,6 +26,7 @@ from PIL import Image
 
 from ..export import ExportCancelled, manifest_for, write_dataset
 from ..export.base import ExportSummary, place_image
+from ..export.naming import MAX_NAME
 from ..export.plan import ExportOptions, ExportPlan, PlanFrame, PlanObject
 from ..export.polygons import clean_mask
 from ..labeling.errors import BadRequest
@@ -41,6 +42,18 @@ class AugmentOptions:
     max_objects: int = 2
     seed: int = 0
     pool: str = "dtd"
+
+
+def _derived_name(source_name: str, per_image: int) -> str:
+    """The source's display name (name, else id) plus ` ×<N> augmented`, truncated so the result never
+    exceeds `MAX_NAME`: the suffix is always kept whole, and the source part is shortened (trailing
+    whitespace stripped off the cut) to make room for it."""
+    suffix = f" ×{per_image} augmented"
+    base = source_name
+    max_base = MAX_NAME - len(suffix)
+    if len(base) > max_base:
+        base = base[:max_base].rstrip()
+    return f"{base}{suffix}"
 
 
 def check_augment(data_root: Path, export_id: str, opts: AugmentOptions) -> dict:
@@ -261,7 +274,7 @@ def run_augment(
         )
         result_manifest["counts"] = counts
         result_manifest["derived_from"] = export_id
-        result_manifest["name"] = f"{manifest.get('name') or export_id} ×{opts.per_image} augmented"
+        result_manifest["name"] = _derived_name(manifest.get("name") or export_id, opts.per_image)
         result_manifest["augment"] = {
             "per_image": opts.per_image, "max_objects": opts.max_objects, "seed": opts.seed,
             "pool": opts.pool, "synthetic_images": len(synthetic),

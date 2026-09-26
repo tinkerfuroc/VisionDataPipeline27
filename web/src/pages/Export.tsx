@@ -330,7 +330,7 @@ export function Export() {
             {job.status === "done" && result !== null && (
               <div className="flex flex-col gap-1.5">
                 <h3 className="heading">Dataset written</h3>
-                {result.name !== null && <p className="text-sm text-ink">{result.name}</p>}
+                {result.name && <p className="text-sm text-ink">{result.name}</p>}
                 {/* a textarea, so a long path wraps instead of being cut off; focus selects it for copying */}
                 <textarea aria-label="Dataset folder" readOnly rows={3} className="field resize-none break-all font-cond"
                   value={result.path} onFocus={(e) => e.target.select()} />

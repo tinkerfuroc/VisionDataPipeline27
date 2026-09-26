@@ -95,7 +95,7 @@ def exports(state: State) -> list[dict]:
 
 
 class RenameBody(BaseModel):
-    name: str | None = None
+    name: str | None  # required key (may be null): a PATCH with no `name` at all is a 422, not a no-op clear
 
 
 @router.patch("/api/exports/{export_id}")
