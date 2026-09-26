@@ -7,8 +7,10 @@ from pathlib import Path
 import cv2
 import numpy as np
 import pytest
-from vsp.augment.derive import AugmentOptions, check_augment, run_augment
+from vsp.augment.derive import AugmentOptions, _merged_format_summaries, check_augment, run_augment
 from vsp.export import ExportCancelled, ExportOptions, run_export
+from vsp.export.base import ExportSummary
+from vsp.export.mask_png import MaskSummary
 from vsp.labeling.errors import BadRequest
 from vsp.store import NotFound
 from vsp.store.models import LabelObject
@@ -384,3 +386,29 @@ def test_a_source_manifest_without_project_class_id_maps_to_itself(store, make_c
     manifest = json.loads((Path(result["path"]) / "export.json").read_text())
     assert [(c["id"], c["project_class_id"]) for c in manifest["classes"]] == [(0, 0)]
     assert manifest["options"]["class_ids"] is None
+
+
+def test_merged_summaries_sum_overlap_px_and_leave_other_formats_alone():
+    counts = {"images": {"train": 4, "val": 1}, "annotations": {"train": 4, "val": 1}, "linked": True}
+    src = [{"name": "masks", **counts, "overlap_px": 30}, {"name": "yolo_seg", **counts}]
+    synth = [MaskSummary("masks", overlap_px=5), ExportSummary("yolo_seg")]
+    merged = {m["name"]: m for m in _merged_format_summaries(src, synth, True)}
+    assert merged["masks"]["overlap_px"] == 35
+    assert "overlap_px" not in merged["yolo_seg"]
+    older = _merged_format_summaries([{"name": "masks", **counts}], [MaskSummary("masks", overlap_px=0)], True)
+    assert older[0]["overlap_px"] == 0  # a source written before overlap_px counts as 0
+
+
+def test_the_derived_mask_summary_carries_the_source_overlap(store, make_clip, tmp_path):
+    project, clip = _multi(store, make_clip)
+    data_root = tmp_path / "data"
+    src = _export(store, project, clip, ["yolo_seg", "masks"], data_root)
+    _make_pool(data_root)
+    result = run_augment(data_root, src["export_id"], AugmentOptions(per_image=1, seed=0))
+    src_masks = next(f for f in json.loads((Path(src["path"]) / "export.json").read_text())["formats"]
+                     if f["name"] == "masks")
+    new_masks = next(f for f in json.loads((Path(result["path"]) / "export.json").read_text())["formats"]
+                     if f["name"] == "masks")
+    # _multi: m1&m2 share column 29 on rows 10-19 (10 px), and rows 20-29, columns 20-44 hold 2+ objects (250 px)
+    assert src_masks["overlap_px"] == 6 * 260
+    assert new_masks["overlap_px"] == src_masks["overlap_px"]  # composites never overlap: one owner per pixel

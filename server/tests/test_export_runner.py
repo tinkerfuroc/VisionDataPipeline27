@@ -106,3 +106,12 @@ def test_the_manifest_maps_export_ids_back_to_project_classes(store, make_clip, 
         "id": 0, "project_class_id": 2, "name": "plate", "color": project.classes[2].color,
         "yolo_id": 0, "coco_id": 1, "mask_value": 1,
     }]
+
+
+def test_overlap_px_is_reported_for_the_mask_format_only(store, make_clip, tmp_path):
+    project, clip = _labelled(store, make_clip)
+    result = run_export(store, project.id, [clip.id], ["yolo_seg", "masks"], ExportOptions(), tmp_path / "exports")
+    manifest = json.loads((tmp_path / "exports" / result["export_id"] / "export.json").read_text())
+    formats = {f["name"]: f for f in manifest["formats"]}
+    assert formats["masks"]["overlap_px"] == 0  # one object per frame
+    assert "overlap_px" not in formats["yolo_seg"]

@@ -166,12 +166,15 @@ def _merged_format_summaries(
     merged = []
     for src in src_formats:
         synth = synth_by_name.get(src["name"], empty)
-        merged.append({
+        entry = {
             "name": src["name"],
             "images": {sp: src["images"][sp] + synth["images"][sp] for sp in ("train", "val")},
             "annotations": {sp: src["annotations"][sp] + synth["annotations"][sp] for sp in ("train", "val")},
             "linked": bool(src["linked"]) and bool(synth["linked"]) and real_linked,
-        })
+        }
+        if "overlap_px" in src or "overlap_px" in synth:  # the masks format; an older source counts as 0
+            entry["overlap_px"] = int(src.get("overlap_px", 0)) + int(synth.get("overlap_px", 0))
+        merged.append(entry)
     return merged
 
 
