@@ -3,6 +3,7 @@ import threading
 
 import numpy as np
 import pytest
+from vsp.labeling.prompts import create_object
 from vsp.store import (
     Clip,
     ClipSource,
@@ -14,6 +15,7 @@ from vsp.store import (
     StoreError,
     atomic_write_bytes,
     encode_mask_png,
+    now_iso,
 )
 
 
@@ -180,3 +182,29 @@ def test_encode_mask_png_matches_what_write_mask_stores(store):
     assert store.mask_path(clip.id, 1, 0).read_bytes() == data
     with pytest.raises(StoreError, match="empty mask"):
         encode_mask_png(np.zeros((4, 4), dtype=bool))
+
+
+def test_object_states_are_per_object_and_deleted_frames_show_in_every_lane(store, make_clip):
+    _, clip = make_clip(n_frames=6)
+    a = create_object(clip, 0)
+    b = create_object(clip, 0)
+    clip.deleted_frames = [5]
+    store.write_clip(clip)
+    m = np.ones((60, 120), dtype=bool)
+    store.write_mask(clip.id, a.id, 1, m)
+    store.write_mask(clip.id, b.id, 2, m)
+    store.write_mask(clip.id, b.id, 5, m)
+    b.keyframes = [Keyframe(frame_idx=2, prompt=Prompt(type="paint", payload={}), created_at=now_iso())]
+    assert store.object_states(clip, a) == ["empty", "masked", "empty", "empty", "empty", "deleted"]
+    assert store.object_states(clip, b) == ["empty", "empty", "keyframe", "empty", "empty", "deleted"]
+    assert store.frame_states(clip) == ["empty", "masked", "keyframe", "empty", "empty", "deleted"]
+
+
+def test_delete_object_masks_removes_only_that_object(store, make_clip):
+    _, clip = make_clip(n_frames=3)
+    m = np.ones((60, 120), dtype=bool)
+    store.write_mask(clip.id, 1, 0, m)
+    store.write_mask(clip.id, 2, 0, m)
+    store.delete_object_masks(clip.id, 2)
+    assert store.mask_indices(clip.id, 1) == [0] and store.mask_indices(clip.id, 2) == []
+    store.delete_object_masks(clip.id, 7)  # nothing there: no error

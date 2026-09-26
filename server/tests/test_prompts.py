@@ -3,8 +3,9 @@ import pytest
 from pydantic import ValidationError
 from vsp.engine.fake import FakeEngine
 from vsp.engine.masks import bbox_of
-from vsp.labeling.errors import BadRequest, Conflict
+from vsp.labeling.errors import BadRequest
 from vsp.labeling.prompts import OBJECT_ID, PromptSpec, accept, create_object, padded_box, preview
+from vsp.store import LabelObject
 
 CLICK = PromptSpec(type="clicks", points=[(30, 30, 1)])  # FakeEngine -> rect x 20:40, y 20:40 (400 px)
 
@@ -118,11 +119,19 @@ def test_frame_out_of_range_and_deleted_frame(store, make_clip):
         accept(store, FakeEngine(), clip.id, 2, CLICK, class_id=0)
 
 
-def test_single_object_guard(store, make_clip):
+def test_object_ids_grow_and_are_never_reused(store, make_clip):
     _, clip = make_clip()
-    create_object(clip, 0)
-    with pytest.raises(Conflict, match="one object per clip"):
-        create_object(clip, 0)
+    assert [create_object(clip, 0).id for _ in range(3)] == [1, 2, 3]
+    assert clip.next_object_id == 4
+    clip.objects = [o for o in clip.objects if o.id != 3]  # deleting the newest must not free its id
+    assert create_object(clip, 0).id == 4
+
+
+def test_old_clip_files_without_next_object_id_continue_after_the_highest_id(store, make_clip):
+    _, clip = make_clip()
+    clip.objects = [LabelObject(id=1, class_id=0)]
+    clip.next_object_id = 0  # what an old clip.json loads as
+    assert create_object(clip, 0).id == 2
 
 
 def test_padded_box_is_clamped():

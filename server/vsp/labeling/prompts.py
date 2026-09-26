@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field, model_validator
 from ..engine.masks import bbox_of
 from ..engine.types import Detection, Engine
 from ..store import Clip, Keyframe, LabelObject, NotFound, ProjectStore, Prompt, now_iso
-from .errors import BadRequest, Conflict
+from .errors import BadRequest
 
 OBJECT_ID = 1  # v1: one object per clip
 BOX_FROM_MASK_PAD = 10
@@ -58,11 +58,11 @@ def padded_box(mask: np.ndarray, pad: int, width: int, height: int) -> tuple[int
 
 
 def create_object(clip: Clip, class_id: int) -> LabelObject:
-    """The single place the v1 one-object-per-clip rule is enforced."""
-    if clip.objects:
-        raise Conflict("v1 supports one object per clip; import the footage again to label another component")
-    obj = LabelObject(id=OBJECT_ID, class_id=class_id)
+    """Append a new object to `clip` (in memory; the caller writes the clip). Ids are never reused."""
+    new_id = max(clip.next_object_id, max((o.id for o in clip.objects), default=0) + 1)
+    obj = LabelObject(id=new_id, class_id=class_id)
     clip.objects.append(obj)
+    clip.next_object_id = new_id + 1
     return obj
 
 
