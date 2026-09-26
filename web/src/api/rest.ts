@@ -1,5 +1,5 @@
 import type {
-  AugmentRequest, BackgroundPool, Candidate, ClassDef, ClipDetail, ClipSummary, Direction, ExportInfo, ExportRequest, ExportSample, Health, JobSnapshot, PredictionFilter, PredictionPage, Project, PromptSpec, Run, RunDetail, StartRunsRequest, TrainStatus,
+  AugmentRequest, BackgroundPool, Candidate, ClassDef, ClipDetail, ClipSummary, Direction, ExportInfo, ExportRequest, ExportSample, Health, JobSnapshot, ObjectSelection, PredictionFilter, PredictionPage, Project, PromptSpec, Run, RunDetail, StartRunsRequest, TrainStatus,
 } from "./types";
 
 /** The `job_id` the server reports while a prompt/accept/clear-range call holds the GPU lease. */
@@ -144,6 +144,9 @@ const patch = (body: unknown): RequestInit => ({
 export const frameUrl = (clipId: string, idx: number) => `/api/clips/${clipId}/frames/${idx}`;
 export const thumbUrl = (clipId: string, idx: number) => `/api/clips/${clipId}/thumbs/${idx}`;
 export const maskUrl = (clipId: string, idx: number, version: string) => `/api/clips/${clipId}/masks/${idx}?v=${version}`;
+/** One object's stored mask on one frame; `version` busts the cache when the mask is rewritten in place. */
+export const objectMaskUrl = (clipId: string, objectId: number, idx: number, version: string) =>
+  `/api/clips/${clipId}/objects/${objectId}/masks/${idx}?v=${version}`;
 export const weightsUrl = (runId: string, file: "best.pt" | "best.onnx") => `/api/train/runs/${runId}/weights/${file}`;
 export const exportImageUrl = (exportId: string, split: "train" | "val", name: string) =>
   `/api/exports/${exportId}/images/${split}/${encodeURIComponent(name)}`;
@@ -184,14 +187,20 @@ export const api = {
       `/api/clips/${clipId}/mask`,
       post({ frame, mask_png_b64: maskPngB64, ...(opts.classId === undefined ? {} : { class_id: opts.classId }) }),
     ),
-  propagate: (clipId: string, fromFrame: number, direction: Direction) =>
-    request<{ job_id: string }>(`/api/clips/${clipId}/propagate`, post({ from_frame: fromFrame, direction })),
+  propagate: (clipId: string, fromFrame: number, direction: Direction, objects: ObjectSelection = "all") =>
+    request<{ job_id: string }>(`/api/clips/${clipId}/propagate`, post({ from_frame: fromFrame, direction, objects })),
 
   deleteFrame: (clipId: string, idx: number) => request<ClipDetail>(`/api/clips/${clipId}/frames/${idx}/delete`, post()),
   restoreFrame: (clipId: string, idx: number) => request<ClipDetail>(`/api/clips/${clipId}/frames/${idx}/restore`, post()),
   prune: (clipId: string, from: number) => request<ClipDetail>(`/api/clips/${clipId}/prune`, post({ from })),
-  clearRange: (clipId: string, start: number, end: number) =>
-    request<ClipDetail>(`/api/clips/${clipId}/clear-range`, post({ start, end })),
+  clearRange: (clipId: string, start: number, end: number, objects: ObjectSelection = "all") =>
+    request<ClipDetail>(`/api/clips/${clipId}/clear-range`, post({ start, end, objects })),
+  /** relabel at once; allowed during a propagation (it touches no mask) */
+  relabelObject: (clipId: string, objectId: number, classId: number) =>
+    request<ClipDetail>(`/api/clips/${clipId}/objects/${objectId}`, patch({ class_id: classId })),
+  /** 409 while a propagation or an export runs */
+  deleteObject: (clipId: string, objectId: number) =>
+    request<ClipDetail>(`/api/clips/${clipId}/objects/${objectId}`, { method: "DELETE" }),
 
   getJob: (id: string) => request<JobSnapshot>(`/api/jobs/${id}`),
   cancelJob: (id: string) => request<JobSnapshot>(`/api/jobs/${id}`, { method: "DELETE" }),

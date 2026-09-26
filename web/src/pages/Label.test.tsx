@@ -3,7 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError, api } from "../api/rest";
-import type { ClipDetail } from "../api/types";
+import type { ClipDetail, FrameState } from "../api/types";
 import { HealthContext, type HealthState } from "../hooks/useHealth";
 import { stubCanvasAndObservers } from "../test/setup-dom";
 import { Label } from "./Label";
@@ -45,15 +45,21 @@ class FakeSocket {
   }
 }
 
+const states: FrameState[] = Array.from({ length: 40 }, (_, i) =>
+  i === 0 ? "keyframe" : i < 20 ? "masked" : i === 30 ? "deleted" : "empty",
+);
 const detail: ClipDetail = {
   clip: {
     id: "c1", project_id: "p", source: { type: "video", name: "bench.mp4" }, fps: 10, stride: 1, width: 640, height: 480,
     frame_count: 40, created_at: "", deleted_frames: [30], original_names: { "3": "img_0007.png" },
     objects: [{ id: 1, class_id: 0, keyframes: [], propagated_ranges: [] }],
   },
-  states: Array.from({ length: 40 }, (_, i) => (i === 0 ? "keyframe" : i < 20 ? "masked" : i === 30 ? "deleted" : "empty")),
+  states,
   classes: [{ id: 0, name: "connector", color: "#e6194b" }],
+  object_states: { "1": states },
 };
+/** a one-object detail with these states; its object's lane equals the clip's, as the server reports for one object */
+const oneObject = (s: FrameState[]): ClipDetail => ({ ...detail, states: s, object_states: { "1": s } });
 
 const ready: HealthState = {
   health: { status: "ok", version: "0", engine: { loaded: true, device: "cuda:0", error: null } },
@@ -135,7 +141,7 @@ describe("Label page (prompting)", () => {
     vi.mocked(api.prompt).mockResolvedValue({
       candidates: [{ score: 0.9, bbox: [80, 30, 120, 70], area: 1200, phrase: null, mask_png_b64: "AAAA" }],
     });
-    const accepted = { ...detail, states: detail.states.map((s, i) => (i === 25 ? "keyframe" : s)) } as ClipDetail;
+    const accepted = oneObject(detail.states.map((s, i) => (i === 25 ? "keyframe" : s)));
     vi.mocked(api.accept).mockResolvedValue(accepted);
     renderLabel();
     await screen.findByText("bench.mp4");
@@ -185,7 +191,7 @@ describe("Label page (propagation, cleanup, keyboard)", () => {
     await waitFor(() => expect(FakeSocket.last?.url).toMatch(/j1$/));
     expect(sessionStorage.getItem("vsp.job.c1")).toBe("j1");
     FakeSocket.last!.emit({ seq: 0, type: "progress", done: 0, total: 39 });
-    FakeSocket.last!.emit({ seq: 1, type: "frame", frame: 20, has_mask: true, done: 1, total: 39 });
+    FakeSocket.last!.emit({ seq: 1, type: "frame", frame: 20, objects: [{ id: 1, has_mask: true }], done: 1, total: 39 });
     // F3: frame events are buffered and applied on the next animation frame, not synchronously
     expect(await screen.findByText("frame 20 / 39")).toBeTruthy();
     expect(screen.getByText(/20 masked/)).toBeTruthy();
@@ -196,6 +202,25 @@ describe("Label page (propagation, cleanup, keyboard)", () => {
     expect(await screen.findByText("frame 33 / 39")).toBeTruthy();
     expect(screen.getByText(/lost the object at frame 33/i)).toBeTruthy();
     expect(sessionStorage.getItem("vsp.job.c1")).toBeNull();
+  });
+
+  it("follows the furthest frame of a run, not an earlier frame a lagging object re-emits", async () => {
+    vi.mocked(api.getClip).mockResolvedValue(detail);
+    vi.mocked(api.propagate).mockResolvedValue({ job_id: "j1" });
+    renderLabel();
+    await screen.findByText("bench.mp4");
+    fireEvent.click(screen.getByRole("button", { name: "Forward ▶" }));
+    await waitFor(() => expect(FakeSocket.last?.url).toMatch(/j1$/));
+    // one batch: the leading group reaches frame 22, then the lagging group re-emits frame 21 at the same `done`
+    FakeSocket.last!.emit({ seq: 0, type: "frame", frame: 22, objects: [{ id: 1, has_mask: true }], done: 3, total: 39 });
+    FakeSocket.last!.emit({ seq: 1, type: "frame", frame: 21, objects: [{ id: 1, has_mask: true }], done: 3, total: 39 });
+    expect(await screen.findByText("frame 22 / 39")).toBeTruthy();
+    // a later batch holding only a re-emitted earlier frame does not pull the playhead back either
+    FakeSocket.last!.emit({ seq: 2, type: "frame", frame: 20, objects: [{ id: 1, has_mask: true }], done: 3, total: 39 });
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    expect(screen.getByText("frame 22 / 39")).toBeTruthy();
+    FakeSocket.last!.emit({ seq: 3, type: "frame", frame: 23, objects: [{ id: 1, has_mask: true }], done: 4, total: 39 });
+    expect(await screen.findByText("frame 23 / 39")).toBeTruthy();
   });
 
   it("offers propagation on any masked frame but not on an empty one, and Stop cancels the job", async () => {
@@ -233,7 +258,7 @@ describe("Label page (propagation, cleanup, keyboard)", () => {
     await waitFor(() => expect(FakeSocket.last?.url).toMatch(/j7$/));
     expect(sessionStorage.getItem("vsp.job.c1")).toBeNull();
     expect(screen.getByText(/GPU is busy with a propagation that was not started from this page/i)).toBeTruthy();
-    FakeSocket.last!.emit({ seq: 0, type: "frame", frame: 20, has_mask: true, done: 1, total: 39 });
+    FakeSocket.last!.emit({ seq: 0, type: "frame", frame: 20, objects: [{ id: 1, has_mask: true }], done: 1, total: 39 });
     expect(screen.getByText("frame 0 / 39")).toBeTruthy();
     expect(screen.getByText(/19 masked/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Stop" }));
@@ -271,7 +296,7 @@ describe("Label page (propagation, cleanup, keyboard)", () => {
     renderLabel();
     await screen.findByText("bench.mp4");
     await waitFor(() => expect(FakeSocket.last?.url).toMatch(/j5$/));
-    FakeSocket.last!.emit({ seq: 0, type: "frame", frame: 20, has_mask: true, done: 1, total: 39 });
+    FakeSocket.last!.emit({ seq: 0, type: "frame", frame: 20, objects: [{ id: 1, has_mask: true }], done: 1, total: 39 });
     expect(await screen.findByText("frame 20 / 39")).toBeTruthy();
     expect(screen.getByText(/20 masked/)).toBeTruthy();
   });
@@ -297,10 +322,7 @@ describe("Label page (propagation, cleanup, keyboard)", () => {
   });
 
   it("coalesces a burst of streamed frame events into a single flush", async () => {
-    const emptyDetail: ClipDetail = {
-      ...detail,
-      states: Array.from({ length: 40 }, (_, i) => (i === 0 ? "keyframe" : "empty")),
-    };
+    const emptyDetail = oneObject(Array.from({ length: 40 }, (_, i) => (i === 0 ? "keyframe" : "empty")));
     vi.mocked(api.getClip).mockResolvedValue(emptyDetail);
     vi.mocked(api.propagate).mockResolvedValue({ job_id: "j1" });
     renderLabel();
@@ -314,7 +336,7 @@ describe("Label page (propagation, cleanup, keyboard)", () => {
       if (el?.textContent !== undefined && el?.textContent !== null) seen.add(el.textContent);
     });
     observer.observe(document.body, { childList: true, subtree: true, characterData: true });
-    for (let f = 1; f <= 30; f++) FakeSocket.last!.emit({ seq: f, type: "frame", frame: f, has_mask: true, done: f, total: 39 });
+    for (let f = 1; f <= 30; f++) FakeSocket.last!.emit({ seq: f, type: "frame", frame: f, objects: [{ id: 1, has_mask: true }], done: f, total: 39 });
     expect(await screen.findByText("frame 30 / 39")).toBeTruthy();
     observer.disconnect();
     expect(screen.getByText(/30 masked/)).toBeTruthy();
@@ -328,7 +350,7 @@ describe("Label page (propagation, cleanup, keyboard)", () => {
 
   it("handles the keyboard map", async () => {
     vi.mocked(api.getClip).mockResolvedValue(detail);
-    const deleted = { ...detail, states: detail.states.map((s, i) => (i === 11 ? "deleted" : s)) } as ClipDetail;
+    const deleted = oneObject(detail.states.map((s, i) => (i === 11 ? "deleted" : s)));
     vi.mocked(api.deleteFrame).mockResolvedValue(deleted);
     vi.mocked(api.restoreFrame).mockResolvedValue(detail);
     renderLabel();

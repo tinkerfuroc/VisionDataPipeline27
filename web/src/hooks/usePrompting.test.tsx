@@ -20,9 +20,10 @@ const baseDetail = (withObject: boolean): ClipDetail => ({
   },
   states: Array(10).fill("empty"),
   classes: [{ id: 0, name: "a", color: "#ff0000" }, { id: 1, name: "b", color: "#00ff00" }],
+  object_states: withObject ? { "1": Array(10).fill("empty") } : {},
 });
 const handle = (detail: ClipDetail): ClipHandle => ({
-  detail, error: null, refreshError: null, reload: vi.fn(), apply: vi.fn(), patchFrame: vi.fn(), patchFrames: vi.fn(),
+  detail, error: null, refreshError: null, reload: vi.fn(), apply: vi.fn(), patchFrames: vi.fn(),
   maskVersion: () => "0.0",
 });
 type Args = { frame: number; classId: number | null; clip: ClipHandle; enabled: boolean };

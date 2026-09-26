@@ -24,6 +24,7 @@ import { usePrompting } from "../hooks/usePrompting";
 import { FrameStore, MASK_ALPHA } from "../lib/frameCache";
 import { isTerminal } from "../lib/jobReducer";
 import { hexToRgb } from "../lib/mask";
+import { parseFrameEvent, type FrameEvent } from "../lib/objects";
 import { loadStyle, outlineFor, saveStyle, type OverlayStyle } from "../lib/overlayStyle";
 import { clampFrame, findNext } from "../lib/timeline";
 
@@ -66,7 +67,10 @@ export function Label() {
   const ownJob = useRef(true);
   // F3: a re-attach replays every event from seq 0, so `frame` events can arrive many per macrotask; buffer own-job
   // ones and apply the whole batch (one setFrame, one patchFrames) on the next animation frame instead of per event.
-  const frameEventBuffer = useRef<{ frame: number; hasMask: boolean }[]>([]);
+  const frameEventBuffer = useRef<FrameEvent[]>([]);
+  /** the highest `done` the playhead has followed in this job: a lagging object's re-emitted earlier frames (same or
+   * lower `done`) must not pull the view back */
+  const followedDone = useRef(-1);
   const flushHandle = useRef<number | null>(null);
   const followRef = useRef(follow);
   followRef.current = follow;
@@ -79,14 +83,23 @@ export function Label() {
     frameEventBuffer.current = [];
     if (events.length === 0) return;
     patchFrames(events);
-    if (followRef.current) setFrame(clampFrame(events[events.length - 1].frame, frameCountRef.current));
+    if (followRef.current) {
+      // follow the event with the highest `done` (the first one to reach it), not the last event of the batch
+      let lead: FrameEvent | null = null;
+      for (const e of events) if ((e.done ?? 0) > (lead?.done ?? followedDone.current)) lead = e;
+      if (lead !== null) {
+        followedDone.current = lead.done ?? 0;
+        setFrame(clampFrame(lead.frame, frameCountRef.current));
+      }
+    }
   }, [patchFrames]);
 
   const onJobEvent = useCallback(
     (event: JobEvent) => {
-      if (event.type !== "frame" || typeof event.frame !== "number") return;
+      const parsed = parseFrameEvent(event);
+      if (parsed === null) return;
       if (!ownJob.current) return; // a job this page did not start must not drive this clip
-      frameEventBuffer.current.push({ frame: event.frame, hasMask: event.has_mask === true });
+      frameEventBuffer.current.push(parsed);
       if (flushHandle.current === null) flushHandle.current = requestAnimationFrame(flushFrameEvents);
     },
     [flushFrameEvents],
@@ -101,6 +114,7 @@ export function Label() {
       if (flushHandle.current !== null) cancelAnimationFrame(flushHandle.current);
       flushHandle.current = null;
       frameEventBuffer.current = [];
+      followedDone.current = -1;
     };
   }, [jobId]);
 

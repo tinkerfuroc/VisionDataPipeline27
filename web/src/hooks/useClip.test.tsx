@@ -13,10 +13,11 @@ vi.mock("../api/rest", async (original) => ({
 const detail: ClipDetail = {
   clip: {
     id: "c1", project_id: "p", source: { type: "video", name: "a.mp4" }, fps: 30, stride: 1, width: 640, height: 480,
-    frame_count: 3, created_at: "", deleted_frames: [], objects: [],
+    frame_count: 3, created_at: "", deleted_frames: [], objects: [{ id: 1, class_id: 0, keyframes: [], propagated_ranges: [] }],
   },
   states: ["keyframe", "empty", "masked"],
   classes: [],
+  object_states: { "1": ["keyframe", "empty", "masked"] },
 };
 
 beforeEach(() => vi.resetAllMocks());
@@ -45,47 +46,45 @@ describe("useClip", () => {
     const { result } = renderHook(() => useClip("c1"));
     await waitFor(() => expect(result.current.error).toBe("clip c1 not found"));
   });
-  it("patches one frame from a job event and gives that frame's mask a new version", async () => {
+  it("patches an object's lane from a job event, recomputes the clip state and re-versions that frame only", async () => {
     vi.mocked(api.getClip).mockResolvedValue(detail);
     const { result } = renderHook(() => useClip("c1"));
     await waitFor(() => expect(result.current.detail).not.toBeNull());
     const before = [result.current.maskVersion(1), result.current.maskVersion(2)];
-    act(() => result.current.patchFrame(1, true));
+    act(() => result.current.patchFrames([{ frame: 1, objects: [{ id: 1, hasMask: true }] }]));
+    expect(result.current.detail?.object_states["1"]).toEqual(["keyframe", "masked", "masked"]);
     expect(result.current.detail?.states).toEqual(["keyframe", "masked", "masked"]);
     expect(result.current.maskVersion(1)).not.toBe(before[0]);
     expect(result.current.maskVersion(2)).toBe(before[1]);
   });
-  it("patchFrames applies a batch of events in one update and re-versions only the touched frames", async () => {
-    const wide: ClipDetail = { ...detail, states: ["keyframe", "empty", "empty", "empty"] };
-    vi.mocked(api.getClip).mockResolvedValue(wide);
+  it("patchFrames applies a batch in one update and re-versions every touched frame", async () => {
+    const lane: ClipDetail["states"] = ["keyframe", "empty", "empty", "empty"];
+    vi.mocked(api.getClip).mockResolvedValue({ ...detail, states: lane, object_states: { "1": lane } });
     const { result } = renderHook(() => useClip("c1"));
     await waitFor(() => expect(result.current.detail).not.toBeNull());
-    const before = [
-      result.current.maskVersion(0),
-      result.current.maskVersion(1),
-      result.current.maskVersion(2),
-      result.current.maskVersion(3),
-    ];
+    const before = [0, 1, 2, 3].map((f) => result.current.maskVersion(f));
     act(() =>
       result.current.patchFrames([
-        { frame: 1, hasMask: true },
-        { frame: 2, hasMask: true },
-        { frame: 3, hasMask: false },
+        { frame: 1, objects: [{ id: 1, hasMask: true }] },
+        { frame: 2, objects: [{ id: 1, hasMask: true }] },
+        { frame: 3, objects: [{ id: 1, hasMask: false }] },
       ]),
     );
     expect(result.current.detail?.states).toEqual(["keyframe", "masked", "masked", "empty"]);
-    expect(result.current.maskVersion(0)).toBe(before[0]); // frame 0 was not in the batch: unchanged
+    expect(result.current.maskVersion(0)).toBe(before[0]); // not in the batch: unchanged
     expect(result.current.maskVersion(1)).not.toBe(before[1]);
     expect(result.current.maskVersion(2)).not.toBe(before[2]);
-    expect(result.current.maskVersion(3)).not.toBe(before[3]); // frame 3 stayed "empty" but its mask was still touched
+    expect(result.current.maskVersion(3)).not.toBe(before[3]); // stayed "empty", but its mask was still touched
   });
-  it("re-versions a frame whose mask was overwritten even if its state did not change", async () => {
+  it("re-versions a frame whose mask was overwritten even if no state changed", async () => {
     vi.mocked(api.getClip).mockResolvedValue(detail);
     const { result } = renderHook(() => useClip("c1"));
     await waitFor(() => expect(result.current.detail).not.toBeNull());
+    const shown = result.current.detail;
     const before = result.current.maskVersion(2);
-    act(() => result.current.patchFrame(2, true));
+    act(() => result.current.patchFrames([{ frame: 2, objects: [{ id: 1, hasMask: true }] }]));
     expect(result.current.maskVersion(2)).not.toBe(before);
+    expect(result.current.detail).toBe(shown); // nothing changed: the same detail object
   });
   it("apply() replaces the detail and re-versions every mask only when masks changed", async () => {
     vi.mocked(api.getClip).mockResolvedValue(detail);

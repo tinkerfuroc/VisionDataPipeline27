@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError, UploadCancelled, api, detailText, maskUrl, request, retryInteractive } from "./rest";
+import { ApiError, UploadCancelled, api, detailText, maskUrl, objectMaskUrl, request, retryInteractive } from "./rest";
 import type { ExportRequest } from "./types";
 
 function mockFetch(...responses: Response[]) {
@@ -88,12 +88,38 @@ describe("retryInteractive", () => {
 
 describe("api", () => {
   it("posts a propagate request with the server's field names", async () => {
-    const fetchMock = mockFetch(jsonResponse({ job_id: "j1" }, 202));
+    const fetchMock = mockFetch(jsonResponse({ job_id: "j1" }, 202), jsonResponse({ job_id: "j2" }, 202));
     expect(await api.propagate("c1", 7, "both")).toEqual({ job_id: "j1" });
+    await api.propagate("c1", 7, "forward", [2]);
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe("/api/clips/c1/propagate");
     expect(init.method).toBe("POST");
-    expect(JSON.parse(init.body)).toEqual({ from_frame: 7, direction: "both" });
+    expect(JSON.parse(init.body)).toEqual({ from_frame: 7, direction: "both", objects: "all" });
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ from_frame: 7, direction: "forward", objects: [2] });
+  });
+
+  it("clears a range of every object, or of the listed ones", async () => {
+    const fetchMock = mockFetch(jsonResponse({}), jsonResponse({}));
+    await api.clearRange("c1", 2, 5);
+    await api.clearRange("c1", 2, 5, [3]);
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/clips/c1/clear-range");
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ start: 2, end: 5, objects: "all" });
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ start: 2, end: 5, objects: [3] });
+  });
+
+  it("relabels and deletes an object", async () => {
+    const fetchMock = mockFetch(jsonResponse({}), jsonResponse({}));
+    await api.relabelObject("c1", 2, 5);
+    await api.deleteObject("c1", 2);
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/clips/c1/objects/2");
+    expect(fetchMock.mock.calls[0][1].method).toBe("PATCH");
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ class_id: 5 });
+    expect(fetchMock.mock.calls[1][0]).toBe("/api/clips/c1/objects/2");
+    expect(fetchMock.mock.calls[1][1].method).toBe("DELETE");
+  });
+
+  it("versions per-object mask URLs", () => {
+    expect(objectMaskUrl("c1", 2, 4, "2.1")).toBe("/api/clips/c1/objects/2/masks/4?v=2.1");
   });
 
   it("sends accept with class_id and candidate only when given", async () => {
