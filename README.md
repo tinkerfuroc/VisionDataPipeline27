@@ -37,9 +37,11 @@ request also returns 409 with `job_id: "interactive"` if a prompt/accept/clear-r
 retry. Deleting a clip also returns 409 (with the running `job_id`) while a GPU job runs, so a delete can
 never race a propagation's writes. Cancelling an import job removes the partial clip it had started.
 
-`POST /api/projects/{id}/export` starts an export job; body `{clips, formats, options}` → `202 {job_id}`.
-It returns 400 for an invalid request (unknown format, no clips, a bad option) and 409 (with the running
-`job_id`) while a propagation job runs, since propagation rewrites the very masks an export reads.
+`POST /api/projects/{id}/export` starts an export job; body `{clips, formats, options, name}` → `202
+{job_id}`. `options.classes` is a list of project class ids to export (null or absent = every class); an
+empty list, a repeated id or an unknown class id is a 400. It returns 400 for an invalid request (unknown
+format, no clips, a bad option) and 409 (with the running `job_id`) while a propagation job runs, since
+propagation rewrites the very masks an export reads.
 
 ### Reaching the GUI from another machine
 
@@ -124,11 +126,22 @@ With the server running, `uv run python scripts/seed_demo.py` creates a project 
 An export lands under `data/exports/<export_id>/`: an `images/` directory holding one copy of every
 exported frame, plus one directory per requested format — `yolo_seg/`, `yolo_det/`, `coco/` and/or
 `masks/` — and an `export.json` manifest recording the resolved options, the clips exported (with their
-per-split frame counts), the class map (`yolo_id`, `coco_id`, `mask_value` per class) and the train/val
-image counts. The train/val split is always either per clip (whole clips held out for validation) or
-contiguous (the tail of every clip held out), never random per frame: neighbouring video frames are
-nearly identical, so a random per-frame split would leak validation frames into training. A cancelled or
-failed export removes its directory rather than leaving a partial dataset behind.
+per-split frame counts), the class map (per exported class: `id`/`yolo_id` = export id, `coco_id`/`mask_value`
+= export id + 1, and `project_class_id`, the project's own class id) and the train/val image counts. The
+train/val split is always either per clip (whole clips held out for validation) or contiguous (the tail of
+every clip held out), never random per frame: neighbouring video frames are nearly identical, so a random
+per-frame split would leak validation frames into training. A cancelled or failed export removes its
+directory rather than leaving a partial dataset behind.
+
+The Export page's right sidebar has a Classes section: one checkbox per class with its swatch and its object
+count over the included clips, all ticked by default. Objects of unticked classes are left out before
+anything else, so a frame left without objects is kept or dropped by "Include frames without a mask", and
+the split is taken after that. The exported classes are renumbered 0..k-1 in project class order (YOLO ids;
+COCO category ids and mask values are one higher); `options.class_ids` in `export.json` records the chosen
+project class ids (null = every class). Where objects overlap, the mask image holds one value per pixel:
+objects are painted largest first, so a smaller object lying on a larger one stays visible. The `masks`
+entry of `export.json`'s `formats` reports `overlap_px`, the pixels claimed by more than one object (the
+other formats keep every object whole).
 
 When you create an export, the Export page's right sidebar has a "Dataset name" field (optional, up to 80
 characters). If you provide a name, the export folder is named using that name, lowercased, with any
@@ -188,7 +201,7 @@ Installing `albumentations` (a dependency since this branch, `uv sync` pulls it 
 
 **Background pools:** `uv run vsp backgrounds fetch dtd` (CLI, ~625 MB) or `POST /api/backgrounds/dtd/fetch` (web job) downloads the Describable Textures Dataset (5,640 images, one category per folder) to `data/backgrounds/dtd/`. The `--force` flag redownloads even if images are present.
 
-**Augmented copies:** From the Train page, when an export has the `masks` format, an "Augmented copy" panel creates a new export with real train frames plus `per_image × (frame count)` synthetic composites named `syn_*`, seeded by a "Seed" field (0 by default, so two copies of the same export can differ). Each composite pastes `1–3` (user configurable) cutouts cut from real frames' mask regions (per-class, so two objects of the same class in one frame are cut together) onto random background textures, scaled, rotated, positioned and colour-matched. Val frames are unchanged (images hard-linked, labels copied verbatim per format). The source export is never modified and cannot itself be augmented if it is already derived. The copy carries over whichever of `yolo_seg`, `yolo_det`, `coco` and `masks` the source export has — not always all four. The copy's `export.json` names its source in a `derived_from` field (`null` for an ordinary export).
+**Augmented copies:** From the Train page, when an export has the `masks` format, an "Augmented copy" panel creates a new export with real train frames plus `per_image × (frame count)` synthetic composites named `syn_*`, seeded by a "Seed" field (0 by default, so two copies of the same export can differ). Each composite pastes `1–3` (user configurable) cutouts cut from real frames (one cutout per object, rasterised from the source's COCO train annotations when the source has the COCO format; without it, one cutout per class region of the mask images, so touching objects of one class are cut together — the panel says so) onto random background textures, scaled, rotated, positioned and colour-matched. With COCO, each object is cut out minus the pixels another object also claims. `export.json`'s `augment.cutouts` records which (`per_object` / `per_class_region`); the same seed on an export made before this change may give different composites. Val frames are unchanged (images hard-linked, labels copied verbatim per format). The source export is never modified and cannot itself be augmented if it is already derived. The copy carries over whichever of `yolo_seg`, `yolo_det`, `coco` and `masks` the source export has — not always all four. The copy's `export.json` names its source in a `derived_from` field (`null` for an ordinary export).
 
 **Prediction strip:** On the Train page, when a run finishes, a "Validation predictions" gallery shows four images at a time, scrollable. Filter chips select All / Missed (ground truth present but no prediction) / Worst IoU. Click a card to enlarge it. Keyboard `←/→` pages the strip by four images at a time; once a card is enlarged, the same keys instead step one image at a time through the current filter, and `Esc` (or "Back to strip") returns to the strip positioned on that card. The overlay shows ground truth as a dashed outline and predictions filled blue with confidence scores. IoU values per image are computed with the export's polygon convention and cached in `<run_dir>/predictions_iou.json`, rebuilt when `predictions.json` changes.
 
@@ -247,3 +260,10 @@ middle-drag pan · right click = negative point. `Enter`, `Esc` and `Z` act on t
     Train page; the Runs table shows the new name.
 19. (server) With two objects on a clip, `POST /propagate` with `objects: "all"` writes both objects' masks in one
     run; with `[2]` only object 2's; an object that disappears is reported under `lost` while the other continues.
+20. Class selection: on a project with three classes, untick one on the Export page (the counts follow the
+    included clips) and export all four formats; `yolo_seg/data.yaml` lists the remaining classes as 0 and 1,
+    COCO categories are 1 and 2, the mask PNG values are 1 and 2, and `export.json` maps them back with
+    `project_class_id`. Untick every class: Start says "Choose at least one class." Put a small object on a
+    large one: the mask PNG shows the small one, and `overlap_px` is non-zero. Make an augmented copy of an
+    export with COCO: `augment.cutouts` is `per_object`; of one without COCO: the panel notes the fallback and
+    it is `per_class_region`.
