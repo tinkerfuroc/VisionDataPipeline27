@@ -161,8 +161,8 @@ defaults to `"all"`; "all" includes objects hidden in the GUI).
 
 ## 9. Timeline (one lane per object)
 
-- One lane per object in object-id order; inactive lanes are 10 px, the active lane 30 px (today's band), 2 px gaps.
-  Each lane uses today's encoding for its object (filled in the class colour = masked, hollow = no mask, amber
+- One lane per object in object-id order; inactive lanes are 16 px (16 px, not 10: lane names stay at the page's
+  normal text size), the active lane 30 px (today's band), 2 px gaps. Each lane uses today's encoding for its object (filled in the class colour = masked, hollow = no mask, amber
   diamond = keyframe); deleted frames are hatched across every lane. Hidden objects' lanes are drawn at 40 % opacity.
 - A fixed 72 px left gutter names each lane `#id class`; clicking a lane or its label selects that object, and
   clicking inside a lane also seeks (as today).
