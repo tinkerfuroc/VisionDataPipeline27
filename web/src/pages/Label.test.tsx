@@ -173,7 +173,7 @@ describe("Label page (prompting)", () => {
     vi.mocked(api.prompt).mockResolvedValue({
       candidates: [{ score: 0.9, bbox: [80, 30, 120, 70], area: 1200, phrase: null, mask_png_b64: "AAAA" }],
     });
-    const accepted = oneObject(detail.states.map((s, i) => (i === 25 ? "keyframe" : s)));
+    const accepted = { ...oneObject(detail.states.map((s, i) => (i === 25 ? "keyframe" : s))), object_ids: [1] };
     vi.mocked(api.accept).mockResolvedValue(accepted);
     renderLabel();
     await screen.findByText("bench.mp4");
@@ -181,11 +181,13 @@ describe("Label page (prompting)", () => {
     const canvas = screen.getByLabelText("Frame");
     fireEvent.mouseDown(canvas, { clientX: 108, clientY: 58, button: 0 });
     fireEvent.mouseUp(canvas, { clientX: 108, clientY: 58, button: 0 });
-    await waitFor(() => expect(api.prompt).toHaveBeenCalledWith("c1", 25, { type: "clicks", points: [[100, 50, 1]] }));
+    await waitFor(() => expect(api.prompt).toHaveBeenCalledWith("c1", 25, { type: "clicks", points: [[100, 50, 1]] }, 1));
     const accept = screen.getByRole("button", { name: /Accept/ }) as HTMLButtonElement;
     await waitFor(() => expect(accept.disabled).toBe(false));
     fireEvent.click(accept);
-    await waitFor(() => expect(api.accept).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(api.accept).toHaveBeenCalledWith("c1", 25, { type: "clicks", points: [[100, 50, 1]] }, { objectId: 1 }, { candidate: 0 }),
+    );
     expect(await screen.findByText(/2 keyframes/)).toBeTruthy();
   });
 
@@ -197,7 +199,7 @@ describe("Label page (prompting)", () => {
     const canvas = screen.getByLabelText("Frame");
     fireEvent.mouseDown(canvas, { clientX: 108, clientY: 58, button: 2 });
     fireEvent.mouseUp(canvas, { clientX: 108, clientY: 58, button: 2 });
-    await waitFor(() => expect(api.prompt).toHaveBeenCalledWith("c1", 0, { type: "clicks", points: [[100, 50, 0]] }));
+    await waitFor(() => expect(api.prompt).toHaveBeenCalledWith("c1", 0, { type: "clicks", points: [[100, 50, 0]] }, 1));
     unmount();
 
     vi.mocked(api.prompt).mockClear();
@@ -209,6 +211,30 @@ describe("Label page (prompting)", () => {
     // both the prompt panel and (now) the propagate panel report the disabled engine
     expect(screen.getAllByText(/engine is not loaded/i).length).toBeGreaterThan(0);
     expect(api.prompt).not.toHaveBeenCalled();
+  });
+
+  it("creates a new object from its first accepted mask and makes it active", async () => {
+    vi.mocked(api.getClip).mockResolvedValue(detail);
+    vi.mocked(api.prompt).mockResolvedValue({
+      candidates: [{ score: 0.9, bbox: [80, 30, 120, 70], area: 1200, phrase: null, mask_png_b64: "AAAA" }],
+    });
+    vi.mocked(api.accept).mockResolvedValue({ ...two, object_ids: [2] });
+    renderLabel();
+    await screen.findByText("bench.mp4");
+    fireEvent.keyDown(window, { key: "n" });
+    expect(screen.getByText("Accept creates a new connector object.")).toBeTruthy();
+    const canvas = screen.getByLabelText("Frame");
+    fireEvent.mouseDown(canvas, { clientX: 108, clientY: 58, button: 0 });
+    fireEvent.mouseUp(canvas, { clientX: 108, clientY: 58, button: 0 });
+    await waitFor(() => expect(api.prompt).toHaveBeenCalledWith("c1", 0, { type: "clicks", points: [[100, 50, 1]] }, null));
+    const accept = screen.getByRole("button", { name: /^Accept/ }) as HTMLButtonElement;
+    await waitFor(() => expect(accept.disabled).toBe(false));
+    fireEvent.click(accept);
+    await waitFor(() =>
+      expect(api.accept).toHaveBeenCalledWith("c1", 0, { type: "clicks", points: [[100, 50, 1]] }, { objectId: null, classId: 0 }, { candidate: 0 }),
+    );
+    const created = await within(screen.getByRole("list", { name: "Objects" })).findByRole("button", { name: /^#2 / });
+    expect(created.getAttribute("aria-pressed")).toBe("true");
   });
 });
 
@@ -497,7 +523,7 @@ describe("Label page (brush)", () => {
 
   it("switches to the Brush panel, locks the page while strokes are unsaved, and saves the mask", async () => {
     vi.mocked(api.getClip).mockResolvedValue(detail);
-    vi.mocked(api.setMask).mockResolvedValue(detail);
+    vi.mocked(api.setMask).mockResolvedValue({ ...detail, object_id: 1 });
     renderLabel();
     await screen.findByText("bench.mp4");
     fireEvent.click(screen.getByRole("button", { name: "Brush" }));
@@ -520,7 +546,7 @@ describe("Label page (brush)", () => {
     expect((screen.getByLabelText("Brush size") as HTMLInputElement).value).toBe("29"); // 24 * 1.2
 
     fireEvent.keyDown(window, { key: "Enter" });
-    await waitFor(() => expect(api.setMask).toHaveBeenCalledWith("c1", 0, "UE5H", { classId: undefined }));
+    await waitFor(() => expect(api.setMask).toHaveBeenCalledWith("c1", 0, "UE5H", { objectId: 1 }));
     expect(await screen.findByText("No strokes yet on frame 0.")).toBeTruthy();
     expect((screen.getByRole("button", { name: "Next frame" }) as HTMLButtonElement).disabled).toBe(false);
   });

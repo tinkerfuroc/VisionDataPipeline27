@@ -122,25 +122,35 @@ describe("api", () => {
     expect(objectMaskUrl("c1", 2, 4, "2.1")).toBe("/api/clips/c1/objects/2/masks/4?v=2.1");
   });
 
-  it("sends accept with class_id and candidate only when given", async () => {
+  const CLICKS = { type: "clicks" as const, points: [[5, 6, 1]] as [number, number, 0 | 1][] };
+
+  it("sends prompt with the object id, or null for a new object", async () => {
+    const fetchMock = mockFetch(jsonResponse({ candidates: [] }), jsonResponse({ candidates: [] }));
+    await api.prompt("c1", 3, CLICKS, 2);
+    await api.prompt("c1", 3, CLICKS, null);
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/clips/c1/prompt");
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ frame: 3, prompt: CLICKS, object_id: 2 });
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ frame: 3, prompt: CLICKS, object_id: null });
+  });
+
+  it("sends accept to an object, or to a new object with its class, and candidates only when given", async () => {
     const fetchMock = mockFetch(jsonResponse({}), jsonResponse({}));
-    await api.accept("c1", 3, { type: "clicks", points: [[5, 6, 1]] }, { classId: 2, candidate: 1 });
-    await api.accept("c1", 3, { type: "clicks", points: [[5, 6, 1]] });
-    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
-      frame: 3, prompt: { type: "clicks", points: [[5, 6, 1]] }, class_id: 2, candidate: 1,
-    });
+    const text = { type: "text" as const, phrase: "cup" };
+    await api.accept("c1", 3, CLICKS, { objectId: 2 }, { candidate: 1 });
+    await api.accept("c1", 3, text, { objectId: null, classId: 4 }, { candidates: [0, 2] });
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ frame: 3, prompt: CLICKS, object_id: 2, candidate: 1 });
     expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({
-      frame: 3, prompt: { type: "clicks", points: [[5, 6, 1]] }, candidate: 0,
+      frame: 3, prompt: text, object_id: null, class_id: 4, candidate: 0, candidates: [0, 2],
     });
   });
 
-  it("sends setMask with class_id only when given", async () => {
+  it("sends setMask to an object, or null and the class of a new object", async () => {
     const fetchMock = mockFetch(jsonResponse({}), jsonResponse({}));
-    await api.setMask("c1", 3, "abc==", { classId: 2 });
-    await api.setMask("c1", 3, "abc==");
+    await api.setMask("c1", 3, "abc==", { objectId: 2 });
+    await api.setMask("c1", 3, "abc==", { objectId: null, classId: 1 });
     expect(fetchMock.mock.calls[0][0]).toBe("/api/clips/c1/mask");
-    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ frame: 3, mask_png_b64: "abc==", class_id: 2 });
-    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ frame: 3, mask_png_b64: "abc==" });
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ frame: 3, mask_png_b64: "abc==", object_id: 2 });
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ frame: 3, mask_png_b64: "abc==", object_id: null, class_id: 1 });
   });
 
   it("uses `from` as the prune field name", async () => {

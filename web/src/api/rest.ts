@@ -1,5 +1,5 @@
 import type {
-  AugmentRequest, BackgroundPool, Candidate, ClassDef, ClipDetail, ClipSummary, Direction, ExportInfo, ExportRequest, ExportSample, Health, JobSnapshot, ObjectSelection, PredictionFilter, PredictionPage, Project, PromptSpec, Run, RunDetail, StartRunsRequest, TrainStatus,
+  AcceptResult, AugmentRequest, BackgroundPool, Candidate, ClassDef, ClipDetail, ClipSummary, Direction, ExportInfo, ExportRequest, ExportSample, Health, JobSnapshot, MaskResult, ObjectSelection, PredictionFilter, PredictionPage, Project, PromptSpec, Run, RunDetail, StartRunsRequest, TrainStatus, WriteTarget,
 } from "./types";
 
 /** The `job_id` the server reports while a prompt/accept/clear-range call holds the GPU lease. */
@@ -141,6 +141,10 @@ const patch = (body: unknown): RequestInit => ({
   body: JSON.stringify(body),
 });
 
+/** `object_id` is always sent (the server requires the key; null = a new object); `class_id` only for a new object. */
+const targetBody = (t: WriteTarget) =>
+  t.objectId === null ? { object_id: null, class_id: t.classId } : { object_id: t.objectId };
+
 export const frameUrl = (clipId: string, idx: number) => `/api/clips/${clipId}/frames/${idx}`;
 export const thumbUrl = (clipId: string, idx: number) => `/api/clips/${clipId}/thumbs/${idx}`;
 /** One object's stored mask on one frame; `version` busts the cache when the mask is rewritten in place. */
@@ -169,23 +173,26 @@ export const api = {
   getClip: (id: string) => request<ClipDetail>(`/api/clips/${id}`),
   deleteClip: (id: string) => request<void>(`/api/clips/${id}`, { method: "DELETE" }),
 
-  prompt: (clipId: string, frame: number, prompt: PromptSpec) =>
-    request<{ candidates: Candidate[] }>(`/api/clips/${clipId}/prompt`, post({ frame, prompt })),
-  accept: (clipId: string, frame: number, prompt: PromptSpec, opts: { classId?: number; candidate?: number } = {}) =>
-    request<ClipDetail>(
+  /** `objectId`: a clicks prompt without a box derives its box from that object's mask here; null = a fresh one */
+  prompt: (clipId: string, frame: number, prompt: PromptSpec, objectId: number | null) =>
+    request<{ candidates: Candidate[] }>(`/api/clips/${clipId}/prompt`, post({ frame, prompt, object_id: objectId })),
+  /** `candidates` (a new object only): each listed candidate becomes its own new object */
+  accept: (
+    clipId: string, frame: number, prompt: PromptSpec, target: WriteTarget,
+    opts: { candidate?: number; candidates?: number[] } = {},
+  ) =>
+    request<AcceptResult>(
       `/api/clips/${clipId}/accept`,
       post({
         frame,
         prompt,
-        ...(opts.classId === undefined ? {} : { class_id: opts.classId }),
+        ...targetBody(target),
         candidate: opts.candidate ?? 0,
+        ...(opts.candidates === undefined ? {} : { candidates: opts.candidates }),
       }),
     ),
-  setMask: (clipId: string, frame: number, maskPngB64: string, opts: { classId?: number } = {}) =>
-    request<ClipDetail>(
-      `/api/clips/${clipId}/mask`,
-      post({ frame, mask_png_b64: maskPngB64, ...(opts.classId === undefined ? {} : { class_id: opts.classId }) }),
-    ),
+  setMask: (clipId: string, frame: number, maskPngB64: string, target: WriteTarget) =>
+    request<MaskResult>(`/api/clips/${clipId}/mask`, post({ frame, mask_png_b64: maskPngB64, ...targetBody(target) })),
   propagate: (clipId: string, fromFrame: number, direction: Direction, objects: ObjectSelection = "all") =>
     request<{ job_id: string }>(`/api/clips/${clipId}/propagate`, post({ from_frame: fromFrame, direction, objects })),
 

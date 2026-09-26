@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api/rest";
 import type { ClipDetail } from "../api/types";
+import { writeTarget, type Selection } from "../lib/activeObject";
 import { brushReducer, drawStroke, emptyBrush, extendStroke, rasterize, type BrushDraft, type BrushMode, type Stroke } from "../lib/brush";
 import { createLayer, encodeLayer, loadBase } from "../lib/brushCanvas";
 import type { FrameStore } from "../lib/frameCache";
@@ -17,8 +18,8 @@ export type Brush = {
    * and redraw even though `layer` is the same canvas instance. */
   baseVersion: number;
   error: string | null;
-  /** true when save() will actually do something: dirty, not busy, no stroke in progress, and (if this is the
-   * clip's first mask) a class is chosen. */
+  /** true when save() will actually do something: dirty, not busy, no stroke in progress, and a class is chosen for
+   * a new object. */
   canSave: boolean;
   /** why canSave is false, when the reason is something the panel should tell the user; null otherwise. */
   saveBlockedReason: string | null;
@@ -39,12 +40,14 @@ type Options = {
   height: number;
   rgb: Rgb;
   store: FrameStore;
-  /** the stored mask to start from (versioned url), null when the frame has none */
+  /** the active object's own stored mask on this frame (versioned url); null when it has none or on a "New object" row */
   maskUrl: string | null;
   /** the Brush tool is selected and usable */
   active: boolean;
-  classId: number | null;
-  needsClass: boolean;
+  /** the Objects panel's active row: Save writes to that object, or creates the new object with its class */
+  selection: Selection | null;
+  /** the id of the object a "New object" save created, so the page can make it active */
+  onCreated: (id: number) => void;
   apply: (detail: ClipDetail, masksChanged: boolean) => void;
 };
 
@@ -53,7 +56,7 @@ const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 /** The brush draft for one frame: committed strokes in state, the stroke in progress in a ref (one segment is
  * drawn per mouse move, with no React render), and an offscreen layer canvas the FrameCanvas draws over the frame. */
 export function useBrush(o: Options): Brush {
-  const { clipId, frame, width, height, rgb, store, maskUrl, active, classId, needsClass, apply } = o;
+  const { clipId, frame, width, height, rgb, store, maskUrl, active, selection, onCreated, apply } = o;
   const [draft, setDraft] = useState<BrushDraft>(() => emptyBrush());
   const [live, setLive] = useState(false); // a stroke is in progress
   const [busy, setBusy] = useState(false);
@@ -154,17 +157,16 @@ export function useBrush(o: Options): Brush {
     setDraft((d) => brushReducer(d, { type: "grow", dir }));
   }, []);
 
-  // Mirrors usePrompting's canAccept: the first save on an unlabeled clip needs a class, same as accept.
-  const needsClassNow = needsClass && classId === null;
-  const saveBlockedReason = dirty && needsClassNow ? "Choose a class before saving the first mask." : null;
-  const canSave = dirty && !busy && !live && !needsClassNow;
+  // Mirrors usePrompting's canAccept: a "New object" row needs a class before its first mask can be saved.
+  const target = useMemo(() => writeTarget(selection), [selection]);
+  const saveBlockedReason = dirty && target === null ? "Choose a class for the new object before saving." : null;
+  const canSave = dirty && !busy && !live && target !== null;
 
   const save = useCallback(async () => {
     // A stroke in progress (stroke.current !== null) must not be saved: encoding the layer now and clearing the
     // draft, only to have the in-flight end() commit the whole stroke into the emptied draft, would leave a stuck
-    // "not saved" state. Likewise, the first save on an unlabeled clip needs a class (canSave already reflects
-    // both, but save() guards itself too so it is safe to call directly).
-    if (!dirty || busy || stroke.current !== null || (needsClass && classId === null)) return;
+    // "not saved" state. canSave already reflects this and the class check, but save() guards itself too.
+    if (!dirty || busy || stroke.current !== null || target === null) return;
     const encoded = encodeLayer(layer.canvas);
     if (encoded === null) {
       setError("This browser cannot export the painted mask.");
@@ -173,15 +175,16 @@ export function useBrush(o: Options): Brush {
     setBusy(true);
     setError(null);
     try {
-      const detail = await api.setMask(clipId, frame, encoded.pngB64, { classId: needsClass && classId !== null ? classId : undefined });
-      apply(detail, true);
+      const result = await api.setMask(clipId, frame, encoded.pngB64, target);
+      apply(result, true);
+      if (target.objectId === null) onCreated(result.object_id);
       setDraft((d) => emptyBrush(d.size));
     } catch (e: unknown) {
       setError(message(e));
     } finally {
       setBusy(false);
     }
-  }, [dirty, busy, layer, clipId, frame, needsClass, classId, apply]);
+  }, [dirty, busy, layer, clipId, frame, target, apply, onCreated]);
 
   // Leaving brush mode drops the draft: clear only when there is nothing painted (!dirty, i.e. no committed
   // strokes and no stroke in progress). Strokes must never be silently lost: if `active` falls while strokes

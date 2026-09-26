@@ -26,7 +26,7 @@ import { initialSelection } from "../lib/activeObject";
 import { FrameStore } from "../lib/frameCache";
 import { isTerminal } from "../lib/jobReducer";
 import { hexToRgb } from "../lib/mask";
-import { FALLBACK_COLOR, classColor, isLabeled, labeledCount, laneOf, maskParts, objectLabel, parseFrameEvent, type FrameEvent } from "../lib/objects";
+import { FALLBACK_COLOR, className, classColor, isLabeled, labeledCount, laneOf, maskParts, objectLabel, parseFrameEvent, type FrameEvent } from "../lib/objects";
 import { loadStyle, outlineFor, saveStyle, type OverlayStyle } from "../lib/overlayStyle";
 import { clampFrame, findNext } from "../lib/timeline";
 
@@ -199,10 +199,15 @@ export function Label() {
   }, []);
   const hasMask = (i: number) => isLabeled(activeLane[i]);
   const maskVersion = clip.maskVersion;
+  const selectCreated = useCallback(
+    (ids: number[]) => {
+      if (ids.length > 0) select(ids[0]);
+    },
+    [select],
+  );
   const prompting = usePrompting({
     clipId, frame, enabled: disabledReason === null && detail !== null && mode === "prompt", clip,
-    // interim until Task 4: requests still omit object_id, so the server writes to the clip's first object
-    classId: detail?.clip.objects[0]?.class_id ?? objects.classId,
+    selection: objects.selection, onCreated: selectCreated,
   });
 
   const brushReason = running
@@ -216,7 +221,7 @@ export function Label() {
     clipId, frame, width: detail?.clip.width ?? 1, height: detail?.clip.height ?? 1, rgb, store,
     maskUrl: activeId !== null && hasMask(frame) ? objectMaskUrl(clipId, activeId, frame, maskVersion(frame)) : null,
     active: mode === "brush" && brushReason === null && detail !== null,
-    classId: objects.classId, needsClass: (detail?.clip.objects.length ?? 0) === 0, apply, // interim until Task 4
+    selection: objects.selection, onCreated: select, apply,
   });
   const lockReason = brush.dirty ? `Save or discard the brush strokes on frame ${frame} first.` : null;
   // while the active object is being edited, its preview or brush layer is drawn in its place
@@ -396,6 +401,13 @@ export function Label() {
         ? "This frame has no mask. Go to a masked frame, or prompt here, to propagate from it."
         : null;
   const { draft, dispatch } = prompting;
+  const newClass = className(detail, objects.classId);
+  const promptTarget =
+    objects.active !== null
+      ? `Accept writes to ${objectLabel(detail, objects.active)}.`
+      : newClass === null
+        ? "Choose a class for the new object in the Objects panel."
+        : `Accept creates a new ${newClass} object.`;
   const { source, width, height, stride } = detail.clip;
   const onTool = (t: RailTool) => {
     if (t === "brush") {
@@ -475,7 +487,7 @@ export function Label() {
           {mode === "brush" ? (
             <BrushPanel brush={brush} frame={frame} disabledReason={brushReason} />
           ) : (
-            <PromptPanel prompting={prompting} disabledReason={disabledReason} />
+            <PromptPanel prompting={prompting} disabledReason={disabledReason} target={promptTarget} />
           )}
           <PropagatePanel
             job={job}

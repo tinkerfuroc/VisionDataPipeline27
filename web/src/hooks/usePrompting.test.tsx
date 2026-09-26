@@ -2,7 +2,8 @@
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError, api } from "../api/rest";
-import type { Candidate, ClipDetail } from "../api/types";
+import type { AcceptResult, Candidate, ClipDetail } from "../api/types";
+import type { Selection } from "../lib/activeObject";
 import type { ClipHandle } from "./useClip";
 import { usePrompting } from "./usePrompting";
 
@@ -12,25 +13,27 @@ vi.mock("../api/rest", async (original) => ({
 }));
 
 const cand = (area: number): Candidate => ({ score: 0.9, bbox: [10, 10, 50, 50], area, phrase: null, mask_png_b64: "AAAA" });
-const baseDetail = (withObject: boolean): ClipDetail => ({
+const baseDetail = (): ClipDetail => ({
   clip: {
     id: "c1", project_id: "p", source: { type: "video", name: "a.mp4" }, fps: 30, stride: 1, width: 640, height: 480,
-    frame_count: 10, created_at: "", deleted_frames: [],
-    objects: withObject ? [{ id: 1, class_id: 0, keyframes: [], propagated_ranges: [] }] : [],
+    frame_count: 10, created_at: "", deleted_frames: [], objects: [{ id: 1, class_id: 0, keyframes: [], propagated_ranges: [] }],
   },
   states: Array(10).fill("empty"),
   classes: [{ id: 0, name: "a", color: "#ff0000" }, { id: 1, name: "b", color: "#00ff00" }],
-  object_states: withObject ? { "1": Array(10).fill("empty") } : {},
+  object_states: { "1": Array(10).fill("empty") },
 });
+const accepted = (ids: number[]): AcceptResult => ({ ...baseDetail(), object_ids: ids });
 const handle = (detail: ClipDetail): ClipHandle => ({
-  detail, error: null, refreshError: null, reload: vi.fn(), apply: vi.fn(), patchFrames: vi.fn(),
-  maskVersion: () => "0.0",
+  detail, error: null, refreshError: null, reload: vi.fn(), apply: vi.fn(), patchFrames: vi.fn(), maskVersion: () => "0.0",
 });
-type Args = { frame: number; classId: number | null; clip: ClipHandle; enabled: boolean };
-const setup = (over: Partial<Args> = {}) =>
-  renderHook((a: Args) => usePrompting({ clipId: "c1", ...a }), {
-    initialProps: { frame: 2, classId: 0, clip: handle(baseDetail(true)), enabled: true, ...over },
-  });
+const OBJECT_1: Selection = { kind: "object", id: 1 };
+type Args = { frame: number; selection: Selection | null; clip: ClipHandle; enabled: boolean; onCreated: (ids: number[]) => void };
+const initial = (over: Partial<Args> = {}): Args => ({
+  frame: 2, selection: OBJECT_1, clip: handle(baseDetail()), enabled: true, onCreated: vi.fn(), ...over,
+});
+const setup = (args: Args = initial()) =>
+  renderHook((a: Args) => usePrompting({ clipId: "c1", ...a }), { initialProps: args });
+const CLICK = { type: "clicks", points: [[5, 6, 1]] };
 
 beforeEach(() => {
   vi.resetAllMocks();
@@ -38,12 +41,12 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("usePrompting", () => {
-  it("previews after every click", async () => {
+  it("previews after every click, for the active object", async () => {
     vi.mocked(api.prompt).mockResolvedValue({ candidates: [cand(900)] });
     const { result } = setup();
     act(() => result.current.dispatch({ type: "point", x: 5, y: 6, label: 1 }));
     await waitFor(() => expect(result.current.candidates).toHaveLength(1));
-    expect(api.prompt).toHaveBeenLastCalledWith("c1", 2, { type: "clicks", points: [[5, 6, 1]] });
+    expect(api.prompt).toHaveBeenLastCalledWith("c1", 2, CLICK, 1);
     expect(result.current.canAccept).toBe(true);
     act(() => result.current.dispatch({ type: "point", x: 7, y: 8, label: 0 }));
     await waitFor(() => expect(api.prompt).toHaveBeenCalledTimes(2));
@@ -75,18 +78,31 @@ describe("usePrompting", () => {
 
   it("clears the draft when the frame changes or prompting is disabled", async () => {
     vi.mocked(api.prompt).mockResolvedValue({ candidates: [cand(900)] });
-    const { result, rerender } = setup();
-    const clip = handle(baseDetail(true));
+    const args = initial();
+    const { result, rerender } = setup(args);
     act(() => result.current.dispatch({ type: "point", x: 5, y: 6, label: 1 }));
     await waitFor(() => expect(result.current.candidates).toHaveLength(1));
-    rerender({ frame: 3, classId: 0, clip, enabled: true });
+    rerender({ ...args, frame: 3 });
     expect(result.current.draft.points).toEqual([]);
     expect(result.current.candidates).toEqual([]);
     expect(api.prompt).toHaveBeenCalledTimes(1); // the old frame's draft is never sent for the new frame
     act(() => result.current.dispatch({ type: "point", x: 5, y: 6, label: 1 }));
     await waitFor(() => expect(result.current.candidates).toHaveLength(1));
-    rerender({ frame: 3, classId: 0, clip, enabled: false });
+    rerender({ ...args, frame: 3, enabled: false });
     expect(result.current.draft.points).toEqual([]);
+  });
+
+  it("clears the draft when the active object changes, and previews a new object with no object id", async () => {
+    vi.mocked(api.prompt).mockResolvedValue({ candidates: [cand(900)] });
+    const args = initial();
+    const { result, rerender } = setup(args);
+    act(() => result.current.dispatch({ type: "point", x: 5, y: 6, label: 1 }));
+    await waitFor(() => expect(result.current.candidates).toHaveLength(1));
+    rerender({ ...args, selection: { kind: "new", classId: 0 } });
+    expect(result.current.draft.points).toEqual([]);
+    expect(result.current.candidates).toEqual([]);
+    act(() => result.current.dispatch({ type: "point", x: 5, y: 6, label: 1 }));
+    await waitFor(() => expect(api.prompt).toHaveBeenLastCalledWith("c1", 2, CLICK, null));
   });
 
   it("explains an empty result and surfaces server errors with the blocking job id", async () => {
@@ -101,29 +117,31 @@ describe("usePrompting", () => {
     expect(result.current.busyJobId).toBe("j9");
   });
 
-  it("accepts with the chosen candidate, sends the class only when needed and adopts the result", async () => {
+  it("accepts into the active object, or creates the new object with its class and reports its id", async () => {
     vi.mocked(api.prompt).mockResolvedValue({ candidates: [cand(900)] });
-    const accepted = baseDetail(true);
-    vi.mocked(api.accept).mockResolvedValue(accepted);
-    const clip = handle(baseDetail(true));
-    const { result, rerender } = setup({ clip });
+    vi.mocked(api.accept).mockResolvedValue(accepted([1]));
+    const args = initial();
+    const { result, rerender } = setup(args);
     act(() => result.current.dispatch({ type: "point", x: 5, y: 6, label: 1 }));
     await waitFor(() => expect(result.current.canAccept).toBe(true));
     await act(() => result.current.accept());
-    expect(api.accept).toHaveBeenLastCalledWith("c1", 2, { type: "clicks", points: [[5, 6, 1]] }, { classId: undefined, candidate: 0 });
-    expect(clip.apply).toHaveBeenCalledWith(accepted, true);
+    expect(api.accept).toHaveBeenLastCalledWith("c1", 2, CLICK, { objectId: 1 }, { candidate: 0 });
+    expect(args.clip.apply).toHaveBeenCalledWith(accepted([1]), true);
+    expect(args.onCreated).not.toHaveBeenCalled();
     expect(result.current.draft.points).toEqual([]);
 
-    rerender({ frame: 2, classId: 1, clip, enabled: true }); // the user picked another class
+    vi.mocked(api.accept).mockResolvedValue(accepted([4]));
+    rerender({ ...args, selection: { kind: "new", classId: 1 } });
     act(() => result.current.dispatch({ type: "point", x: 5, y: 6, label: 1 }));
     await waitFor(() => expect(result.current.canAccept).toBe(true));
     await act(() => result.current.accept());
-    expect(vi.mocked(api.accept).mock.calls[1][3]).toEqual({ classId: 1, candidate: 0 });
+    expect(api.accept).toHaveBeenLastCalledWith("c1", 2, CLICK, { objectId: null, classId: 1 }, { candidate: 0 });
+    expect(args.onCreated).toHaveBeenCalledWith([4]);
   });
 
-  it("requires a class for the first accept on a clip", async () => {
+  it("needs a class before a new object's first accept", async () => {
     vi.mocked(api.prompt).mockResolvedValue({ candidates: [cand(900)] });
-    const { result } = setup({ clip: handle(baseDetail(false)), classId: null });
+    const { result } = setup(initial({ selection: { kind: "new", classId: null } }));
     act(() => result.current.dispatch({ type: "point", x: 5, y: 6, label: 1 }));
     await waitFor(() => expect(result.current.candidates).toHaveLength(1));
     expect(result.current.canAccept).toBe(false);
@@ -132,25 +150,48 @@ describe("usePrompting", () => {
     expect(result.current.error).toMatch(/class/i);
   });
 
+  it("offers Accept all as new objects for several candidates on a New object row only", async () => {
+    vi.mocked(api.prompt).mockResolvedValue({ candidates: [cand(1), cand(2), cand(3)] });
+    vi.mocked(api.accept).mockResolvedValue(accepted([5, 6, 7]));
+    const submit = (r: { current: ReturnType<typeof usePrompting> }) => {
+      act(() => r.current.dispatch({ type: "tool", tool: "text" }));
+      act(() => r.current.dispatch({ type: "phrase", phrase: "bolt" }));
+      act(() => r.current.dispatch({ type: "submit" }));
+    };
+    const onObject = setup();
+    submit(onObject.result);
+    await waitFor(() => expect(onObject.result.current.candidates).toHaveLength(3));
+    expect(onObject.result.current.offersAcceptAll).toBe(false);
+    onObject.unmount();
+
+    const args = initial({ selection: { kind: "new", classId: 0 } });
+    const { result } = setup(args);
+    submit(result);
+    await waitFor(() => expect(result.current.candidates).toHaveLength(3));
+    expect([result.current.offersAcceptAll, result.current.canAcceptAll]).toEqual([true, true]);
+    await act(() => result.current.acceptAll());
+    expect(api.accept).toHaveBeenLastCalledWith(
+      "c1", 2, { type: "text", phrase: "bolt" }, { objectId: null, classId: 0 }, { candidate: 0, candidates: [0, 1, 2] },
+    );
+    expect(args.onCreated).toHaveBeenCalledWith([5, 6, 7]);
+  });
+
   it("a second accept while one is in flight is ignored", async () => {
     vi.mocked(api.prompt).mockResolvedValue({ candidates: [cand(900)] });
-    let resolveAccept: (v: ClipDetail) => void = () => {};
+    let resolveAccept: (v: AcceptResult) => void = () => {};
     vi.mocked(api.accept).mockReturnValue(new Promise((r) => (resolveAccept = r)));
-    const clip = handle(baseDetail(true));
-    const { result } = setup({ clip });
+    const args = initial();
+    const { result } = setup(args);
     act(() => result.current.dispatch({ type: "point", x: 5, y: 6, label: 1 }));
     await waitFor(() => expect(result.current.canAccept).toBe(true));
-
     act(() => {
       void result.current.accept();
       void result.current.accept();
     });
     expect(api.accept).toHaveBeenCalledTimes(1);
     expect(result.current.canAccept).toBe(false);
-
-    const accepted = baseDetail(true);
-    await act(async () => resolveAccept(accepted));
-    expect(clip.apply).toHaveBeenCalledTimes(1);
+    await act(async () => resolveAccept(accepted([1])));
+    expect(args.clip.apply).toHaveBeenCalledTimes(1);
     expect(result.current.draft.points).toEqual([]);
   });
 

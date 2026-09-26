@@ -2,7 +2,7 @@ import type { FormEvent } from "react";
 import type { Prompting } from "../hooks/usePrompting";
 import type { Tool } from "../lib/promptState";
 
-type Props = { prompting: Prompting; disabledReason: string | null };
+type Props = { prompting: Prompting; disabledReason: string | null; /** what Accept does, as a sentence naming the active object */ target: string };
 
 // The tools themselves live in the ToolRail beside the frame; this panel is what the chosen tool needs.
 const HINTS: Record<Tool, string> = {
@@ -11,8 +11,8 @@ const HINTS: Record<Tool, string> = {
   text: "Describe the object, then choose one of the numbered candidates.",
 };
 
-export function PromptPanel({ prompting, disabledReason }: Props) {
-  const { draft, dispatch, candidates, busy, error, canAccept, accept, clear } = prompting;
+export function PromptPanel({ prompting, disabledReason, target }: Props) {
+  const { draft, dispatch, candidates, busy, error, canAccept, offersAcceptAll, canAcceptAll, acceptAll, accept, clear } = prompting;
   const disabled = disabledReason !== null;
 
   const submit = (e: FormEvent) => {
@@ -24,6 +24,7 @@ export function PromptPanel({ prompting, disabledReason }: Props) {
     <section className="flex flex-col gap-2">
       <h2 className="heading">Prompt</h2>
       {disabled ? <p className="note text-ink">{disabledReason}</p> : <p className="note">{HINTS[draft.tool]}</p>}
+      {!disabled && <p className="note text-ink">{target}</p>}
 
       {draft.tool === "text" && (
         <form className="flex gap-1" onSubmit={submit}>
@@ -75,7 +76,7 @@ export function PromptPanel({ prompting, disabledReason }: Props) {
       <div className="flex gap-1">
         <button type="button" disabled={!canAccept} aria-keyshortcuts="Enter"
           className={`btn flex-1 ${canAccept ? "btn-on" : ""}`} onClick={() => void accept()}>
-          Accept <kbd aria-hidden>Enter</kbd>
+          {candidates.length > 1 ? "Accept selected" : "Accept"} <kbd aria-hidden>Enter</kbd>
         </button>
         <button type="button" disabled={disabled} aria-keyshortcuts="Escape" className="btn" onClick={clear}>
           Clear <kbd aria-hidden>Esc</kbd>
@@ -84,6 +85,11 @@ export function PromptPanel({ prompting, disabledReason }: Props) {
           Undo <kbd aria-hidden>Z</kbd>
         </button>
       </div>
+      {offersAcceptAll && (
+        <button type="button" disabled={!canAcceptAll} className="btn" onClick={() => void acceptAll()}>
+          Accept all as new objects
+        </button>
+      )}
     </section>
   );
 }
