@@ -88,7 +88,8 @@ where `null` means "create a new object" (`class_id` required) rather than falli
   it wrote to as `object_id`.
 - `POST /api/clips/{id}/propagate` and `POST /api/clips/{id}/clear-range` take an `objects` field: `"all"`
   (default) or a non-empty list of object ids. Propagate resolves and validates the objects up front, so an
-  unknown id or a listed object with no mask on `from_frame` is a 400 before the job starts, not a failed job.
+  unknown id is a 404 and a listed object with no mask on `from_frame` is a 400, both before the job starts, not
+  a failed job.
   The job result keeps `processed`/`written`/`cleared`/`lost_at`/`cancelled`/`oom_retries` and adds
   `lost_by_direction` (per direction, object id → the frame it was first empty on), `lost` (merged over both
   directions, object id → frame), `skipped` (object ids the job itself left out when it re-read the clip —
