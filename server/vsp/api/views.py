@@ -22,6 +22,7 @@ def clip_detail(state: AppState, clip: Clip) -> dict:
         "clip": clip.model_dump(mode="json"),
         "states": state.store.frame_states(clip),
         "classes": [c.model_dump(mode="json") for c in project.classes],
+        "object_states": {str(o.id): state.store.object_states(clip, o) for o in clip.objects},
     }
 
 

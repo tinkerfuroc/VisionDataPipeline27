@@ -111,7 +111,7 @@ def test_import_frames_then_browse_the_clip(client, tmp_path):
     assert frame.status_code == 200 and frame.headers["content-type"] == "image/jpeg"
     assert client.get(f"/api/clips/{clip_id}/thumbs/0").status_code == 200
     assert client.get(f"/api/clips/{clip_id}/frames/3").status_code == 404
-    assert client.get(f"/api/clips/{clip_id}/masks/0").status_code == 404
+    assert client.get(f"/api/clips/{clip_id}/objects/1/masks/0").status_code == 404
 
     assert client.delete(f"/api/clips/{clip_id}").status_code == 204
     assert client.get(f"/api/clips/{clip_id}").status_code == 404

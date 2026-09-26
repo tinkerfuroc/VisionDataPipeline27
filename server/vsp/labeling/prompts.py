@@ -15,7 +15,6 @@ from ..store import Clip, Keyframe, LabelObject, NotFound, ProjectStore, Prompt,
 from .errors import BadRequest
 from .objects import resolve_target
 
-OBJECT_ID = 1  # legacy: GET /masks/{idx} still serves the first object (removed in plan B); see api/clips.py
 BOX_FROM_MASK_PAD = 10
 
 

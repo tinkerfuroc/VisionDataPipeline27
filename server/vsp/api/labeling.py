@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
-from ..jobs import Job
+from ..jobs import Job, JobBusy
 from ..labeling import frames as frame_ops
-from ..labeling.objects import relabel_object
+from ..labeling.objects import check_class, delete_object, relabel_object
 from ..labeling.paint import decode_mask_png, set_mask
 from ..labeling.prompts import PromptSpec, accept, preview
 from ..labeling.propagate import plan_indices, resolve_participants, run_propagation
@@ -18,26 +18,34 @@ from .views import candidate_view, clip_detail
 
 router = APIRouter(prefix="/api/clips/{clip_id}", tags=["labeling"])
 
+# "all" (default) or an explicit, non-empty list of object ids -- an empty list is a 422, not a
+# misleading "nothing to do".
+ObjectSelection = Literal["all"] | Annotated[list[int], Field(min_length=1)]
+
 
 class PromptBody(BaseModel):
     frame: int = Field(ge=0)
     prompt: PromptSpec
+    object_id: int | None = None
 
 
 class AcceptBody(PromptBody):
     class_id: int | None = None
     candidate: int = Field(default=0, ge=0)
+    candidates: list[int] | None = None
 
 
 class MaskBody(BaseModel):
     frame: int = Field(ge=0)
     mask_png_b64: str
+    object_id: int | None = None
     class_id: int | None = None
 
 
 class PropagateBody(BaseModel):
     from_frame: int = Field(ge=0)
     direction: Literal["forward", "backward", "both"]
+    objects: ObjectSelection = "all"
 
 
 class PruneBody(BaseModel):
@@ -47,6 +55,11 @@ class PruneBody(BaseModel):
 class RangeBody(BaseModel):
     start: int = Field(ge=0)
     end: int = Field(ge=0)
+    objects: ObjectSelection = "all"
+
+
+class RelabelBody(BaseModel):
+    class_id: int
 
 
 @router.post("/prompt")
@@ -54,65 +67,101 @@ def prompt_preview(clip_id: str, body: PromptBody, state: State) -> dict:
     clip = state.store.read_clip(clip_id)
     engine = require_engine(state)
     with gpu_lease(state):
-        # legacy shim: removed in plan B -- click box derived from the clip's first object, as today
-        object_id = clip.objects[0].id if clip.objects else None
+        if "object_id" in body.model_fields_set:
+            object_id = body.object_id
+        else:
+            # legacy shim: removed in plan B -- click box derived from the clip's first object, as today
+            object_id = clip.objects[0].id if clip.objects else None
         detections = preview(state.store, engine, clip, body.frame, body.prompt, object_id=object_id)
     return {"candidates": [candidate_view(d) for d in detections]}
 
 
 @router.post("/accept")
 def prompt_accept(clip_id: str, body: AcceptBody, state: State) -> dict:
-    clip = state.store.read_clip(clip_id)
+    state.store.read_clip(clip_id)  # 404 before requiring the engine, same order as every other route here
     engine = require_engine(state)
+    if "object_id" not in body.model_fields_set:
+        with gpu_lease(state):
+            # legacy shim: removed in plan B -- write to the clip's first object, or create one when there is
+            # none. The clip lock -- re-entrant, so accept() below may take it again -- covers the re-read, the
+            # object_id choice and the write as one atomic step: two concurrent legacy first-accepts must not
+            # each create their own object.
+            with state.store.lock(clip_id):
+                clip = state.store.read_clip(clip_id)
+                object_id = clip.objects[0].id if clip.objects else None
+                if object_id is not None and body.class_id is not None:
+                    # legacy shim: removed in plan B -- validate the relabel class before the write, so an
+                    # unknown class is a 400 and changes nothing (relabelling itself happens after, below)
+                    check_class(state.store, clip, body.class_id)
+                clip, ids = accept(
+                    state.store, engine, clip_id, body.frame, body.prompt,
+                    object_id=object_id,
+                    class_id=body.class_id if object_id is None else None,
+                    candidate=body.candidate,
+                    candidates=body.candidates,
+                )
+            # legacy shim: removed in plan B -- a class_id for an existing object relabels it, only once the
+            # accept above has succeeded, so a failed accept changes nothing
+            if object_id is not None and body.class_id is not None:
+                clip = relabel_object(state.store, clip_id, object_id, body.class_id)
+            return {**clip_detail(state, clip), "object_ids": ids}
     with gpu_lease(state):
-        # legacy shim: removed in plan B -- write to the clip's first object, or create one when there is none
-        object_id = clip.objects[0].id if clip.objects else None
-        clip, _ = accept(
+        clip, ids = accept(
             state.store, engine, clip_id, body.frame, body.prompt,
-            object_id=object_id,
-            class_id=body.class_id if object_id is None else None,
-            candidate=body.candidate,
+            object_id=body.object_id, class_id=body.class_id, candidate=body.candidate, candidates=body.candidates,
         )
-        # legacy shim: removed in plan B -- a class_id for an existing object relabels it, only once the accept
-        # above has succeeded, so a failed accept changes nothing
-        if object_id is not None and body.class_id is not None:
-            clip = relabel_object(state.store, clip_id, object_id, body.class_id)
-        return clip_detail(state, clip)
+        return {**clip_detail(state, clip), "object_ids": ids}
 
 
 @router.post("/mask")
 def paint_mask(clip_id: str, body: MaskBody, state: State) -> dict:
     """A hand-painted mask for one frame (brush spec). The frame becomes a `paint` keyframe."""
-    clip = state.store.read_clip(clip_id)
+    state.store.read_clip(clip_id)
     mask = decode_mask_png(body.mask_png_b64)
+    if "object_id" not in body.model_fields_set:
+        with gpu_lease(state):  # a propagation writes the very masks this replaces
+            # legacy shim: removed in plan B -- write to the clip's first object, or create one when there is
+            # none, atomically with the object_id choice (see /accept above for why)
+            with state.store.lock(clip_id):
+                clip = state.store.read_clip(clip_id)
+                object_id = clip.objects[0].id if clip.objects else None
+                if object_id is not None and body.class_id is not None:
+                    # legacy shim: removed in plan B -- validate before the write: unknown class -> 400, nothing
+                    # written
+                    check_class(state.store, clip, body.class_id)
+                clip, new_id = set_mask(
+                    state.store, clip_id, body.frame, mask,
+                    object_id=object_id,
+                    class_id=body.class_id if object_id is None else None,
+                )
+            # legacy shim: removed in plan B -- a class_id for an existing object relabels it, only once the
+            # paint above has succeeded, so a failed save changes nothing
+            if object_id is not None and body.class_id is not None:
+                clip = relabel_object(state.store, clip_id, object_id, body.class_id)
+            return {**clip_detail(state, clip), "object_id": new_id}
     with gpu_lease(state):  # a propagation writes the very masks this replaces
-        # legacy shim: removed in plan B -- write to the clip's first object, or create one when there is none
-        object_id = clip.objects[0].id if clip.objects else None
-        clip, _ = set_mask(
-            state.store, clip_id, body.frame, mask,
-            object_id=object_id,
-            class_id=body.class_id if object_id is None else None,
+        clip, object_id = set_mask(
+            state.store, clip_id, body.frame, mask, object_id=body.object_id, class_id=body.class_id,
         )
-        # legacy shim: removed in plan B -- a class_id for an existing object relabels it, only once the paint
-        # above has succeeded, so a failed save changes nothing
-        if object_id is not None and body.class_id is not None:
-            clip = relabel_object(state.store, clip_id, object_id, body.class_id)
-        return clip_detail(state, clip)
+        return {**clip_detail(state, clip), "object_id": object_id}
 
 
 @router.post("/propagate", status_code=202)
 def propagate(clip_id: str, body: PropagateBody, state: State) -> dict:
     clip = state.store.read_clip(clip_id)
     engine = require_engine(state)
-    participants, _ = resolve_participants(state.store, clip, body.from_frame, "all", strict=True)
+    participants, _ = resolve_participants(state.store, clip, body.from_frame, body.objects, strict=True)
     directions = ["forward", "backward"] if body.direction == "both" else [body.direction]
-    for d in directions:  # validate now so a bad request is a 400, not a failed job
-        plan_indices(clip, participants[0][0], body.from_frame, d)
+    for obj, _ in participants:  # validate now so a bad request is a 400, not a failed job
+        for d in directions:
+            plan_indices(clip, obj, body.from_frame, d)
     cfg = state.settings.propagate
+    objects = body.objects
 
     def work(job: Job) -> dict:
         result = run_propagation(
             state.store, engine, clip_id, body.from_frame, body.direction,
+            objects=objects,
             chunk_size=cfg.chunk_size, min_chunk_size=cfg.min_chunk_size, lost_after=cfg.lost_after,
             emit=job.emit, cancel=job.cancel_requested,
         )
@@ -140,4 +189,20 @@ def prune(clip_id: str, body: PruneBody, state: State) -> dict:
 def clear_range(clip_id: str, body: RangeBody, state: State) -> dict:
     state.store.read_clip(clip_id)
     with gpu_lease(state):  # it deletes masks and trims ranges a running propagation is writing
-        return clip_detail(state, frame_ops.clear_range(state.store, clip_id, body.start, body.end))
+        clip = frame_ops.clear_range(state.store, clip_id, body.start, body.end, objects=body.objects)
+        return clip_detail(state, clip)
+
+
+@router.patch("/objects/{object_id}")
+def patch_object(clip_id: str, object_id: int, body: RelabelBody, state: State) -> dict:
+    return clip_detail(state, relabel_object(state.store, clip_id, object_id, body.class_id))
+
+
+@router.delete("/objects/{object_id}")
+def delete_object_route(clip_id: str, object_id: int, state: State) -> dict:
+    with gpu_lease(state):  # a running propagation makes gpu_lease itself fail with 409
+        exporting = state.jobs.active("export")
+        if exporting is not None:  # an export is reading the object's masks; don't pull them out from under it
+            raise JobBusy(exporting)
+        clip = delete_object(state.store, clip_id, object_id)
+    return clip_detail(state, clip)

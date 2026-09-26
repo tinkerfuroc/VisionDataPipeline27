@@ -47,7 +47,7 @@ def test_full_labeling_flow(tmp_path):
 
         first = client.post(f"/api/clips/{cid}/accept", json={"frame": 5, "prompt": CLICK, "class_id": 0})
         assert first.status_code == 200 and first.json()["states"][5] == "keyframe"
-        assert client.get(f"/api/clips/{cid}/masks/5").headers["content-type"] == "image/png"
+        assert client.get(f"/api/clips/{cid}/objects/1/masks/5").headers["content-type"] == "image/png"
 
         job = client.post(f"/api/clips/{cid}/propagate", json={"from_frame": 5, "direction": "both"})
         assert job.status_code == 202
@@ -183,7 +183,7 @@ def test_mask_response_is_not_cached_but_frames_are(tmp_path):
         cid = _clip(client, tmp_path)
         client.post(f"/api/clips/{cid}/accept", json={"frame": 0, "prompt": CLICK, "class_id": 0})
 
-        mask_resp = client.get(f"/api/clips/{cid}/masks/0")
+        mask_resp = client.get(f"/api/clips/{cid}/objects/1/masks/0")
         assert mask_resp.status_code == 200 and mask_resp.headers.get("cache-control") == "no-cache"
 
         frame_resp = client.get(f"/api/clips/{cid}/frames/0")
@@ -259,3 +259,166 @@ def test_paint_route_writes_a_keyframe_and_is_refused_while_a_propagation_runs(t
         busy = client.post(f"/api/clips/{cid}/mask", json={"frame": 3, "mask_png_b64": b64})
         assert busy.status_code == 409 and busy.json()["job_id"] == job_id  # it replaces what the runner writes
         wait_job(client, job_id)
+
+
+def test_objects_over_http(tmp_path):
+    with _client(tmp_path, FakeEngine()) as client:
+        cid = _clip(client, tmp_path)
+        r = client.post(f"/api/clips/{cid}/accept", json={"frame": 0, "prompt": CLICK, "object_id": None, "class_id": 0})
+        assert r.status_code == 200 and r.json()["object_ids"] == [1]
+        r = client.post(f"/api/clips/{cid}/accept", json={"frame": 0, "prompt": {"type": "clicks", "points": [[90, 30, 1]]}, "object_id": None, "class_id": 0})
+        assert r.json()["object_ids"] == [2]
+        detail = r.json()
+        assert set(detail["object_states"]) == {"1", "2"} and detail["object_states"]["2"][0] == "keyframe"
+        assert client.get(f"/api/clips/{cid}/objects/2/masks/0").headers["content-type"] == "image/png"
+        assert client.get(f"/api/clips/{cid}/objects/9/masks/0").status_code == 404
+        r = client.post(f"/api/clips/{cid}/accept", json={"frame": 1, "prompt": CLICK, "object_id": 1, "class_id": 0})
+        assert r.status_code == 400
+        assert client.patch(f"/api/clips/{cid}/objects/2", json={"class_id": 0}).status_code == 200
+        r = client.delete(f"/api/clips/{cid}/objects/2")
+        assert r.status_code == 200 and [o["id"] for o in r.json()["clip"]["objects"]] == [1]
+
+
+def test_prompt_preview_uses_the_given_object(tmp_path):
+    with _client(tmp_path, FakeEngine()) as client:
+        cid = _clip(client, tmp_path)
+        # object 1: an ordinary accept at (30, 30)
+        r1 = client.post(f"/api/clips/{cid}/accept", json={"frame": 0, "prompt": CLICK, "object_id": None, "class_id": 0})
+        assert r1.status_code == 200 and r1.json()["object_ids"] == [1]
+
+        # object 2: a hand-painted mask spanning x 70..100
+        info = client.get(f"/api/clips/{cid}").json()["clip"]
+        m = np.zeros((info["height"], info["width"]), dtype=bool)
+        m[20:40, 70:100] = True
+        b64 = base64.b64encode(encode_mask_png(m)).decode("ascii")
+        r2 = client.post(f"/api/clips/{cid}/mask", json={"frame": 0, "mask_png_b64": b64, "object_id": None, "class_id": 0})
+        assert r2.status_code == 200 and r2.json()["object_id"] == 2
+
+        click_80 = {"type": "clicks", "points": [[80, 30, 1]]}
+        with_obj = client.post(f"/api/clips/{cid}/prompt", json={"frame": 0, "prompt": click_80, "object_id": 2})
+        assert with_obj.status_code == 200
+        assert with_obj.json()["candidates"][0]["bbox"][2] > 95  # derived from object 2's existing mask
+
+        without_obj = client.post(f"/api/clips/{cid}/prompt", json={"frame": 0, "prompt": click_80, "object_id": None})
+        assert without_obj.status_code == 200
+        assert without_obj.json()["candidates"][0]["bbox"][2] <= 95  # a fresh click prediction, no object to derive from
+
+
+def test_legacy_bodies_without_object_id_keep_one_object(tmp_path):
+    with _client(tmp_path, FakeEngine()) as client:
+        cid = _clip(client, tmp_path)
+        client.post(f"/api/clips/{cid}/accept", json={"frame": 0, "prompt": CLICK, "class_id": 0})
+        r = client.post(f"/api/clips/{cid}/accept", json={"frame": 3, "prompt": CLICK})
+        assert [o["id"] for o in r.json()["clip"]["objects"]] == [1]
+        assert client.get(f"/api/clips/{cid}/masks/3").status_code == 200
+        # /prompt without object_id derives the click box from the first object's mask, as /accept does
+        r = client.post(f"/api/clips/{cid}/prompt", json={"frame": 0, "prompt": {"type": "clicks", "points": [[44, 30, 1]]}})
+        assert r.json()["candidates"][0]["bbox"] == [10, 10, 50, 50]
+
+
+def test_legacy_accept_with_unknown_class_on_an_existing_object_writes_nothing(tmp_path):
+    with _client(tmp_path, FakeEngine()) as client:
+        cid = _clip(client, tmp_path)
+        client.post(f"/api/clips/{cid}/accept", json={"frame": 0, "prompt": CLICK, "class_id": 0})
+        before = client.get(f"/api/clips/{cid}").json()["states"]
+        bad = client.post(f"/api/clips/{cid}/accept", json={"frame": 3, "prompt": CLICK, "class_id": 9})
+        assert bad.status_code == 400
+        after = client.get(f"/api/clips/{cid}").json()["states"]
+        assert after == before  # check_class ran before the write: frame 3 is still untouched
+
+
+def test_propagate_objects_body_and_events(tmp_path):
+    with _client(tmp_path, FakeEngine()) as client:
+        cid = _clip(client, tmp_path, n=10)
+        client.post(f"/api/clips/{cid}/accept", json={"frame": 0, "prompt": CLICK, "object_id": None, "class_id": 0})
+        client.post(
+            f"/api/clips/{cid}/accept",
+            json={"frame": 0, "prompt": {"type": "clicks", "points": [[90, 30, 1]]}, "object_id": None, "class_id": 0},
+        )
+
+        empty = client.post(f"/api/clips/{cid}/propagate", json={"from_frame": 0, "direction": "forward", "objects": []})
+        assert empty.status_code == 422
+
+        r = client.post(f"/api/clips/{cid}/propagate", json={"from_frame": 0, "direction": "forward", "objects": [2]})
+        assert r.status_code == 202
+        job_id = r.json()["job_id"]
+        job = wait_job(client, job_id)
+        assert job["status"] == "done" and job["result"]["objects"] == [2]
+
+        states = client.get(f"/api/clips/{cid}").json()["object_states"]
+        assert "masked" in states["2"]  # only object 2 was propagated
+        assert set(states["1"]) <= {"empty", "keyframe"}
+
+        unknown = client.post(f"/api/clips/{cid}/propagate", json={"from_frame": 0, "direction": "forward", "objects": [9]})
+        assert unknown.status_code == 404
+
+        no_mask = client.post(f"/api/clips/{cid}/propagate", json={"from_frame": 5, "direction": "forward", "objects": [1]})
+        assert no_mask.status_code == 400
+
+        events = []
+        with client.websocket_connect(f"/ws/jobs/{job_id}") as ws:
+            try:
+                while True:
+                    events.append(ws.receive_json())
+            except WebSocketDisconnect:
+                pass
+        frame_events = [e for e in events if e["type"] == "frame"]
+        assert frame_events
+        assert all("objects" in e and "has_mask" in e for e in frame_events)
+
+
+def test_delete_object_is_refused_while_a_propagation_or_an_export_runs(tmp_path, monkeypatch):
+    with _client(tmp_path, SlowEngine()) as client:
+        cid = _clip(client, tmp_path, n=40)
+        assert client.post(f"/api/clips/{cid}/accept", json={"frame": 0, "prompt": CLICK, "class_id": 0}).status_code == 200
+        job_id = client.post(f"/api/clips/{cid}/propagate", json={"from_frame": 0, "direction": "forward"}).json()["job_id"]
+
+        busy = client.delete(f"/api/clips/{cid}/objects/1")
+        assert busy.status_code == 409 and busy.json()["job_id"] == job_id
+
+        patched = client.patch(f"/api/clips/{cid}/objects/1", json={"class_id": 0})
+        assert patched.status_code == 200  # PATCH takes the clip lock only, not the GPU lease
+
+        wait_job(client, job_id)
+
+        project_id = client.get(f"/api/clips/{cid}").json()["clip"]["project_id"]
+        entered, release = threading.Event(), threading.Event()
+        from vsp.export.coco import Coco
+
+        real = Coco.write
+
+        def gated(self, plan, out_dir, tick):
+            entered.set()
+            assert release.wait(10)
+            return real(self, plan, out_dir, tick)
+
+        monkeypatch.setattr(Coco, "write", gated)
+        export_job = client.post(f"/api/projects/{project_id}/export", json={"clips": [cid], "formats": ["coco"]}).json()["job_id"]
+        assert entered.wait(10)
+
+        refused = client.delete(f"/api/clips/{cid}/objects/1")
+        assert refused.status_code == 409 and refused.json()["job_id"] == export_job
+
+        release.set()
+        assert wait_job(client, export_job)["status"] == "done"
+
+        ok = client.delete(f"/api/clips/{cid}/objects/1")
+        assert ok.status_code == 200 and ok.json()["clip"]["objects"] == []
+
+
+def test_clear_range_by_object(tmp_path):
+    with _client(tmp_path, FakeEngine()) as client:
+        cid = _clip(client, tmp_path, n=10)
+        client.post(f"/api/clips/{cid}/accept", json={"frame": 3, "prompt": CLICK, "object_id": None, "class_id": 0})
+        client.post(
+            f"/api/clips/{cid}/accept",
+            json={"frame": 3, "prompt": {"type": "clicks", "points": [[90, 30, 1]]}, "object_id": None, "class_id": 0},
+        )
+
+        r = client.post(f"/api/clips/{cid}/clear-range", json={"start": 0, "end": 5, "objects": [2]})
+        assert r.status_code == 200
+        object_states = r.json()["object_states"]
+        assert object_states["1"][3] == "keyframe" and object_states["2"][3] == "empty"
+
+        empty = client.post(f"/api/clips/{cid}/clear-range", json={"start": 0, "end": 5, "objects": []})
+        assert empty.status_code == 422

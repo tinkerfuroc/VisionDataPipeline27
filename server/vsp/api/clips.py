@@ -24,7 +24,7 @@ from ..ingest import (
     save_stream,
 )
 from ..jobs import Job, JobBusy
-from ..labeling.prompts import OBJECT_ID
+from ..labeling.objects import find_object
 from ..store import NotFound
 from .deps import AppState, State, gpu_lease
 from .views import clip_detail
@@ -160,7 +160,20 @@ def get_thumb(clip_id: str, idx: int, state: State) -> FileResponse:
     return _image(state.store.thumb_path(clip_id, idx), "image/jpeg")
 
 
+@router.get("/api/clips/{clip_id}/objects/{object_id}/masks/{idx}")
+def get_object_mask(clip_id: str, object_id: int, idx: int, state: State) -> FileResponse:
+    # masks are overwritten in place by re-propagation, unlike immutable frames/thumbs
+    clip = state.store.read_clip(clip_id)
+    find_object(clip, object_id)  # 404 for an unknown object, same as a missing mask file
+    return _image(state.store.mask_path(clip_id, object_id, idx), "image/png", headers={"Cache-Control": "no-cache"})
+
+
 @router.get("/api/clips/{clip_id}/masks/{idx}")
 def get_mask(clip_id: str, idx: int, state: State) -> FileResponse:
-    # masks are overwritten in place by re-propagation, unlike immutable frames/thumbs
-    return _image(state.store.mask_path(clip_id, OBJECT_ID, idx), "image/png", headers={"Cache-Control": "no-cache"})
+    # legacy shim: removed in plan B -- serves the first object's mask; 404 when the clip has none
+    clip = state.store.read_clip(clip_id)
+    if not clip.objects:
+        raise NotFound(f"clip {clip_id!r} has no objects")
+    return _image(
+        state.store.mask_path(clip_id, clip.objects[0].id, idx), "image/png", headers={"Cache-Control": "no-cache"},
+    )
