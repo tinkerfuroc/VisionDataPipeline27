@@ -11,7 +11,7 @@ from PIL import Image, UnidentifiedImageError
 
 from ..store import Clip, Keyframe, ProjectStore, Prompt, now_iso
 from .errors import BadRequest
-from .prompts import create_object
+from .objects import resolve_target
 from .ranges import subtract_range
 
 
@@ -29,12 +29,12 @@ def decode_mask_png(b64: str) -> np.ndarray:
 
 
 def set_mask(
-    store: ProjectStore, clip_id: str, frame: int, mask: np.ndarray, *, class_id: int | None = None
-) -> Clip:
+    store: ProjectStore, clip_id: str, frame: int, mask: np.ndarray, *, object_id: int | None, class_id: int | None = None
+) -> tuple[Clip, int]:
     """Store `mask` as the object's mask on `frame` and make the frame a `paint` keyframe.
 
     An empty mask removes the frame's mask and keyframe instead. Either way the frame leaves
-    `propagated_ranges`. The object (and its class) always stays.
+    `propagated_ranges`. The object (and its class) always stays. Returns the clip and the object id.
     """
     store.clip_dir(clip_id)  # raises NotFound before the lock table grows an entry for a bogus id
     with store.lock(clip_id):
@@ -45,22 +45,9 @@ def set_mask(
             raise BadRequest(f"frame {frame} is deleted; restore it before labeling")
         if mask.shape != (clip.height, clip.width):
             raise BadRequest(f"mask is {mask.shape[1]}×{mask.shape[0]}, the clip is {clip.width}×{clip.height}")
-        if not clip.objects and not mask.any():
-            raise BadRequest("the mask is empty and the clip has no object yet; paint something first")
-        if clip.objects:
-            obj = clip.objects[0]
-        elif class_id is None:
-            raise BadRequest("class_id is required for the first accept on a clip")
-        else:
-            obj = None
-        if class_id is not None:
-            known = {c.id for c in store.read_project(clip.project_id).classes}
-            if class_id not in known:
-                raise BadRequest(f"unknown class id {class_id}")
-        if obj is None:
-            obj = create_object(clip, class_id)
-        elif class_id is not None:
-            obj.class_id = class_id
+        if object_id is None and not mask.any():
+            raise BadRequest("the mask is empty; paint something first")
+        obj = resolve_target(store, clip, object_id, class_id)
         others = [k for k in obj.keyframes if k.frame_idx != frame]
         if mask.any():
             store.write_mask(clip.id, obj.id, frame, mask)
@@ -71,4 +58,4 @@ def set_mask(
             obj.keyframes = others
         obj.propagated_ranges = subtract_range(obj.propagated_ranges, frame, frame)
         store.write_clip(clip)
-        return clip
+        return clip, obj.id

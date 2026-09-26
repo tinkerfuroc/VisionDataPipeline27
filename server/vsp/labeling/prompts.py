@@ -13,8 +13,9 @@ from ..engine.masks import bbox_of
 from ..engine.types import Detection, Engine
 from ..store import Clip, Keyframe, LabelObject, NotFound, ProjectStore, Prompt, now_iso
 from .errors import BadRequest
+from .objects import resolve_target
 
-OBJECT_ID = 1  # v1: one object per clip
+OBJECT_ID = 1  # legacy: GET /masks/{idx} still serves the first object (removed in plan B); see api/clips.py
 BOX_FROM_MASK_PAD = 10
 
 
@@ -82,12 +83,12 @@ def _clamp_box(box: tuple[float, float, float, float], width: int, height: int) 
 
 
 def _effective_box(
-    store: ProjectStore, clip: Clip, frame: int, prompt: PromptSpec
+    store: ProjectStore, clip: Clip, frame: int, prompt: PromptSpec, object_id: int | None
 ) -> tuple[tuple[int, int, int, int] | None, tuple[int, int, int, int] | None]:
     """(box to send to the engine, box derived from the existing mask or None)."""
     _validate_points(prompt.points, clip.width, clip.height)
-    if prompt.type == "clicks" and prompt.box is None and clip.objects:
-        existing = store.read_mask(clip.id, clip.objects[0].id, frame)
+    if prompt.type == "clicks" and prompt.box is None and object_id is not None:
+        existing = store.read_mask(clip.id, object_id, frame)
         if existing is not None:
             derived = padded_box(existing, BOX_FROM_MASK_PAD, clip.width, clip.height)
             return derived, derived
@@ -96,12 +97,14 @@ def _effective_box(
     return None, None
 
 
-def preview(store: ProjectStore, engine: Engine, clip: Clip, frame: int, prompt: PromptSpec) -> list[Detection]:
+def preview(
+    store: ProjectStore, engine: Engine, clip: Clip, frame: int, prompt: PromptSpec, *, object_id: int | None = None
+) -> list[Detection]:
     image = load_frame(store, clip, frame)
     key = (clip.id, frame)
     if prompt.type == "text":
         return engine.predict_text(image, prompt.phrase.strip(), frame_key=key)
-    box, _ = _effective_box(store, clip, frame, prompt)
+    box, _ = _effective_box(store, clip, frame, prompt, object_id)
     det = engine.predict_prompt(image, points=list(prompt.points), box=box, frame_key=key)
     return [det] if det is not None else []
 
@@ -113,48 +116,50 @@ def accept(
     frame: int,
     prompt: PromptSpec,
     *,
+    object_id: int | None,
     class_id: int | None = None,
     candidate: int = 0,
-) -> Clip:
+    candidates: list[int] | None = None,
+) -> tuple[Clip, list[int]]:
+    if candidates is not None and object_id is not None:
+        raise BadRequest("candidates needs object_id null")
     clip = store.read_clip(clip_id)
     if frame in clip.deleted_frames:
         raise BadRequest(f"frame {frame} is deleted; restore it before labeling")
-    box, derived = _effective_box(store, clip, frame, prompt)
-    detections = preview(store, engine, clip, frame, prompt)
+    box, derived = _effective_box(store, clip, frame, prompt, object_id)
+    detections = preview(store, engine, clip, frame, prompt, object_id=object_id)
     if not detections:
         raise BadRequest("the prompt produced no usable mask (nothing found, or the mask is too small or too large)")
-    if not 0 <= candidate < len(detections):
-        raise BadRequest(f"candidate {candidate} does not exist; the prompt produced {len(detections)}")
-    mask = detections[candidate].mask
+
+    indices = candidates if candidates is not None else [candidate]
+    seen: set[int] = set()
+    for c in indices:
+        if not 0 <= c < len(detections):
+            raise BadRequest(f"candidate {c} does not exist; the prompt produced {len(detections)}")
+        if c in seen:
+            raise BadRequest(f"duplicate candidate {c}")
+        seen.add(c)
 
     with store.lock(clip_id):
         clip = store.read_clip(clip_id)
         if frame in clip.deleted_frames:  # re-check: a delete may have raced the unlocked read above
             raise BadRequest(f"frame {frame} is deleted; restore it before labeling")
-        if clip.objects:
-            obj = clip.objects[0]
-        else:
-            if class_id is None:
-                raise BadRequest("class_id is required for the first accept on a clip")
-            obj = None
-        if class_id is not None:
-            known = {c.id for c in store.read_project(clip.project_id).classes}
-            if class_id not in known:
-                raise BadRequest(f"unknown class id {class_id}")
-        if obj is None:
-            obj = create_object(clip, class_id)
-        elif class_id is not None:
-            obj.class_id = class_id
-        store.write_mask(clip.id, obj.id, frame, mask)
-        payload = prompt.model_dump(mode="json", exclude_none=True)
-        payload["candidate"] = candidate
-        if derived is not None:
-            payload["box_from_mask"] = list(derived)
-        elif box is not None:
-            payload["box"] = list(box)  # the normalised/clamped box, not the raw client input
-        keyframe = Keyframe(frame_idx=frame, prompt=Prompt(type=prompt.type, payload=payload), created_at=now_iso())
-        obj.keyframes = sorted(
-            [k for k in obj.keyframes if k.frame_idx != frame] + [keyframe], key=lambda k: k.frame_idx
-        )
+        ids = []
+        for c in indices:
+            obj = resolve_target(store, clip, object_id, class_id)
+            store.write_mask(clip.id, obj.id, frame, detections[c].mask)
+            payload = prompt.model_dump(mode="json", exclude_none=True)
+            payload["candidate"] = c
+            if derived is not None:
+                payload["box_from_mask"] = list(derived)
+            elif box is not None:
+                payload["box"] = list(box)  # the normalised/clamped box, not the raw client input
+            keyframe = Keyframe(
+                frame_idx=frame, prompt=Prompt(type=prompt.type, payload=payload), created_at=now_iso()
+            )
+            obj.keyframes = sorted(
+                [k for k in obj.keyframes if k.frame_idx != frame] + [keyframe], key=lambda k: k.frame_idx
+            )
+            ids.append(obj.id)
         store.write_clip(clip)
-        return clip
+        return clip, ids

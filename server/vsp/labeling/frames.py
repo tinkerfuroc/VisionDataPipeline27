@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from ..store import Clip, ProjectStore
 from .errors import BadRequest
+from .objects import find_object
 from .ranges import subtract_range
 
 
@@ -39,7 +42,9 @@ def prune_from(store: ProjectStore, clip_id: str, from_idx: int) -> Clip:
     return _set_deleted(store, clip_id, range(from_idx, clip.frame_count), True)
 
 
-def clear_range(store: ProjectStore, clip_id: str, start: int, end: int) -> Clip:
+def clear_range(
+    store: ProjectStore, clip_id: str, start: int, end: int, *, objects: Literal["all"] | list[int] = "all"
+) -> Clip:
     store.clip_dir(clip_id)  # raises NotFound before the lock table grows an entry for a bogus id
     with store.lock(clip_id):
         clip = store.read_clip(clip_id)
@@ -47,7 +52,8 @@ def clear_range(store: ProjectStore, clip_id: str, start: int, end: int) -> Clip
         _check(clip, end)
         if start > end:
             raise BadRequest(f"start {start} is after end {end}")
-        for obj in clip.objects:
+        targets = clip.objects if objects == "all" else [find_object(clip, oid) for oid in objects]
+        for obj in targets:
             # Keyframes in the range go too (mask and keyframe entry): clearing is the only way to remove one. The
             # object itself stays, class included, so the next accepted prompt adds a keyframe to it as usual.
             for idx in range(start, end + 1):

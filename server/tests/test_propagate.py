@@ -9,7 +9,7 @@ from vsp.engine.types import ChunkOOMError
 from vsp.labeling.errors import BadRequest, PropagationFailed
 from vsp.labeling.frames import restore_frame
 from vsp.labeling.paint import set_mask
-from vsp.labeling.prompts import OBJECT_ID, PromptSpec, accept, create_object
+from vsp.labeling.prompts import PromptSpec, accept, create_object
 from vsp.labeling.propagate import plan_indices, resolve_participants, run_propagation
 from vsp.store import Keyframe, NotFound, Prompt, now_iso
 
@@ -18,14 +18,14 @@ KW = {"chunk_size": 8, "min_chunk_size": 4, "lost_after": 3}
 
 
 def _x0(store, clip_id, idx):
-    mask = store.read_mask(clip_id, OBJECT_ID, idx)
+    mask = store.read_mask(clip_id, OBJ, idx)
     return None if mask is None else int(np.where(mask)[1].min())
 
 
 def _seeded(store, make_clip, eng, n_frames=30, keyframes=(0,), white=()):
     _, clip = make_clip(n_frames=n_frames, white=white)
     for i, kf in enumerate(keyframes):
-        accept(store, eng, clip.id, kf, CLICK, class_id=0 if i == 0 else None)
+        accept(store, eng, clip.id, kf, CLICK, object_id=None if i == 0 else OBJ, class_id=0 if i == 0 else None)
     return clip
 
 
@@ -52,7 +52,7 @@ def test_forward_writes_every_frame_in_anchor_prepended_chunks(store, make_clip)
     events = []
     res = run_propagation(store, eng, clip.id, 0, "forward", emit=events.append, **KW)
     assert (res.processed, res.written, res.lost_at, res.cancelled) == (29, 29, None, False)
-    assert store.mask_indices(clip.id, OBJECT_ID) == list(range(30))
+    assert store.mask_indices(clip.id, OBJ) == list(range(30))
     assert _x0(store, clip.id, 7) == 20 + 2 * 7  # continuous motion across the 8-frame chunk seam...
     assert _x0(store, clip.id, 9) == 20 + 2 * 9  # ...because each chunk is seeded by the previous frame's mask
     assert eng.propagate_calls == [9, 9, 9, 6]  # 29 frames in chunks of 8, each +1 anchor frame
@@ -65,12 +65,12 @@ def test_forward_writes_every_frame_in_anchor_prepended_chunks(store, make_clip)
 def test_keyframes_are_never_overwritten(store, make_clip):
     eng = FakeEngine()
     clip = _seeded(store, make_clip, eng, n_frames=20, keyframes=(0, 10))
-    before = store.mask_path(clip.id, OBJECT_ID, 10).read_bytes()
+    before = store.mask_path(clip.id, OBJ, 10).read_bytes()
     res = run_propagation(store, eng, clip.id, 0, "forward", **KW)
     assert res.processed == 9
-    assert store.mask_path(clip.id, OBJECT_ID, 10).read_bytes() == before
+    assert store.mask_path(clip.id, OBJ, 10).read_bytes() == before
     assert _x0(store, clip.id, 10) == 20  # still the accepted mask, not seed + 20
-    assert store.mask_indices(clip.id, OBJECT_ID) == list(range(11))
+    assert store.mask_indices(clip.id, OBJ) == list(range(11))
 
 
 def test_backward_and_both(store, make_clip):
@@ -80,7 +80,7 @@ def test_backward_and_both(store, make_clip):
     assert res.processed == 8 and _x0(store, clip.id, 5) == 20 + 2 * 3  # 3 frames away from the keyframe
     res = run_propagation(store, eng, clip.id, 8, "both", **KW)
     assert res.processed == 15
-    assert store.mask_indices(clip.id, OBJECT_ID) == list(range(16))
+    assert store.mask_indices(clip.id, OBJ) == list(range(16))
     # the keyframe itself is not a propagated frame, so the two passes stay separate ranges
     assert store.read_clip(clip.id).objects[0].propagated_ranges == [(0, 7), (9, 15)]
 
@@ -103,11 +103,11 @@ def test_resumes_from_a_propagated_frame_and_still_stops_at_the_next_keyframe(st
     clip = _seeded(store, make_clip, eng, n_frames=30, keyframes=(0, 20))
     seen = []
     res = run_propagation(store, eng, clip.id, 0, "forward", emit=seen.append, cancel=lambda: len(seen) >= 6, **KW)
-    assert res.cancelled and store.mask_indices(clip.id, OBJECT_ID) == [0, 1, 2, 3, 4, 5, 20]
+    assert res.cancelled and store.mask_indices(clip.id, OBJ) == [0, 1, 2, 3, 4, 5, 20]
 
     res = run_propagation(store, eng, clip.id, 5, "forward", **KW)
     assert (res.processed, res.written, res.cancelled) == (14, 14, False)  # frames 6..19; keyframe 20 untouched
-    assert store.mask_indices(clip.id, OBJECT_ID) == [*range(21)]
+    assert store.mask_indices(clip.id, OBJ) == [*range(21)]
     assert _x0(store, clip.id, 6) == 20 + 2 * 6  # continuous with the first run: seeded by frame 5's mask
     assert store.read_clip(clip.id).objects[0].propagated_ranges == [(1, 19)]
 
@@ -115,10 +115,10 @@ def test_resumes_from_a_propagated_frame_and_still_stops_at_the_next_keyframe(st
         run_propagation(store, eng, clip.id, 25, "backward", **KW)
 
     # "both" from a propagated frame: forward to the next keyframe, backward to the previous one, neither touched
-    store.write_mask(clip.id, OBJECT_ID, 25, store.read_mask(clip.id, OBJECT_ID, 20))
+    store.write_mask(clip.id, OBJ, 25, store.read_mask(clip.id, OBJ, 20))
     res = run_propagation(store, eng, clip.id, 25, "both", **KW)
     assert (res.processed, res.written) == (8, 8)  # 26..29 forward, 24..21 backward
-    assert store.mask_indices(clip.id, OBJECT_ID) == [*range(30)]
+    assert store.mask_indices(clip.id, OBJ) == [*range(30)]
     # 25 itself was written by hand above, not by a run, so it is not a propagated frame
     assert store.read_clip(clip.id).objects[0].propagated_ranges == [(1, 19), (21, 24), (26, 29)]
 
@@ -131,7 +131,7 @@ def test_deleted_frames_feed_the_tracker_but_are_not_written(store, make_clip):
     store.write_clip(c)
     res = run_propagation(store, eng, clip.id, 0, "forward", **KW)
     assert res.processed == 11 and res.written == 10
-    assert 5 not in store.mask_indices(clip.id, OBJECT_ID)
+    assert 5 not in store.mask_indices(clip.id, OBJ)
     assert _x0(store, clip.id, 6) == 20 + 2 * 6  # continuity kept through the deleted frame
 
 
@@ -140,10 +140,10 @@ def test_lost_object_stops_early_and_clears_stale_masks(store, make_clip):
     clip = _seeded(store, make_clip, eng, n_frames=30, white=range(6, 30))
     stale = np.zeros((60, 120), dtype=bool)
     stale[0:20, 0:20] = True
-    store.write_mask(clip.id, OBJECT_ID, 7, stale)
+    store.write_mask(clip.id, OBJ, 7, stale)
     res = run_propagation(store, eng, clip.id, 0, "forward", **KW)
     assert res.lost_at == 6 and res.processed == 8 and res.cleared == 1  # frames 1..8; 6, 7, 8 empty
-    assert store.mask_indices(clip.id, OBJECT_ID) == [0, 1, 2, 3, 4, 5]
+    assert store.mask_indices(clip.id, OBJ) == [0, 1, 2, 3, 4, 5]
 
 
 def test_anchor_skips_empty_frames_at_a_chunk_seam(store, make_clip):
@@ -151,7 +151,7 @@ def test_anchor_skips_empty_frames_at_a_chunk_seam(store, make_clip):
     clip = _seeded(store, make_clip, eng, n_frames=10, white=(4, 5))
     res = run_propagation(store, eng, clip.id, 0, "forward", chunk_size=4, min_chunk_size=4, lost_after=5)
     assert res.lost_at is None and res.processed == 9
-    assert store.mask_indices(clip.id, OBJECT_ID) == [0, 1, 2, 3, 6, 7, 8, 9]
+    assert store.mask_indices(clip.id, OBJ) == [0, 1, 2, 3, 6, 7, 8, 9]
     # chunk 2 is [anchor=3, 5, 6, 7, 8]: frame 6 is offset 2 from the frame-3 mask (x0 = 26) -> 26 + 4
     assert _x0(store, clip.id, 6) == 30
 
@@ -183,7 +183,7 @@ def test_cancel_keeps_landed_masks(store, make_clip):
         cancel=lambda: len(seen) >= 3, **KW,
     )
     assert res.cancelled and res.processed == 3
-    assert store.mask_indices(clip.id, OBJECT_ID) == [0, 1, 2, 3]
+    assert store.mask_indices(clip.id, OBJ) == [0, 1, 2, 3]
     assert store.read_clip(clip.id).objects[0].propagated_ranges == [(1, 3)]
 
 
@@ -278,7 +278,7 @@ def test_mid_chunk_oom_resumes_at_the_first_unprocessed_frame(store, make_clip):
     clip = _seeded(store, make_clip, eng, n_frames=13)
     res = run_propagation(store, eng, clip.id, 0, "forward", **KW)
     assert res.processed == 12 and res.oom_retries == 1
-    assert store.mask_indices(clip.id, OBJECT_ID) == list(range(13))
+    assert store.mask_indices(clip.id, OBJ) == list(range(13))
     for k in (1, 3, 4, 8, 12):
         assert _x0(store, clip.id, k) == 20 + 2 * k
 
@@ -294,7 +294,7 @@ def test_mid_chunk_oom_records_the_landed_frames(store, make_clip):
     clip2 = _seeded(store, make_clip, eng2, n_frames=8)
     res2 = run_propagation(store, eng2, clip2.id, 0, "forward", chunk_size=4, min_chunk_size=4, lost_after=3)
     assert res2.processed == 7
-    assert store.mask_indices(clip2.id, OBJECT_ID) == list(range(8))
+    assert store.mask_indices(clip2.id, OBJ) == list(range(8))
 
 
 def test_oom_at_the_floor_without_progress_keeps_what_landed(store, make_clip):
@@ -302,7 +302,7 @@ def test_oom_at_the_floor_without_progress_keeps_what_landed(store, make_clip):
     clip = _seeded(store, make_clip, eng, n_frames=13)
     with pytest.raises(PropagationFailed, match="chunk size 4"):
         run_propagation(store, eng, clip.id, 0, "forward", chunk_size=4, min_chunk_size=4, lost_after=3)
-    assert store.mask_indices(clip.id, OBJECT_ID) == [0, 1]
+    assert store.mask_indices(clip.id, OBJ) == [0, 1]
     assert store.read_clip(clip.id).objects[0].propagated_ranges == [(1, 1)]
 
 
@@ -313,7 +313,7 @@ def test_both_reports_a_lost_forward_pass(store, make_clip):
     assert res.lost_at == 13
     assert res.lost_by_direction == {"forward": {OBJ: 13}}
     for i in range(10):
-        assert store.read_mask(clip.id, OBJECT_ID, i) is not None
+        assert store.read_mask(clip.id, OBJ, i) is not None
 
 
 def test_both_when_both_directions_lose(store, make_clip):
@@ -336,7 +336,7 @@ def test_engine_stopping_mid_chunk_without_cancel_names_frames_landed(store, mak
     clip = _seeded(store, make_clip, eng, n_frames=13)
     with pytest.raises(PropagationFailed, match="stopped after 2 of 8 frames without being cancelled"):
         run_propagation(store, eng, clip.id, 0, "forward", **KW)
-    assert store.mask_indices(clip.id, OBJECT_ID) == [0, 1, 2]
+    assert store.mask_indices(clip.id, OBJ) == [0, 1, 2]
 
 
 def test_cancel_before_the_first_frame_of_a_chunk(store, make_clip):
@@ -344,7 +344,7 @@ def test_cancel_before_the_first_frame_of_a_chunk(store, make_clip):
     clip = _seeded(store, make_clip, eng)
     res = run_propagation(store, eng, clip.id, 0, "forward", cancel=lambda: True, **KW)
     assert res.cancelled and res.processed == 0
-    assert store.mask_indices(clip.id, OBJECT_ID) == [0]
+    assert store.mask_indices(clip.id, OBJ) == [0]
 
 
 def test_cancel_after_the_last_frame_is_not_reported_as_cancelled(store, make_clip):
@@ -387,7 +387,7 @@ def test_nothing_to_propagate_returns_an_empty_result(store, make_clip):
 def test_missing_seed_mask_is_a_bad_request(store, make_clip):
     eng = FakeEngine()
     clip = _seeded(store, make_clip, eng)
-    store.delete_mask(clip.id, OBJECT_ID, 0)
+    store.delete_mask(clip.id, OBJ, 0)
     with pytest.raises(BadRequest, match="has no mask"):
         run_propagation(store, eng, clip.id, 0, "forward", **KW)
 
@@ -407,8 +407,8 @@ def test_out_of_order_engine_offsets_are_rejected(store, make_clip):
     clip = _seeded(store, make_clip, eng, n_frames=10)
     with pytest.raises(PropagationFailed, match="expected 2"):
         run_propagation(store, eng, clip.id, 0, "forward", **KW)
-    assert store.read_mask(clip.id, OBJECT_ID, 1) is not None
-    assert store.read_mask(clip.id, OBJECT_ID, 3) is None
+    assert store.read_mask(clip.id, OBJ, 1) is not None
+    assert store.read_mask(clip.id, OBJ, 3) is None
 
 
 def test_restoring_a_frame_mid_run_gets_its_mask_from_the_next_chunk(store, make_clip):
@@ -426,7 +426,7 @@ def test_restoring_a_frame_mid_run_gets_its_mask_from_the_next_chunk(store, make
         store, eng, clip.id, 0, "forward", emit=on_event, chunk_size=4, min_chunk_size=4, lost_after=99
     )
     assert res.processed == 12
-    assert store.read_mask(clip.id, OBJECT_ID, 10) is not None
+    assert store.read_mask(clip.id, OBJ, 10) is not None
 
 
 def test_backed_off_chunk_size_carries_into_the_backward_pass(store, make_clip):
@@ -442,7 +442,7 @@ def test_propagated_ranges_after_a_lost_stop_cover_the_processed_frames(store, m
     clip = _seeded(store, make_clip, eng, n_frames=30, white=range(6, 30))
     stale = np.zeros((60, 120), dtype=bool)
     stale[0:20, 0:20] = True
-    store.write_mask(clip.id, OBJECT_ID, 7, stale)
+    store.write_mask(clip.id, OBJ, 7, stale)
     run_propagation(store, eng, clip.id, 0, "forward", **KW)
     assert store.read_clip(clip.id).objects[0].propagated_ranges == [(1, 8)]
 
@@ -487,7 +487,7 @@ def test_propagation_seeds_from_a_painted_keyframe_and_stops_at_it(store, make_c
     clip = _seeded(store, make_clip, eng, n_frames=20)
     painted = np.zeros((clip.height, clip.width), dtype=bool)
     painted[20:40, 60:80] = True  # x0 = 60, well away from the click seed's x0 = 20
-    set_mask(store, clip.id, 10, painted)
+    set_mask(store, clip.id, 10, painted, object_id=OBJ)
     res = run_propagation(store, eng, clip.id, 0, "forward", **KW)
     assert res.processed == 9  # frames 1..9: the painted keyframe bounds the run
     assert _x0(store, clip.id, 10) == 60  # and is untouched
