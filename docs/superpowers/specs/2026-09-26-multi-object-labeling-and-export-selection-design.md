@@ -1,6 +1,7 @@
 # Several objects per clip, class selection on export, named datasets
 
-Date: 2026-09-26. Status: design approved in conversation (approach A, "object list with an active object").
+Date: 2026-09-26. Status: design approved in conversation (approach A, "object list with an active object"); audited
+against the code once (20 findings, all folded in below).
 
 ## 1. Goal
 
@@ -17,13 +18,24 @@ Out of scope: one object changing class over time; merging or splitting objects;
 | Topic | Decision |
 |---|---|
 | Multi-class meaning | several objects per clip |
-| Propagate | both: all objects together in one SAM3 session (default), or the selected object only |
+| Propagate | both: all objects together (default), or the selected object only |
 | Timeline | one lane per object, stacked; the active lane is taller; clicking a lane selects its object |
 | Excluded classes on export | their objects are dropped; a frame left with none follows "Include frames without a mask" |
 | Dataset name | both: free-text display name (editable later) and a folder id slugged from it |
 | Overlay outline (previous change) | the active object gets the configurable outline; other objects are fill only |
 
-## 3. Data model and storage
+## 3. Delivery: four plans
+
+| Plan | Scope | Depends on |
+|---|---|---|
+| A. Server multi-object | §4 store, §5 engine, §6 propagation, §7 labelling API, their tests | — |
+| B. Label page | §8, §9 | A |
+| C. Export class selection | §10, §12 (cutouts use A's multi-object fixtures) | A (fixtures only) |
+| D. Export names | §11 | — |
+
+D can run before or alongside A. Each plan ends with the test suites green and README updated for its part.
+
+## 4. Data model and storage
 
 No migration. `Clip.objects: list[LabelObject]` and `masks/<object_id>/<frame:06d>.png` already exist; v1 only ever
 created object id 1 (`OBJECT_ID`), which existing clips keep.
@@ -33,162 +45,217 @@ created object id 1 (`OBJECT_ID`), which existing clips keep.
   `next_object_id: int = 0` (0 in old clip.json files), the new id is
   `max(clip.next_object_id, max(existing ids, default=0) + 1)`, and `next_object_id` becomes that id + 1.
 - `OBJECT_ID` is removed; every server path takes an explicit object id.
-- Deleting an object removes its `LabelObject` entry and its `masks/<id>/` directory, under the clip lock and the GPU
-  lease (a propagation may be writing that directory).
+- Deleting an object removes its `LabelObject` entry and its `masks/<id>/` directory (§7 for when it is allowed).
 - `ProjectStore.frame_states(clip)` keeps its meaning (the clip-level aggregate: deleted > keyframe of any object >
   masked by any object > empty) and gains `object_states(clip, obj) -> list[FrameState]` with the same priority rule
   for one object (a deleted frame is `deleted` in every lane).
 
-## 4. Engine
+## 5. Engine
 
 `Engine.propagate(frames, seeds: Mapping[int, np.ndarray], cancel_cb=None) -> Iterator[tuple[int, dict[int, np.ndarray | None]]]`
 
 - `seeds` maps object id → bool mask for `frames[0]`; at least one, each non-empty and of the frames' shape, else
-  `ValueError` (raised lazily, as today).
-- Each yielded dict has exactly the seeded ids; `None` = the object has no usable mask on that frame.
-- `Sam3Engine`: every seed is added to the same inference session under its own `obj_id`
-  (`session.obj_id_to_idx(obj_id)`, `add_mask_inputs`); outputs are split per object with the same post-processing
-  and "no usable mask" rule as today, applied per object.
-- `FakeEngine` and the engine contract tests move to the new signature. There is no single-object variant left; one
-  object is simply one seed.
-- A `gpu`-marked test propagates two objects on real footage fixtures and checks each output stays near its own seed.
+  `ValueError` (raised lazily, as today). All seeds belong to the same frame: the caller groups objects by anchor
+  (§6).
+- Each yielded dict has exactly the seeded ids as keys; `None` = no usable mask for that object on that frame (the
+  existing degenerate-mask rule, applied per object).
+- `Sam3Engine._propagate_locked`: for each seed, `obj_idx = session.obj_id_to_idx(obj_id)` and
+  `session.add_mask_inputs(obj_idx, 0, seed)`; `session.obj_with_new_inputs` = every seeded id. Each output's
+  `pred_masks` has one row per tracked object, in the order of `out.object_ids`; row i is binarised on its own and
+  belongs to `out.object_ids[i]` (`_binarize` gains a row argument instead of taking `[0, 0]`). The tracker head
+  runs once per object per frame, so tracker cost grows linearly with the object count; frame encoding is shared.
+  The OOM back-off is unchanged.
+- `predict_text` / `predict_prompt` are unchanged (single object, preview only).
+- `FakeEngine` and the engine contract tests move to the new signature. One object is simply one seed.
+- A `gpu`-marked test propagates two objects on a test clip and checks each output stays near its own seed.
 
-## 5. Propagation
+## 6. Propagation
 
 `POST /api/clips/{id}/propagate` body: `{from_frame, direction, objects: "all" | [object_id, ...]}` (`objects`
-defaults to `"all"`).
+defaults to `"all"`; "all" includes objects hidden in the GUI).
 
 - **Participants**: the requested objects that have a mask on `from_frame`. For `"all"`, objects without one are
-  skipped and reported in the result (`skipped: [ids]`); for an explicit list, a listed object without a seed is a 400
-  naming it. No participant at all is a 400 (today's message). An unknown object id is a 404.
-- **Per-object bound**: each object's run stops before its own next keyframe in that direction (`plan_indices` per
-  object). The run covers the union of the participants' ranges; an object whose bound is reached is no longer seeded
-  and nothing more is written for it.
-- **Chunks**: unchanged anchor scheme (the previous chunk's last frame is prepended). Each still-active object is
-  seeded with its most recent mask: its mask on the anchor frame, or, if it had none there, its last mask within the
-  current run of empties (at most `lost_after - 1` frames old — beyond that it is lost). Masks are written per object
-  exactly as today (deleted frames are not written; a `None` deletes that object's stored mask on that frame).
+  skipped and reported (`skipped: [ids]`); for an explicit list, a listed object without a seed is a 400 naming it;
+  an unknown id is a 404; no participant at all is a 400 (today's message). The route validates for early errors,
+  but the **job resolves participants again** from a fresh clip read: an object deleted in between is skipped, not
+  an error, and `_record_range` ignores an object that no longer exists (no bare `next(...)`).
+- **Per-object bound**: each participant's frames are `plan_indices(clip, obj, from_frame, direction)` (up to its own
+  next keyframe). The direction covers the union of the participants' lists; `total` = the sum over directions of
+  the union's size.
+- **Per-object anchors** (the rule today, kept per object): an object's anchor is its own last frame with a mask in
+  this run (`from_frame` at the start); the anchor image is prepended to the chunk and the object is seeded with its
+  mask there. Frames where it had no mask are skipped over, exactly as the single object's are today. For each
+  chunk, the still-active objects are **grouped by anchor frame** and each group runs as one engine call on
+  `[its anchor] + chunk`. Usually there is one group; a second group costs one extra pass over the chunk. The
+  prefetcher is keyed per group (`(anchor, chunk)`, as today), and `schedule()` predicts the group of the object
+  that wrote the chunk's last frame.
+- **Inside a chunk**: an object that reaches its bound or gets lost mid-chunk stays in that engine call, but its
+  outputs past that point are discarded. `done_in_chunk` stays per frame (a frame is done when every group has
+  yielded it). Masks are written per object (deleted frames are not written; `None` deletes that object's stored
+  mask on that frame). `_record_range(obj, frames)` is called per object with only the frames that object covered,
+  on every exit path, as today. "Stopped short" compares the frames yielded with the chunk's length, per group.
 - **Lost**: counted per object (`lost_after` consecutive empties). A lost object stops being seeded. A direction ends
-  when every participant is lost or bounded. Result: `lost_at` becomes `lost: {object_id: frame}` plus the old
-  `lost_at` = the earliest of them (the page seeks there, as today); `lost_by_direction` likewise per object.
-- **Progress** counts frames, not frame×object. The `frame` event becomes
-  `{type: "frame", frame, objects: {object_id: has_mask}, has_mask: any(...), done, total}`.
-- `propagated_ranges` are recorded per object for the frames that object actually covered. OOM back-off, prefetch,
-  cancel latching and the "engine stopped short" checks are unchanged.
+  when every participant is lost or bounded. Result:
+  `lost_by_direction: {direction: {object_id: frame}}`, `lost: {object_id: frame}` (the first direction in run order
+  that lost it), and `lost_at` = in the first direction (run order) where anything was lost, the lost frame nearest
+  `from_frame`. The page seeks to `lost_at`, as today.
+- **Frame event**: `{type: "frame", frame, objects: [{id, has_mask}], done, total}`, listing only the objects still
+  active on that frame. There is no aggregate `has_mask`: the client derives the aggregate state from its per-object
+  lanes (a non-participating object's mask on that frame must keep the frame "masked").
+- OOM back-off, cancel latching and the "engine stopped short" error are unchanged, applied per engine call.
 
-## 6. Labelling API
+## 7. Labelling API
 
-- `GET /api/clips/{id}` (`clip_detail`) adds `object_states: {object_id: FrameState[]}`; `states` stays the
-  aggregate (Clips page, ClipStats).
-- Masks: `GET /api/clips/{id}/objects/{object_id}/masks/{idx}` replaces `/masks/{idx}` (only the web app used it).
+- `GET /api/clips/{id}` (`clip_detail`) adds `object_states: {object_id: FrameState[]}` (JSON keys are strings);
+  `states` stays the aggregate (Clips page, ClipStats). `clip_summary` is unchanged (its `clip` dump already carries
+  `objects` and will carry `next_object_id`).
+- Masks: `GET /api/clips/{id}/objects/{object_id}/masks/{idx}` replaces `/masks/{idx}` (only the web app used it;
+  existing tests move to the new route).
+- `POST /prompt` takes `object_id: int | null`: a clicks prompt without a box derives its box from **that** object's
+  mask on the frame (`_effective_box`); null = no derived box. Preview and accept then compute the same mask.
 - `POST /accept` and `POST /mask` take `object_id: int | null`. `null` creates a new object and requires `class_id`;
-  an id writes to that object (404 if unknown). `class_id` is no longer accepted together with an `object_id`
-  (400): relabelling is its own call. The clicks-without-box prompt derives its box from **that** object's mask on the
-  frame (`_effective_box`), not object 1's.
+  an id writes to that object (404 if unknown). `class_id` together with an `object_id` is a 400: relabelling is its
+  own call.
 - `POST /accept` with `object_id: null` also takes `candidates: [int, ...]` (default `[candidate]`): each listed
-  text-prompt candidate becomes its own new object of `class_id`, in one call ("accept all").
-- `PATCH /api/clips/{id}/objects/{object_id}` `{class_id}`: relabel immediately.
-- `DELETE /api/clips/{id}/objects/{object_id}`: GPU lease + clip lock; 409 while a propagation runs (as `clear-range`).
+  text-prompt candidate becomes its own new object of `class_id`, in one call ("Accept all as new objects").
+- `PATCH /api/clips/{id}/objects/{object_id}` `{class_id}`: relabel at once. Takes the clip lock only, not the GPU
+  lease, so it works during a propagation (it touches no mask).
+- `DELETE /api/clips/{id}/objects/{object_id}`: clip lock + GPU lease; 409 while a propagation or an **export** job is
+  running (as `DELETE` clip does today), since both read that object's masks.
 - `POST /clear-range` takes `objects: "all" | [id, ...]` (default `"all"`, today's behaviour).
 - Frame delete / restore / prune stay clip-wide.
-- `clip_summary` adds `objects: [{id, class_id}]` for the Clips and Export pages (already in `clip` dump; keep it).
+- Locking, stated: accept, `/mask`, clear-range and object delete keep taking the GPU lease, so while any
+  propagation runs — including a "selected object only" run — every object on every clip is read-only for masks.
+  The GUI shows the same "A propagation is running" reason as today.
 
-## 7. Label page
+## 8. Label page
 
 - **Objects panel** (replaces "Object", right sidebar): one row per object — class swatch, `#id class`, masked-frame
   count, an eye toggle (hide from the canvas; display only, per page session). Clicking a row makes it active. Below
-  the list: the active object's class select (changes apply at once via PATCH), "+ New object" with a class select
-  (the new object only exists once its first mask is accepted or painted; until then the active row reads "New
-  object (class)"), Delete object (confirm dialog naming the frame count). The Add-class form stays.
-- **Keys**: `O` / `Shift+O` next / previous object, `N` new object. (Free in `useKeyboard`: only Enter, Esc, arrows,
-  Space, Del, `[`, `]`, `-`, `=`, `+`, `z`, `k`, `g`, `m` are bound.) `K`, `G`, `[`/`]` act on the active object.
+  the list: the active object's class select (applies at once via PATCH), "+ New object" with a class select (the
+  new object only exists once its first mask is accepted or painted; until then the active row reads "New object
+  (class)"), Delete object (confirm dialog naming its frame count). The Add-class form stays.
+- **Keys**: `O` / `Shift+O` next / previous object, `N` new object (unbound today; `useKeyboard` binds only Enter,
+  Esc, arrows, Space, Del, `[`, `]`, `-`, `=`, `+`, `z`, `k`, `g`, `m`). `K`, `G` and the "has a mask here" checks
+  (`hasMask`, prefetch, propagate-blocked reason) use the **active object's lane**, not the aggregate `states`.
 - **Canvas**: every visible object is drawn in its class colour at `MASK_ALPHA`; the active one also gets the outline
   from the Mask outline settings, others none. `FrameStore` composites a frame's visible objects into **one** cached
-  layer keyed by frame URL versions, the ordered visible ids, the active id, class colours and outline style, so the
-  48-layer LRU still holds 48 frames regardless of object count. Prefetch fetches the visible objects' masks.
-- **Prompting / brush** write to the active object (or create it when the active row is "New object"). Text prompts
-  with several candidates offer "Accept selected" and "Accept all as new objects".
+  layer keyed by the frame's mask version, the ordered visible ids, the active id, class colours and outline style,
+  so the 48-layer LRU still holds 48 frames regardless of object count. Prefetch fetches the visible objects' masks.
+- **Brush**: `useBrush` loads its base from the **active object's own** mask URL; while brushing, the composite
+  leaves the active object out (the brush layer is drawn in its place). Save posts `/mask` with the active
+  `object_id`, or `object_id: null` + `class_id` on a "New object" row.
+- **Prompting**: `usePrompting` sends `object_id` with `/prompt` and `/accept`; its current "send the class when it
+  changed" logic is removed (relabel is PATCH). Text prompts with several candidates offer "Accept selected" and
+  "Accept all as new objects" (the latter only when the active row is "New object").
 - **Propagate panel**: a two-way choice "All objects" / "Selected: #2 cup" above the direction buttons; the note
-  names skipped objects and each lost object.
+  names skipped objects and each lost object. "Selected" is disabled with a reason on a "New object" row.
 - **Cleanup panel**: "Clear masks" gains "Active object" / "All objects" (default active object). Delete / prune
   unchanged.
-- **Mask versions**: `useClip.patchFrames` bumps the frame's version for any object event; `applyFrameEvent` updates
-  both the aggregate and the per-object lanes.
+- **Mask versions and lanes**: `useClip.patchFrames` takes the new event shape, bumps the frame's version, updates
+  each listed object's lane with today's `applyFrameEvent` rule, then recomputes the aggregate state for that frame
+  from all lanes.
+- Deleting the active object makes the next object (or "New object" when none is left) active. An object with no
+  masks left stays listed until deleted.
 
-## 8. Timeline (one lane per object)
+## 9. Timeline (one lane per object)
 
-- One lane per object in object-id order; inactive lanes are 10 px, the active lane is 30 px (today's band), with 2 px
-  gaps. Each lane uses today's encoding for its object (filled in the class colour = masked, hollow = no mask, amber
-  diamond = keyframe) and deleted frames are hatched across every lane. Hidden objects' lanes are drawn at 40 %
-  opacity.
-- A left gutter (fixed 72 px) names each lane `#id class`; clicking a lane or its label selects that object; clicking
-  inside a lane also seeks (as today).
+- One lane per object in object-id order; inactive lanes are 10 px, the active lane 30 px (today's band), 2 px gaps.
+  Each lane uses today's encoding for its object (filled in the class colour = masked, hollow = no mask, amber
+  diamond = keyframe); deleted frames are hatched across every lane. Hidden objects' lanes are drawn at 40 % opacity.
+- A fixed 72 px left gutter names each lane `#id class`; clicking a lane or its label selects that object, and
+  clicking inside a lane also seeks (as today).
 - The playhead spans all lanes. Height grows with the object count up to 6 lanes, then the lane area scrolls
   vertically and keeps the active lane in view.
-- The hover tooltip names the frame, and each object's state on it.
+- The hover tooltip names the frame and each object's state on it.
 - Shift-drag marks a range as today; what "Clear masks" then clears follows the Cleanup panel's choice.
 - A clip with no objects shows a single empty lane labelled "No objects yet".
 
-## 9. Export: class selection
+## 10. Export: class selection
 
-- `ExportOptions.class_ids: tuple[int, ...] | None` (None = every class). The API body gains `classes: [int] | null`.
-  Empty list or an unknown id is a 400.
+- `ExportOptions.class_ids: tuple[int, ...] | None = None` (None = every class) — an `ExportOptions` field, because
+  derived copies rebuild options with `ExportOptions(**manifest["options"])`; stored in the manifest as a list and
+  converted back to a tuple when read. API: `ExportBody.options.classes: [int] | null`; empty list or an unknown id
+  is a 400.
 - `build_plan` drops objects of unselected classes before the empty-frame filter, so a frame left without objects is
   kept or skipped by `include_empty`, and the split is computed after that (unchanged order).
-- **Renumbering**: the selected classes, ordered by project class id, get export ids 0..k-1. `PlanObject.class_id`
-  and `plan.classes` carry export ids; `plan.class_map` maps export id → project class id. YOLO names/labels use the
-  export id, COCO `category_id` and the mask PNG value use export id + 1 (unchanged convention).
-- `export.json` `classes` entries gain `project_class_id`; `id`, `yolo_id`, `coco_id`, `mask_value` are export ids.
-  `options` records `class_ids`.
-- **Overlap in the semantic mask PNG**: objects are painted largest area first, so a smaller object on top of a larger
-  one stays visible; `counts` gains `overlap_px` (pixels claimed by more than one object) per split.
+- **Renumbering**: the selected classes, ordered by project class id, get export ids 0..k-1. `PlanObject.class_id` and
+  `plan.classes` carry export ids; `ExportPlan.class_map: dict[int, int]` (export id → project class id) is a
+  required field. With every class selected the mapping is the identity (project class ids are contiguous from 0:
+  `add_class` uses max+1 and classes cannot be deleted). YOLO names/labels use the export id; COCO `category_id` and
+  the mask PNG value use export id + 1 (unchanged convention).
+- `manifest_for` writes each `classes` entry with `project_class_id` (from `class_map`); `id`, `yolo_id`, `coco_id`,
+  `mask_value` are export ids. **Derived copies** (augmented, and negatives if that feature lands) build their plan's
+  `class_map` from the source manifest with `c.get("project_class_id", c["id"])`, so older exports map to themselves
+  and the mapping survives any chain of derivations.
+- **Overlap in the semantic mask PNG**: objects are painted largest area first, so a smaller object on top of a
+  larger one stays visible. `overlap_px` (pixels claimed by more than one object) is reported in the `masks` format's
+  summary, computed in `MaskPng.write`, and summed by the derived copies' summary merge.
 - Export page: a "Classes" section in the right sidebar, one checkbox per class with its swatch and its object count
-  across the included clips; all ticked by default; the Start problem text covers "no class selected".
+  across the included clips (from the clip summaries' `objects`); all ticked by default; the Start problem text covers
+  "no class selected".
 
-## 10. Export: names
+## 11. Export: names
 
-- Body gains `name: str | null` (stripped, ≤ 80 chars, any text).
+- `ExportBody.name: str | null` (top level; stripped, at most 80 characters, any text).
 - Folder id: `slug(name)` = lowercase; runs of characters outside `[a-z0-9._-]` become `-`; trimmed of leading
-  non-alphanumerics and trailing `-._`; at most 48 chars. An empty slug (or no name) falls back to today's
-  `YYYYmmdd-HHMMSS-xxxxxx` id. The id is reserved with `mkdir(exist_ok=False)`; on `FileExistsError` it retries
-  `-2`, `-3`, ... , so two concurrent exports can never share a folder.
-- `export.json` gains `name` (the free text, or null) and the job result returns `export_id`, `name`.
-- Everywhere an export is shown: `name` when set, with the id beneath; otherwise the id.
-- Rename: `PATCH /api/train/exports/{id}` `{name}` rewrites `export.json`'s `name` atomically (the folder id never
-  changes, so runs that reference it stay valid). Train page: a rename field for the selected export in the sidebar.
-- `list_exports` sorts by the manifest's `created_at` (newest first) instead of by folder name.
-- Augmented copies keep the id rule `<source id>-aug<N>x-<4hex>` and are named `<source display name> ×<N>
-  augmented`.
-- `vsp train --list` prints the name column; `--export` takes the folder id (unchanged).
+  non-alphanumerics and trailing `-._`; at most 48 characters. An empty slug (or no name) falls back to today's
+  `YYYYmmdd-HHMMSS-xxxxxx` id. The id is reserved with `mkdir(exist_ok=False)`; on `FileExistsError` it tries
+  `-2`, `-3`, ..., so two concurrent exports never share a folder.
+- `export.json` gains `name` (free text or null; a missing key in older manifests reads as null). The job result
+  returns `export_id` and `name`.
+- `ExportInfo` gains `name`; `to_json` and the web export type include it. Everywhere an export is shown: `name` when
+  set, with the id beneath; otherwise the id. Runs store only `export_id` (run.json), so the Runs table and the
+  prediction gallery look the name up in the `/api/exports` list and fall back to the id.
+- Rename: `PATCH /api/exports/{id}` `{name}` rewrites `export.json`'s `name` atomically under a per-export lock (the
+  folder id never changes, so runs that reference it stay valid). Train page: a rename field for the selected export
+  in the sidebar.
+- `list_exports` sorts by the manifest's `created_at`, newest first, ties broken by id (its docstring no longer says
+  ids start with a timestamp).
+- Derived copies keep their id rules (`<source id>-aug<N>x-<4hex>`, and `<source id>-neg<N>-<4hex>` if the
+  negatives feature lands) and take the source's display name (name, else id) plus a suffix: ` ×<N> augmented`,
+  ` +<N>% negatives`.
+- `vsp train --list` prints a name column; `--export` takes the folder id (unchanged).
 
-## 11. Augmented copies: per-object cutouts
+## 12. Augmented copies: per-object cutouts
 
 With several objects per frame, cutting composites per class region of the semantic PNG would cut two touching
 objects of one class as one. `_cutouts_and_sizes` therefore cuts per object from the source's COCO train annotations
-(`coco/annotations/instances_train.json`, rasterised with the export's own `polygons_to_mask`) when the source has
-the `coco` format, and falls back to per-class regions of the mask PNGs otherwise; the derived manifest records
-`cutouts: "per_object" | "per_class_region"` and the Train page's augment panel notes the fallback. Class ids in both
-paths are export ids, so they match the manifest.
+(`coco/annotations/instances_train.json`; each annotation's `file_name` maps to `images/<stem>.jpg`; rasterised with
+the export's own `polygons_to_mask`; class = `category_id - 1`, an export id) when the source has the `coco` format,
+and falls back to per-class regions of the mask PNGs otherwise. The `masks` format stays required (real frames are
+listed from it). The derived manifest records `cutouts: "per_object" | "per_class_region"`, and the Train page's
+augment panel notes the fallback. The same seed on an older export may now produce different composites (different
+cutout set); this is expected.
 
-## 12. Errors and edge cases
+## 13. Errors and edge cases
 
-- Deleting the active object makes the next object (or "New object" when none is left) active.
-- Relabelling or deleting an object while a propagation runs: relabel is allowed (class only); delete is 409.
-- An object with no masks left (all cleared) stays in the list until deleted, as the single object does today.
+- Relabel during a propagation is allowed (class only); delete object is 409 during a propagation or an export.
 - Propagate "Selected" on a "New object" row is disabled with the reason.
-- Export with every selected class absent from the chosen clips: the existing "nothing to export" 400 (with
-  `include_empty` off) or an all-empty dataset (with it on) — the Classes section shows 0 objects for such a class.
+- Export where every selected class is absent from the chosen clips: the existing "nothing to export" 400 (with
+  `include_empty` off) or an all-empty dataset (with it on); the Classes section shows 0 objects for such a class.
 
-## 13. Testing
+## 14. Testing
 
-- Server: store (`next_object_id`, delete, `object_states`), engine contract with 1 and 3 seeds (fake engine),
-  propagation (per-object keyframe bounds, one object lost while another continues, anchor carry-over within
-  `lost_after`, skipped objects, explicit list with a missing seed, cancel/OOM with two objects), API (accept new vs
-  existing object, accept-all candidates, PATCH/DELETE object, per-object mask route, clear-range by object,
-  propagate body validation), export (class filter + renumbering in YOLO/COCO/masks, manifest mapping, empty-frame
-  handling after the filter, overlap order and `overlap_px`), names (slug rules, collision suffixes, concurrent
-  reservation, rename, `list_exports` order), derive (per-object cutouts from COCO, fallback flagged).
-- Web: Timeline lanes (heights, selection click, seek, hover text, hatching across lanes, >6 lanes scroll), Objects
-  panel, `FrameStore` composite keying, Propagate/Cleanup choices, Export Classes and Name, Train rename.
-- GPU: two-object SAM3 propagation smoke test.
+- **Plan A**: store (`next_object_id`, delete, `object_states`); engine contract with 1 and 3 seeds (fake engine);
+  propagation: per-object keyframe bounds, one object lost while another continues, per-object anchors diverging
+  into two groups, skipped objects, explicit list with a missing seed, object deleted between route and job,
+  cancel and OOM with two objects, `lost_at` rules, `total`; prefetch with per-group keys; API: `/prompt` with
+  `object_id`, accept new vs existing object, accept-all candidates, `class_id` + `object_id` 400, PATCH during a
+  propagation, DELETE during a propagation and during an export (409), per-object mask route, clear-range by object,
+  propagate body validation; existing `/masks/{idx}` tests moved. GPU: two-object SAM3 smoke test.
+- **Plan B**: Timeline lanes (heights, selection click, seek, hover text, hatching across lanes, >6 lanes scroll),
+  Objects panel, `FrameStore` composite keying, `useClip.patchFrames` aggregate recompute, `usePrompting` and
+  `useBrush` with object ids, Propagate/Cleanup choices, keys.
+- **Plan C**: class filter + renumbering in YOLO/COCO/masks, manifest mapping, empty-frame handling after the filter,
+  overlap order and `overlap_px`, derived manifests keep `project_class_id`, old manifests without it, per-object
+  cutouts from COCO and the flagged fallback; Export page Classes section.
+- **Plan D**: slug rules, collision suffixes, concurrent reservation, rename (and concurrent renames), old manifests
+  without `name`, `list_exports` order, `--list` column; Export page Name field, Train rename, Runs table name lookup.
 - README: Label page (objects, keys), Export (classes, names), manual QA steps for multi-object propagation.
+
+## 15. Note on work in progress
+
+At the time of writing the working tree also holds an uncommitted "negatives" feature (`server/vsp/augment/negatives.py`,
+`vsp negatives`, edits to `derive.py` and `cli.py`) that is not part of this spec. §10 and §11 say how negatives copies
+should behave if it lands; plan C picks that up only if it has been committed by then.
