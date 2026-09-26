@@ -33,7 +33,8 @@ def test_run_export_writes_every_format_a_manifest_and_reports_progress(store, m
     manifest = json.loads((out / "export.json").read_text())
     assert manifest["options"]["split_mode"] == "contiguous" and manifest["options"]["min_area_px"] == 64
     assert manifest["clips"] == [{"id": clip.id, "name": clip.source.name, "train": 4, "val": 2}]
-    assert manifest["classes"] == [{"id": 0, "name": "part", "color": manifest["classes"][0]["color"], "yolo_id": 0, "coco_id": 1, "mask_value": 1}]
+    assert manifest["classes"] == [{"id": 0, "project_class_id": 0, "name": "part", "color": manifest["classes"][0]["color"], "yolo_id": 0, "coco_id": 1, "mask_value": 1}]
+    assert manifest["options"]["class_ids"] is None
     assert seen[-1] == (6 * 4, 6 * 4) and [d for d, _ in seen] == sorted(d for d, _ in seen)
     # the store was only read: no stray file, and the export holds copies, not links to store frames
     import os
@@ -87,3 +88,21 @@ def test_a_failed_named_export_removes_its_reserved_folder(store, make_clip, tmp
         run_export(store, project.id, [clip.id], ["coco"], ExportOptions(), tmp_path / "exports",
                    cancel=cancel, name="Cups v2")
     assert list((tmp_path / "exports").iterdir()) == []
+
+
+def test_the_manifest_maps_export_ids_back_to_project_classes(store, make_clip, tmp_path):
+    project, clip = make_clip(n_frames=4, classes=("cup", "bowl", "plate"))
+    clip.objects = [LabelObject(id=1, class_id=2)]
+    store.write_clip(clip)
+    mask = np.zeros((60, 120), bool)
+    mask[10:40, 20:60] = True
+    for i in range(4):
+        store.write_mask(clip.id, 1, i, mask)
+    result = run_export(store, project.id, [clip.id], ["yolo_seg"], ExportOptions(class_ids=(2,)),
+                        tmp_path / "exports")
+    manifest = json.loads((tmp_path / "exports" / result["export_id"] / "export.json").read_text())
+    assert manifest["options"]["class_ids"] == [2]
+    assert manifest["classes"] == [{
+        "id": 0, "project_class_id": 2, "name": "plate", "color": project.classes[2].color,
+        "yolo_id": 0, "coco_id": 1, "mask_value": 1,
+    }]

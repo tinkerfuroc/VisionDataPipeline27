@@ -54,20 +54,26 @@ def manifest_for(
     name: str | None = None,
 ) -> dict:
     """The manifest `run_export` writes to `export.json` (and a derived export starts its own manifest
-    from)."""
+    from). Derived plans carry the source's class map (classes_from_manifest), so project_class_id
+    survives any chain of derivations."""
     return {
         "export_id": export_id, "name": name, "created_at": now_iso(),
         "project": {"id": plan.project_id, "name": plan.project_name},
-        "options": {**asdict(plan.options), "val_clip_ids": list(plan.val_clip_ids)},
+        "options": {
+            **asdict(plan.options), "val_clip_ids": list(plan.val_clip_ids),
+            # project class ids (null = every class), a list in JSON; read back with options_from_manifest
+            "class_ids": None if plan.options.class_ids is None else list(plan.options.class_ids),
+        },
         "clips": [
             {"id": cid, "name": plan.clip_names[cid],
              "train": sum(1 for f in plan.frames if f.clip_id == cid and f.split == "train"),
              "val": sum(1 for f in plan.frames if f.clip_id == cid and f.split == "val")}
             for cid in plan.clip_ids
         ],
+        # id / yolo_id are EXPORT ids (0..k-1 over the selected classes); project_class_id maps them back
         "classes": [
-            {"id": c.id, "name": c.name, "color": c.color, "yolo_id": c.id, "coco_id": c.id + 1,
-             "mask_value": c.id + 1}
+            {"id": c.id, "project_class_id": plan.class_map[c.id], "name": c.name, "color": c.color,
+             "yolo_id": c.id, "coco_id": c.id + 1, "mask_value": c.id + 1}
             for c in sorted(plan.classes, key=lambda c: c.id)
         ],
         "formats": [asdict(s) for s in summaries],

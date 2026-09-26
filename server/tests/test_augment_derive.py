@@ -344,3 +344,43 @@ def test_progress_is_monotonic_with_a_fixed_total(store, make_clip, tmp_path):
     assert len({total for _, total in seen}) == 1  # the total is fixed up front, never moved
     dones = [done for done, _ in seen]
     assert dones == sorted(dones)  # done never goes backwards
+
+
+def test_a_derived_copy_keeps_the_class_map_and_the_export_ids(store, make_clip, tmp_path):
+    project, clip = make_clip(n_frames=6, classes=("cup", "bowl", "plate"))
+    clip.objects = [LabelObject(id=1, class_id=2)]
+    store.write_clip(clip)
+    mask = np.zeros((60, 120), bool)
+    mask[10:40, 20:60] = True
+    for i in range(6):
+        store.write_mask(clip.id, 1, i, mask)
+    data_root = tmp_path / "data"
+    src = run_export(store, project.id, [clip.id], ["yolo_seg", "masks"], ExportOptions(class_ids=(2,)),
+                     data_root / "exports")
+    _make_pool(data_root)
+    result = run_augment(data_root, src["export_id"], AugmentOptions(per_image=1, seed=0))
+    manifest = json.loads((Path(result["path"]) / "export.json").read_text())
+    assert [(c["id"], c["project_class_id"], c["name"]) for c in manifest["classes"]] == [(0, 2, "plate")]
+    assert manifest["options"]["class_ids"] == [2]
+    syn = list((Path(result["path"]) / "yolo_seg" / "labels" / "train").glob("syn_*.txt"))
+    assert syn
+    for p in syn:
+        assert {line.split()[0] for line in p.read_text().splitlines()} == {"0"}
+
+
+def test_a_source_manifest_without_project_class_id_maps_to_itself(store, make_clip, tmp_path):
+    project, clip = _labelled(store, make_clip)
+    data_root = tmp_path / "data"
+    src = _export(store, project, clip, ["yolo_seg", "masks"], data_root)
+    _make_pool(data_root)
+    manifest_path = Path(src["path"]) / "export.json"
+    old = json.loads(manifest_path.read_text())
+    for c in old["classes"]:
+        del c["project_class_id"]  # as an export written before class selection
+    del old["options"]["class_ids"]
+    manifest_path.write_text(json.dumps(old))
+
+    result = run_augment(data_root, src["export_id"], AugmentOptions(per_image=1, seed=0))
+    manifest = json.loads((Path(result["path"]) / "export.json").read_text())
+    assert [(c["id"], c["project_class_id"]) for c in manifest["classes"]] == [(0, 0)]
+    assert manifest["options"]["class_ids"] is None

@@ -203,3 +203,66 @@ def test_every_image_has_its_label_annotation_and_mask_in_the_same_split(planned
         coco = json.loads((out / "coco" / "annotations" / f"instances_{split}.json").read_text())
         assert {Path(i["file_name"]).stem for i in coco["images"]} == stems
         assert {p.stem for p in (out / "coco" / "images" / split).iterdir()} == stems
+
+
+def _cup_and_plate(store, make_clip, n=2):
+    project, clip = make_clip(n_frames=n, classes=("cup", "bowl", "plate"))
+    clip.objects = [LabelObject(id=1, class_id=0), LabelObject(id=2, class_id=2)]
+    store.write_clip(clip)
+    cup = np.zeros((H, W), bool)
+    cup[10:30, 5:30] = True  # 500 px
+    plate = np.zeros((H, W), bool)
+    plate[10:30, 70:100] = True  # 600 px
+    for i in range(n):
+        store.write_mask(clip.id, 1, i, cup)
+        store.write_mask(clip.id, 2, i, plate)
+    return project, clip
+
+
+def _export_to(store, project, clip, out, options):
+    plan = build_plan(store, project.id, [clip.id], options)
+    (out / "images").mkdir(parents=True)
+    for frame in plan.frames:
+        shutil.copy2(frame.image_path, export_base.shared_image(out, frame))
+    for name in EXPORTERS:
+        EXPORTERS[name].write(plan, out, lambda: None)
+    return plan
+
+
+def _rgb(color: str) -> list[int]:
+    return [int(color.lstrip("#")[i : i + 2], 16) for i in (0, 2, 4)]
+
+
+def test_one_selected_class_is_export_id_0_in_every_format(store, make_clip, tmp_path):
+    project, clip = _cup_and_plate(store, make_clip)
+    out = tmp_path / "plate"
+    plan = _export_to(store, project, clip, out, ExportOptions(val_fraction=0.0, class_ids=(2,)))
+    stem = plan.frames[0].stem
+    seg = (out / "yolo_seg" / "labels" / "train" / f"{stem}.txt").read_text().splitlines()
+    assert [ln.split()[0] for ln in seg] == ["0"]
+    assert (out / "yolo_det" / "labels" / "train" / f"{stem}.txt").read_text().split()[0] == "0"
+    assert yaml_lib.safe_load((out / "yolo_seg" / "data.yaml").read_text())["names"] == {0: "plate"}
+    coco = json.loads((out / "coco" / "annotations" / "instances_train.json").read_text())
+    assert [(c["id"], c["name"]) for c in coco["categories"]] == [(1, "plate")]
+    assert [a["category_id"] for a in coco["annotations"]] == [1, 1]  # one plate per frame, no cup
+    png = Image.open(out / "masks" / "masks" / "train" / f"{stem}.png")
+    values = np.array(png)
+    assert set(np.unique(values)) == {0, 1} and (values == 1).sum() == 600
+    assert png.getpalette()[3:6] == _rgb(project.classes[2].color)  # value 1 is drawn in the plate's colour
+
+
+def test_two_selected_classes_keep_project_order_with_a_gap_closed(store, make_clip, tmp_path):
+    project, clip = _cup_and_plate(store, make_clip)
+    out = tmp_path / "cup_plate"
+    plan = _export_to(store, project, clip, out, ExportOptions(val_fraction=0.0, class_ids=(0, 2)))
+    stem = plan.frames[0].stem
+    seg = (out / "yolo_seg" / "labels" / "train" / f"{stem}.txt").read_text().splitlines()
+    assert sorted(ln.split()[0] for ln in seg) == ["0", "1"]
+    assert yaml_lib.safe_load((out / "yolo_det" / "data.yaml").read_text())["names"] == {0: "cup", 1: "plate"}
+    coco = json.loads((out / "coco" / "annotations" / "instances_train.json").read_text())
+    assert [(c["id"], c["name"]) for c in coco["categories"]] == [(1, "cup"), (2, "plate")]
+    assert sorted({a["category_id"] for a in coco["annotations"]}) == [1, 2]
+    png = Image.open(out / "masks" / "masks" / "train" / f"{stem}.png")
+    values = np.array(png)
+    assert set(np.unique(values)) == {0, 1, 2} and (values == 1).sum() == 500 and (values == 2).sum() == 600
+    assert png.getpalette()[6:9] == _rgb(project.classes[2].color)
