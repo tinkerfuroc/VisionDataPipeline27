@@ -261,6 +261,7 @@ def run_augment(
         )
         result_manifest["counts"] = counts
         result_manifest["derived_from"] = export_id
+        result_manifest["name"] = f"{manifest.get('name') or export_id} ×{opts.per_image} augmented"
         result_manifest["augment"] = {
             "per_image": opts.per_image, "max_objects": opts.max_objects, "seed": opts.seed,
             "pool": opts.pool, "synthetic_images": len(synthetic),
@@ -270,4 +271,7 @@ def run_augment(
     except BaseException:
         shutil.rmtree(out, ignore_errors=True)
         raise
-    return {"export_id": new_id, "path": str(out), "counts": counts, "synthetic": len(synthetic)}
+    return {
+        "export_id": new_id, "path": str(out), "counts": counts, "synthetic": len(synthetic),
+        "name": result_manifest["name"],
+    }

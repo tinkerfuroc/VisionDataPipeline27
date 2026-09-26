@@ -14,7 +14,15 @@ from pydantic import BaseModel, Field
 
 from ..store import NotFound
 from ..train.gallery import FILTERS, filter_items, load_gallery
-from ..train.models import AUG_PRESETS, DEFAULT_MODELS, MODELS, TrainParams, find_export, list_exports
+from ..train.models import (
+    AUG_PRESETS,
+    DEFAULT_MODELS,
+    MODELS,
+    TrainParams,
+    find_export,
+    list_exports,
+    rename_export,
+)
 from ..train.results import read_metrics, tail
 from ..train.runs import best_weights, onnx_weights, read_json
 from .deps import State
@@ -84,6 +92,15 @@ def train_status(state: State) -> dict:
 @router.get("/api/exports")
 def exports(state: State) -> list[dict]:
     return [e.to_json() for e in list_exports(state.settings.project.data_root)]
+
+
+class RenameBody(BaseModel):
+    name: str | None = None
+
+
+@router.patch("/api/exports/{export_id}")
+def rename(export_id: str, body: RenameBody, state: State) -> dict:
+    return rename_export(state.settings.project.data_root, export_id, body.name).to_json()
 
 
 @router.get("/api/exports/{export_id}/images/{split}/{name}")

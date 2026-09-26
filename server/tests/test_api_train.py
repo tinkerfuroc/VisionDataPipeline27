@@ -45,7 +45,18 @@ def test_status_and_exports(client):
     exports = client.get("/api/exports").json()
     assert exports == [{"id": EXPORT_ID, "project_name": "Bench", "created_at": "2026-01-01T00:00:00+00:00",
                         "classes": ["Module"], "train_images": 2, "val_images": 2,
-                        "formats": ["yolo_seg"], "derived_from": None}]
+                        "formats": ["yolo_seg"], "derived_from": None, "name": None}]
+
+
+def test_rename_export(client):
+    renamed = client.patch(f"/api/exports/{EXPORT_ID}", json={"name": "Better"})
+    assert renamed.status_code == 200, renamed.text
+    assert renamed.json()["name"] == "Better"
+    exports = client.get("/api/exports").json()
+    assert exports[0]["name"] == "Better"
+
+    assert client.patch("/api/exports/nope", json={"name": "x"}).status_code == 404
+    assert client.patch(f"/api/exports/{EXPORT_ID}", json={"name": "a" * 81}).status_code == 400
 
 
 def test_run_lifecycle_metrics_predictions_weights(client):

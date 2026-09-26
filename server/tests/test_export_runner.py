@@ -51,3 +51,39 @@ def test_a_cancelled_export_leaves_nothing_behind(store, make_clip, tmp_path):
     with pytest.raises(ExportCancelled):
         run_export(store, project.id, [clip.id], ["coco"], ExportOptions(), tmp_path / "exports", cancel=cancel)
     assert list((tmp_path / "exports").iterdir()) == []
+
+
+def test_run_export_with_a_name_slugs_the_folder_id(store, make_clip, tmp_path):
+    project, clip = _labelled(store, make_clip)
+    result = run_export(store, project.id, [clip.id], ["yolo_seg"], ExportOptions(), tmp_path / "exports",
+                        name="Cups v2")
+    assert result["export_id"] == "cups-v2" and result["name"] == "Cups v2"
+    manifest = json.loads((tmp_path / "exports" / "cups-v2" / "export.json").read_text())
+    assert manifest["name"] == "Cups v2"
+
+    second = run_export(store, project.id, [clip.id], ["yolo_seg"], ExportOptions(), tmp_path / "exports",
+                        name="Cups v2")
+    assert second["export_id"] == "cups-v2-2"
+
+
+def test_run_export_without_a_name_gets_a_timestamp_id_and_null_name(store, make_clip, tmp_path):
+    project, clip = _labelled(store, make_clip)
+    result = run_export(store, project.id, [clip.id], ["yolo_seg"], ExportOptions(), tmp_path / "exports")
+    assert result["name"] is None
+    assert len(result["export_id"]) == len("20260926-104433-a1b2c3")
+    manifest = json.loads((tmp_path / "exports" / result["export_id"] / "export.json").read_text())
+    assert manifest["name"] is None
+
+
+def test_a_failed_named_export_removes_its_reserved_folder(store, make_clip, tmp_path):
+    project, clip = _labelled(store, make_clip)
+    calls = {"n": 0}
+
+    def cancel():
+        calls["n"] += 1
+        return calls["n"] > 2
+
+    with pytest.raises(ExportCancelled):
+        run_export(store, project.id, [clip.id], ["coco"], ExportOptions(), tmp_path / "exports",
+                   cancel=cancel, name="Cups v2")
+    assert list((tmp_path / "exports").iterdir()) == []

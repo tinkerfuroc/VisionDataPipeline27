@@ -178,6 +178,32 @@ def test_check_augment_errors(store, make_clip, tmp_path):
         check_augment(data_root, with_masks["export_id"], AugmentOptions(per_image=11))
 
 
+def test_augmented_copy_of_a_named_source_gets_a_derived_name(store, make_clip, tmp_path):
+    project, clip = _labelled(store, make_clip)
+    data_root = tmp_path / "data"
+    src = _export(store, project, clip, ["yolo_seg", "masks"], data_root)
+    _make_pool(data_root)
+    manifest_path = Path(src["path"]) / "export.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["name"] = "Cups v2"
+    manifest_path.write_text(json.dumps(manifest))
+
+    result = run_augment(data_root, src["export_id"], AugmentOptions(per_image=3, seed=0))
+    assert result["name"] == "Cups v2 ×3 augmented"
+    new_manifest = json.loads((Path(result["path"]) / "export.json").read_text())
+    assert new_manifest["name"] == "Cups v2 ×3 augmented"
+
+
+def test_augmented_copy_of_an_unnamed_source_is_named_from_its_id(store, make_clip, tmp_path):
+    project, clip = _labelled(store, make_clip)
+    data_root = tmp_path / "data"
+    src = _export(store, project, clip, ["yolo_seg", "masks"], data_root)
+    _make_pool(data_root)
+
+    result = run_augment(data_root, src["export_id"], AugmentOptions(per_image=3, seed=0))
+    assert result["name"] == f"{src['export_id']} ×3 augmented"
+
+
 def test_list_exports_reports_formats_and_derived_from(store, make_clip, tmp_path):
     project, clip = _labelled(store, make_clip)
     data_root = tmp_path / "data"

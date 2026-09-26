@@ -25,7 +25,19 @@ def _args(**kw):
 
 def test_list_exports(tmp_path, capsys):
     rc = vsp.cli._train(_settings(tmp_path), _args(list=True), gpus=[Gpu(0, "A", 1)], worker_cmd=FAKE_WORKER)
-    assert rc == 0 and EXPORT_ID in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert rc == 0 and EXPORT_ID in out
+    assert f"{EXPORT_ID}  -  Bench" in out
+
+
+def test_list_exports_shows_the_name(tmp_path, capsys):
+    s = Settings.load(None)
+    s.project.data_root = tmp_path / "data"
+    make_export(s.project.data_root, name="Cups v2")
+    rc = vsp.cli._train(s, _args(list=True), gpus=[Gpu(0, "A", 1)], worker_cmd=FAKE_WORKER)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert f"{EXPORT_ID}  Cups v2  Bench" in out
 
 
 def test_trains_models_in_order_and_prints_table(tmp_path, capsys):

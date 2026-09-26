@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from ..export.naming import clean_name
 from ..labeling.errors import BadRequest
 from ..store import NotFound
 
@@ -84,6 +86,7 @@ class ExportInfo:
     val_images: int
     formats: tuple[str, ...] = ()
     derived_from: str | None = None
+    name: str | None = None
 
     @property
     def yolo_dir(self) -> Path:
@@ -93,7 +96,7 @@ class ExportInfo:
         return {
             "id": self.id, "project_name": self.project_name, "created_at": self.created_at,
             "classes": list(self.classes), "train_images": self.train_images, "val_images": self.val_images,
-            "formats": list(self.formats), "derived_from": self.derived_from,
+            "formats": list(self.formats), "derived_from": self.derived_from, "name": self.name,
         }
 
 
@@ -119,22 +122,39 @@ def find_export(data_root: Path, export_id: str) -> ExportInfo:
         id=export_id, dir=d, project_name=manifest.get("project", {}).get("name", ""),
         created_at=manifest.get("created_at", ""), classes=classes,
         train_images=int(fmt["images"]["train"]), val_images=int(fmt["images"]["val"]),
-        formats=formats, derived_from=manifest.get("derived_from"),
+        formats=formats, derived_from=manifest.get("derived_from"), name=manifest.get("name"),
     )
 
 
 def list_exports(data_root: Path) -> list[ExportInfo]:
-    """Every export with a yolo_seg dataset, newest first (export ids start with a timestamp)."""
+    """Every export with a yolo_seg dataset, newest first by the manifest's `created_at` (then id)."""
     root = Path(data_root) / "exports"
     if not root.is_dir():
         return []
     out = []
-    for d in sorted((p for p in root.iterdir() if p.is_dir()), key=lambda p: p.name, reverse=True):
+    for d in (p for p in root.iterdir() if p.is_dir()):
         try:
             out.append(find_export(data_root, d.name))
         except (NotFound, BadRequest, KeyError, ValueError):  # half-written, not yolo_seg, or unreadable
             continue
-    return out
+    return sorted(out, key=lambda e: (e.created_at, e.id), reverse=True)
+
+
+_RENAME_LOCK = threading.Lock()  # renames are rare; one lock keeps two concurrent renames from losing an update
+
+
+def rename_export(data_root: Path, export_id: str, name: str | None) -> ExportInfo:
+    """Set (or clear, with None/blank) an export's display name. The folder id never changes, so runs keep working."""
+    from .runs import atomic_write_json
+
+    name = clean_name(name)
+    info = find_export(data_root, export_id)  # 404 / not-yolo_seg checks
+    with _RENAME_LOCK:
+        path = info.dir / "export.json"
+        manifest = json.loads(path.read_text())
+        manifest["name"] = name
+        atomic_write_json(path, manifest)
+    return find_export(data_root, export_id)
 
 
 def train_overrides(params: dict) -> tuple[dict, bool]:

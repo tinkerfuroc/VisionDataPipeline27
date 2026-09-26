@@ -22,7 +22,10 @@ SQUARE = "0 0.25 0.25 0.75 0.25 0.75 0.75 0.25 0.75"
 JPEG = b"\xff\xd8\xff\xe0fakejpeg"
 
 
-def make_export(data_root: Path, export_id: str = EXPORT_ID, n_train: int = 2, n_val: int = 2) -> Path:
+def make_export(
+    data_root: Path, export_id: str = EXPORT_ID, n_train: int = 2, n_val: int = 2, *,
+    created_at: str = "2026-01-01T00:00:00+00:00", name: str | None = None,
+) -> Path:
     """An export directory shaped like vsp's exporter output, with one class and a square on every image."""
     d = data_root / "exports" / export_id
     y = d / "yolo_seg"
@@ -36,7 +39,7 @@ def make_export(data_root: Path, export_id: str = EXPORT_ID, n_train: int = 2, n
             (y / "labels" / split / f"clip_{i:06d}.txt").write_text(SQUARE + "\n")
     (y / "data.yaml").write_text('path: .\ntrain: images/train\nval: images/val\nnames:\n  0: "Module"\n')
     manifest = {
-        "export_id": export_id, "created_at": "2026-01-01T00:00:00+00:00",
+        "export_id": export_id, "created_at": created_at,
         "project": {"id": "p1", "name": "Bench"},
         "classes": [
             {"id": 0, "name": "Module", "color": "#e6194b", "yolo_id": 0, "coco_id": 1, "mask_value": 1}
@@ -48,6 +51,8 @@ def make_export(data_root: Path, export_id: str = EXPORT_ID, n_train: int = 2, n
             }
         ],
     }
+    if name is not None:
+        manifest["name"] = name
     (d / "export.json").write_text(json.dumps(manifest))
     return d
 

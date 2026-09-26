@@ -7,7 +7,7 @@ from typing import Literal
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
-from ..export import ExportCancelled, ExportOptions, check_request, run_export
+from ..export import ExportCancelled, ExportOptions, check_request, clean_name, run_export
 from ..jobs import Job, JobBusy
 from .deps import GPU, State
 
@@ -27,6 +27,7 @@ class ExportBody(BaseModel):
     clips: list[str]
     formats: list[str]
     options: ExportOptionsBody = Field(default_factory=ExportOptionsBody)
+    name: str | None = None
 
 
 @router.post("/api/projects/{project_id}/export", status_code=202)
@@ -39,6 +40,7 @@ def start_export(project_id: str, body: ExportBody, state: State) -> dict:
         include_empty=o.include_empty, min_area_px=cfg.min_area_px if o.min_area_px is None else o.min_area_px,
     )
     check_request(state.store, project_id, body.clips, body.formats, options)  # 400 / 404 now, not as a job error
+    name = clean_name(body.name)  # 400 now too, before any job starts
     # Export only reads, so it does not take the GPU. But a propagation is rewriting the very masks an export
     # would read, so refuse to start while one runs (the reverse race, a propagation started mid-export, only
     # affects masks the export may already have passed; mask files are written atomically, so none is torn).
@@ -52,7 +54,7 @@ def start_export(project_id: str, body: ExportBody, state: State) -> dict:
             return run_export(
                 state.store, project_id, body.clips, body.formats, options, exports_root,
                 progress=lambda done, total: job.emit({"type": "progress", "done": done, "total": total}),
-                cancel=job.cancel_requested,
+                cancel=job.cancel_requested, name=name,
             )
         except ExportCancelled:
             return {"cancelled": True}

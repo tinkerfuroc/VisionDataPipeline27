@@ -77,6 +77,24 @@ def test_export_runs_as_a_job_and_reports_where_it_wrote(client, tmp_path):
     assert json.loads((out / "export.json").read_text())["options"]["val_fraction"] == 0.2
 
 
+def test_export_with_a_name_produces_a_slugged_export_id(client, tmp_path):
+    project_id = _project(client)
+    clip_id = _clip_with_masks(client, tmp_path, project_id)
+    started = client.post(f"/api/projects/{project_id}/export",
+                          json={"clips": [clip_id], "formats": ["yolo_seg"], "name": "Cups v2"})
+    assert started.status_code == 202, started.text
+    snap = wait_job(client, started.json()["job_id"])
+    assert snap["result"]["export_id"] == "cups-v2" and snap["result"]["name"] == "Cups v2"
+
+
+def test_export_rejects_an_overlong_name_before_the_job_starts(client, tmp_path):
+    project_id = _project(client)
+    clip_id = _clip_with_masks(client, tmp_path, project_id)
+    started = client.post(f"/api/projects/{project_id}/export",
+                          json={"clips": [clip_id], "formats": ["yolo_seg"], "name": "a" * 81})
+    assert started.status_code == 400
+
+
 def test_export_request_errors(client, tmp_path):
     project_id = _project(client)
     clip_id = _clip_with_masks(client, tmp_path, project_id)
