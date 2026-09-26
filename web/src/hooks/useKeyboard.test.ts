@@ -32,6 +32,13 @@ describe("keyAction", () => {
     expect(key("Delete")).toEqual({ type: "delete" });
     expect(key("m")).toEqual({ type: "overlay" });
   });
+  it("steps through the objects with O / Shift+O and starts a new one with N", () => {
+    expect(key("o")).toEqual({ type: "object", dir: 1 });
+    expect(key("O", { shiftKey: true })).toEqual({ type: "object", dir: -1 });
+    expect(key("n")).toEqual({ type: "newObject" });
+    expect(key("N", { shiftKey: true })).toEqual({ type: "newObject" });
+    expect(key("o", { ctrlKey: true })).toBeNull();
+  });
   it("ignores unknown keys and browser shortcuts", () => {
     expect(key("q")).toBeNull();
     expect(key("z", { ctrlKey: true })).toBeNull();

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError, api } from "../api/rest";
@@ -16,6 +16,8 @@ vi.mock("../api/rest", async (original) => ({
     prompt: vi.fn(),
     accept: vi.fn(),
     addClass: vi.fn(),
+    relabelObject: vi.fn(),
+    deleteObject: vi.fn(),
     propagate: vi.fn(),
     cancelJob: vi.fn(),
     deleteFrame: vi.fn(),
@@ -225,7 +227,7 @@ describe("Label page (propagation, cleanup, keyboard)", () => {
     // F3: frame events are buffered and applied on the next animation frame, not synchronously
     expect(await screen.findByText("frame 20 / 39")).toBeTruthy();
     expect(screen.getByText(/20 masked/)).toBeTruthy();
-    expect(screen.getByText(/propagation is running/i)).toBeTruthy();
+    expect(screen.getByText("A propagation is running. Stop it to prompt.")).toBeTruthy();
     const loads = vi.mocked(api.getClip).mock.calls.length;
     FakeSocket.last!.emit({ seq: 2, type: "done", processed: 39, written: 38, lost_at: 33, cancelled: false });
     await waitFor(() => expect(vi.mocked(api.getClip).mock.calls.length).toBe(loads + 1));
@@ -540,5 +542,72 @@ describe("Label page (brush)", () => {
     expect(await screen.findByText("frame 30 / 39")).toBeTruthy(); // deleted in the fixture
     expect(screen.getByText("This frame is deleted. Restore it to paint on it.")).toBeTruthy();
     expect((screen.getByRole("button", { name: "Brush" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+});
+
+describe("Label page (objects)", () => {
+  const panel = () => within(screen.getByRole("list", { name: "Objects" }));
+  const row = (name: RegExp) => panel().getByRole("button", { name });
+
+  it("lists the objects; one is selected by click or with O / Shift+O, and N starts a new object", async () => {
+    vi.mocked(api.getClip).mockResolvedValue(two);
+    renderLabel();
+    await screen.findByText("bench.mp4");
+    expect(row(/^#1 connector/).getAttribute("aria-pressed")).toBe("true");
+    expect(row(/^#2 cup/).textContent).toContain("5 frames");
+    fireEvent.click(row(/^#2 cup/));
+    expect(row(/^#2 cup/).getAttribute("aria-pressed")).toBe("true");
+    fireEvent.keyDown(window, { key: "o" });
+    expect(row(/^#1 connector/).getAttribute("aria-pressed")).toBe("true"); // wraps around
+    fireEvent.keyDown(window, { key: "O", shiftKey: true });
+    expect(row(/^#2 cup/).getAttribute("aria-pressed")).toBe("true");
+    fireEvent.keyDown(window, { key: "n" });
+    expect(row(/^New object \(cup\)/).getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("K and G follow the active object's lane", async () => {
+    vi.mocked(api.getClip).mockResolvedValue(two);
+    renderLabel();
+    await screen.findByText("bench.mp4");
+    fireEvent.keyDown(window, { key: "k" });
+    expect(screen.getByText("frame 0 / 39")).toBeTruthy(); // #1 has no keyframe after 0 (the clip does: 5)
+    fireEvent.keyDown(window, { key: "g" });
+    expect(screen.getByText("frame 20 / 39")).toBeTruthy();
+    fireEvent.click(row(/^#2 cup/));
+    fireEvent.keyDown(window, { key: "K", shiftKey: true });
+    expect(screen.getByText("frame 5 / 39")).toBeTruthy(); // #2's keyframe
+    fireEvent.keyDown(window, { key: "g" });
+    expect(screen.getByText("frame 10 / 39")).toBeTruthy(); // #2 is masked on 6..9
+  });
+
+  it("relabels the active object at once", async () => {
+    vi.mocked(api.getClip).mockResolvedValue(two);
+    const relabelled: ClipDetail = {
+      ...two, clip: { ...two.clip, objects: [{ ...two.clip.objects[0], class_id: 1 }, two.clip.objects[1]] },
+    };
+    vi.mocked(api.relabelObject).mockResolvedValue(relabelled);
+    renderLabel();
+    await screen.findByText("bench.mp4");
+    fireEvent.change(screen.getByLabelText("Class"), { target: { value: "1" } });
+    await waitFor(() => expect(api.relabelObject).toHaveBeenCalledWith("c1", 1, 1));
+    expect(await panel().findByRole("button", { name: /^#1 cup/ })).toBeTruthy();
+  });
+
+  it("deletes the active object after a confirmation naming its frame count, then selects the next one", async () => {
+    vi.mocked(api.getClip).mockResolvedValue(two);
+    const onlyTwo: ClipDetail = {
+      ...two, clip: { ...two.clip, objects: [two.clip.objects[1]] }, states: cupLane, object_states: { "2": cupLane },
+    };
+    vi.mocked(api.deleteObject).mockResolvedValue(onlyTwo);
+    const confirm = vi.fn().mockReturnValueOnce(false).mockReturnValue(true);
+    vi.stubGlobal("confirm", confirm);
+    renderLabel();
+    await screen.findByText("bench.mp4");
+    fireEvent.click(screen.getByRole("button", { name: "Delete object" }));
+    expect(confirm).toHaveBeenCalledWith("Delete #1 connector and its masks on 20 frames?");
+    expect(api.deleteObject).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Delete object" }));
+    await waitFor(() => expect(api.deleteObject).toHaveBeenCalledWith("c1", 1));
+    expect((await panel().findByRole("button", { name: /^#2 cup/ })).getAttribute("aria-pressed")).toBe("true");
   });
 });

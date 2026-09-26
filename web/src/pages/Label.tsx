@@ -7,7 +7,7 @@ import { BrushPanel } from "../components/BrushPanel";
 import { CleanupPanel, type Range } from "../components/CleanupPanel";
 import { ClipStats } from "../components/ClipStats";
 import { FrameCanvas } from "../components/FrameCanvas";
-import { ObjectPanel } from "../components/ObjectPanel";
+import { ObjectsPanel } from "../components/ObjectsPanel";
 import { OverlayPanel } from "../components/OverlayPanel";
 import { PromptPanel } from "../components/PromptPanel";
 import { PropagatePanel } from "../components/PropagatePanel";
@@ -19,19 +19,19 @@ import { useClip } from "../hooks/useClip";
 import { HealthContext, engineReady } from "../hooks/useHealth";
 import { useJob } from "../hooks/useJob";
 import { useKeyboard, type KeyAction } from "../hooks/useKeyboard";
+import { useObjects } from "../hooks/useObjects";
 import { usePlayback } from "../hooks/usePlayback";
 import { usePrompting } from "../hooks/usePrompting";
+import { initialSelection } from "../lib/activeObject";
 import { FrameStore } from "../lib/frameCache";
 import { isTerminal } from "../lib/jobReducer";
 import { hexToRgb } from "../lib/mask";
-import { maskParts, parseFrameEvent, type FrameEvent } from "../lib/objects";
+import { FALLBACK_COLOR, classColor, isLabeled, labeledCount, laneOf, maskParts, objectLabel, parseFrameEvent, type FrameEvent } from "../lib/objects";
 import { loadStyle, outlineFor, saveStyle, type OverlayStyle } from "../lib/overlayStyle";
 import { clampFrame, findNext } from "../lib/timeline";
 
 const jobKey = (clipId: string) => `vsp.job.${clipId}`;
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
-/** Interim, until Task 3 gives the page an Objects panel: no object is hidden. */
-const NO_HIDDEN: ReadonlySet<number> = new Set();
 
 export function Label() {
   const { clipId = "" } = useParams();
@@ -44,7 +44,6 @@ export function Label() {
   const [overlayStyle, setOverlayStyle] = useState<OverlayStyle>(loadStyle);
   const [fitSignal, setFitSignal] = useState(0);
   const [range, setRange] = useState<Range | null>(null); // frames marked for clearing
-  const [classId, setClassId] = useState<number | null>(null);
   const [jobId, setJobId] = useState<string | null>(() => sessionStorage.getItem(jobKey(clipId)));
   const [follow, setFollow] = useState(true);
   const [propagateError, setPropagateError] = useState<string | null>(null);
@@ -56,11 +55,12 @@ export function Label() {
   const fps = detail?.clip.fps ?? 30;
   usePlayback({ playing, fps, frame, frameCount, setFrame, setPlaying });
 
-  const object = detail?.clip.objects[0] ?? null;
-  const activeId = object?.id ?? null; // interim: Task 3 makes this the Objects panel's active object
-  useEffect(() => {
-    if (classId === null && detail !== null) setClassId(object?.class_id ?? detail.classes[0]?.id ?? null);
-  }, [classId, detail, object]);
+  const objects = useObjects(clipId, detail);
+  const { hidden, select, step: stepObject, startNew, setNewClass, toggleHidden } = objects;
+  const activeId = objects.activeId;
+  // K, G and every "has a mask here" check follow the active object's lane, not the whole clip's states
+  const activeLane = useMemo(() => (detail === null ? [] : laneOf(detail, activeId)), [detail, activeId]);
+  const [objectsError, setObjectsError] = useState<string | null>(null);
 
   // ---- propagation job -------------------------------------------------------------------------------------------
   const { patchFrames, reload, apply } = clip;
@@ -188,8 +188,7 @@ export function Label() {
         : playing
           ? "Pause playback to prompt."
           : null;
-  const shownClass = classId ?? object?.class_id ?? null;
-  const color = detail?.classes.find((c) => c.id === shownClass)?.color ?? "#22c55e";
+  const color = detail === null ? FALLBACK_COLOR : classColor(detail, objects.classId);
   // hexToRgb allocates a new array every call: memoised so its identity is stable across renders that don't
   // change `color` (e.g. a health poll), since it feeds effect dependency arrays (useBrush's re-base effect).
   const rgb = useMemo(() => hexToRgb(color), [color]);
@@ -198,9 +197,13 @@ export function Label() {
     setOverlayStyle(s);
     saveStyle(s);
   }, []);
-  const hasMask = (i: number) => detail !== null && (detail.states[i] === "masked" || detail.states[i] === "keyframe");
+  const hasMask = (i: number) => isLabeled(activeLane[i]);
   const maskVersion = clip.maskVersion;
-  const prompting = usePrompting({ clipId, frame, enabled: disabledReason === null && detail !== null && mode === "prompt", clip, classId });
+  const prompting = usePrompting({
+    clipId, frame, enabled: disabledReason === null && detail !== null && mode === "prompt", clip,
+    // interim until Task 4: requests still omit object_id, so the server writes to the clip's first object
+    classId: detail?.clip.objects[0]?.class_id ?? objects.classId,
+  });
 
   const brushReason = running
     ? "A propagation is running. Stop it to paint."
@@ -213,7 +216,7 @@ export function Label() {
     clipId, frame, width: detail?.clip.width ?? 1, height: detail?.clip.height ?? 1, rgb, store,
     maskUrl: activeId !== null && hasMask(frame) ? objectMaskUrl(clipId, activeId, frame, maskVersion(frame)) : null,
     active: mode === "brush" && brushReason === null && detail !== null,
-    classId, needsClass: object === null, apply,
+    classId: objects.classId, needsClass: (detail?.clip.objects.length ?? 0) === 0, apply, // interim until Task 4
   });
   const lockReason = brush.dirty ? `Save or discard the brush strokes on frame ${frame} first.` : null;
   // while the active object is being edited, its preview or brush layer is drawn in its place
@@ -289,10 +292,16 @@ export function Label() {
         if (!running) setPlaying((p) => !p);
         break;
       case "keyframe":
-        jump(findNext(detail.states, frame, action.dir, "keyframe"));
+        jump(findNext(activeLane, frame, action.dir, "keyframe"));
         break;
       case "nextEmpty":
-        jump(findNext(detail.states, frame, 1, "empty"));
+        jump(findNext(activeLane, frame, 1, "empty"));
+        break;
+      case "object":
+        stepObject(action.dir);
+        break;
+      case "newObject":
+        startNew();
         break;
       case "delete":
         toggleDelete();
@@ -318,21 +327,41 @@ export function Label() {
       if (!overlay) continue;
       // the parts FrameCanvas will ask for on that frame, so playback hits the composite cache
       const parts = maskParts(detail, {
-        clipId, frame: i, version: maskVersion(i), hidden: NO_HIDDEN, activeId, excludeActive: editing, style: overlayStyle,
+        clipId, frame: i, version: maskVersion(i), hidden, activeId, excludeActive: editing, style: overlayStyle,
       });
       if (parts.length > 0) void store.composite(parts);
     }
-  }, [store, clipId, frame, playing, overlay, detail, overlayStyle, activeId, editing, frameCount, maskVersion, running]);
+  }, [store, clipId, frame, playing, overlay, detail, overlayStyle, activeId, editing, frameCount, maskVersion, running, hidden]);
 
   const addClass = useCallback(
     async (name: string) => {
       if (detail === null) return;
       const created = await api.addClass(detail.clip.project_id, name);
       apply({ ...detail, classes: [...detail.classes, created] }, false);
-      setClassId(created.id);
+      if (objects.selection?.kind === "new") setNewClass(created.id); // an existing object is relabelled only on request
     },
-    [detail, apply],
+    [detail, apply, objects.selection, setNewClass],
   );
+  const changeClass = useCallback(
+    (classId: number) => {
+      if (activeId === null) {
+        setNewClass(classId);
+        return;
+      }
+      setObjectsError(null);
+      // relabelling touches no mask, so the server allows it during a propagation
+      api.relabelObject(clipId, activeId, classId).then((next) => apply(next, false), (e: unknown) => setObjectsError(message(e)));
+    },
+    [activeId, clipId, apply, setNewClass],
+  );
+  const deleteObject = useCallback(() => {
+    const target = objects.active;
+    if (detail === null || target === null) return;
+    const n = labeledCount(laneOf(detail, target.id));
+    if (!window.confirm(`Delete ${objectLabel(detail, target)} and its masks on ${n} ${n === 1 ? "frame" : "frames"}?`)) return;
+    setObjectsError(null);
+    api.deleteObject(clipId, target.id).then((next) => apply(next, true), (e: unknown) => setObjectsError(message(e)));
+  }, [detail, objects.active, clipId, apply]);
 
   const back = (
     <Link to="/" aria-label="Back to clips" className="flex items-center gap-1 font-cond text-dim hover:text-ink">
@@ -397,7 +426,7 @@ export function Label() {
             masks={
               overlay
                 ? maskParts(detail, {
-                    clipId, frame, version: maskVersion(frame), hidden: NO_HIDDEN, activeId, excludeActive: editing,
+                    clipId, frame, version: maskVersion(frame), hidden, activeId, excludeActive: editing,
                     style: overlayStyle,
                   })
                 : []
@@ -429,7 +458,20 @@ export function Label() {
           {clip.refreshError !== null && (
             <p role="alert" className="alert text-xs">Could not refresh the clip: {clip.refreshError}</p>
           )}
-          <ObjectPanel detail={detail} classId={classId} onClassId={setClassId} onAddClass={addClass} />
+          <ObjectsPanel
+            detail={detail}
+            selection={objects.selection ?? initialSelection(detail)}
+            hidden={hidden}
+            lockReason={lockReason}
+            deleteBlockedReason={running ? "A propagation is running. Stop it to delete an object." : null}
+            error={objectsError}
+            onSelect={select}
+            onToggleHidden={toggleHidden}
+            onClass={changeClass}
+            onNew={startNew}
+            onDelete={deleteObject}
+            onAddClass={addClass}
+          />
           {mode === "brush" ? (
             <BrushPanel brush={brush} frame={frame} disabledReason={brushReason} />
           ) : (
