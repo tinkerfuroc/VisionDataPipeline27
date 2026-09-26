@@ -38,7 +38,7 @@ The web app shows `name` with the id beneath, falling back to the id.
   `server/vsp/augment/derive.py`, `server/vsp/cli.py`
 - Test: create `server/tests/test_export_naming.py`; extend `server/tests/test_export_runner.py`,
   `server/tests/test_api_export.py`, `server/tests/test_train_models.py`, `server/tests/test_api_train.py`,
-  `server/tests/test_augment_derive.py`, `server/tests/test_train_cli.py`
+  `server/tests/test_augment_derive.py`, `server/tests/test_train_cli.py`, `server/tests/train_fixtures.py`
 
 **Interfaces:**
 - Produces:
@@ -123,11 +123,14 @@ Add to the existing test files (follow each file's fixtures):
   and `name` null; a run that fails (e.g. cancelled) removes its reserved folder.
 - `test_api_export.py`: the POST body with `"name": "Cups v2"` → the job result has `export_id == "cups-v2"` and
   `name`; `"name": "a" * 81` → 400 before any job starts.
+- `train_fixtures.py`: `make_export(..., created_at="2026-01-01T00:00:00+00:00", name=None)` gains those two
+  keyword arguments (written into `export.json`; `name` only when not None) so tests can control them.
 - `test_train_models.py`: `find_export` of a manifest without `name` → `name is None`; with `name` → the name;
   `list_exports` orders by `created_at` descending then id descending (build three exports with hand-written
   `created_at` values where the folder-name order differs); `rename_export` sets and clears (`None`) the name,
   keeps every other manifest key byte-identical in value (compare the parsed JSON minus `name`), rejects 81 chars.
-- `test_api_train.py`: `PATCH /api/exports/{id}` `{"name": "Better"}` → 200 and `GET /api/exports` shows it;
+- `test_api_train.py`: the existing `test_status_and_exports` compares the exports list exactly; add `"name": None`
+  to its expected dict. Then: `PATCH /api/exports/{id}` `{"name": "Better"}` → 200 and `GET /api/exports` shows it;
   unknown id → 404; 81 characters → 400.
 - `test_augment_derive.py`: an augmented copy of a source named "Cups v2" is named "Cups v2 ×3 augmented" (for
   `per_image=3`); of an unnamed source `<source id> ×3 augmented`.
@@ -205,7 +208,7 @@ def reserve_export_dir(exports_root: Path, name: str | None) -> tuple[str, Path]
         except FileExistsError:
             continue
         return export_id, exports_root / export_id
-    raise AssertionError("unreachable")
+    raise AssertionError("unreachable: itertools.count never ends")
 ```
 
 `runner.py`: `run_export(..., cancel=None, name: str | None = None)`. Replace the id/mkdir lines with
@@ -255,7 +258,9 @@ def rename_export(data_root: Path, export_id: str, name: str | None) -> ExportIn
     return find_export(data_root, export_id)
 ```
 
-(`threading` import; the local imports avoid an import cycle — move them to the top if there is none.)
+(`threading` import. `from ..export.naming import clean_name` has no cycle and goes at the top of the module.
+`from .runs import atomic_write_json` **must stay a local import inside `rename_export`**: `train/runs.py` imports
+`ExportInfo` from `train/models.py` at module level, so a top-level import is a real cycle.)
 
 `api/train.py`:
 
@@ -297,7 +302,8 @@ and the returned dict adds `"name": result_manifest["name"]`.
   `web/src/components/TrainSidebar.tsx`, `web/src/components/RunsTable.tsx`, `web/src/pages/Train.tsx`
 - Create: `web/src/lib/exportName.ts`
 - Test: create `web/src/lib/exportName.test.ts`; extend `web/src/pages/Export.test.tsx`,
-  `web/src/components/RunsTable.test.tsx`, `web/src/pages/Train.test.tsx`
+  `web/src/components/RunsTable.test.tsx`, `web/src/pages/Train.test.tsx`, and the `ExportInfo` factories in
+  `web/src/components/CompositeSamples.test.tsx` and `web/src/components/AugmentPanel.test.tsx` (add `name: null`)
 
 **Interfaces:**
 - Consumes: Task 1 HTTP shapes.
@@ -329,6 +335,9 @@ describe("export names", () => {
 });
 ```
 
+Existing tests to update: `Export.test.tsx`'s exact `toHaveBeenCalledWith("p1", { clips, formats, options })`
+gains `name: null`.
+
 Component tests (follow each file's existing render helpers and API mocks):
 - Export page: typing "Cups v2" in the "Dataset name" field shows the note `Folder: cups-v2` and sends
   `name: "Cups v2"` in `api.startExport`'s body; an empty field sends `name: null` and the note reads
@@ -336,7 +345,7 @@ Component tests (follow each file's existing render helpers and API mocks):
   finished result shows the name above the folder path.
 - RunsTable: given `exports=[{id: "cups-v2", name: "Cups v2", ...}]`, a run with `export_id "cups-v2"` shows
   "Cups v2" with "cups-v2" beneath; a run whose export is unknown or unnamed shows `project_name` with the id beneath
-  (today's rendering).
+  (today's rendering; the id stays visible beneath, which is what spec §11's "fall back to the id" asks for).
 - Train page / sidebar: the export select's option text starts with the name when there is one; the "Rename"
   field is prefilled with the current name, Save calls `api.renameExport("cups-v2", "Better")` and then the exports
   refresh; Save is disabled while the text equals the current name (after trimming).
@@ -396,7 +405,7 @@ TrainSidebar: option text `{e.name !== null ? \`${e.name} · ${e.id}\` : \`${e.p
 calls `api.renameExport(id, draftName.trim() === "" ? null : draftName.trim())`, then `onExportsChanged()`; errors
 show in `renameError`.
 
-RunsTable: new prop `exports: ExportInfo[]`; the export cell shows
+RunsTable: new prop `exports?: ExportInfo[]` (default `[]`, so existing renders still type-check); the export cell shows
 `exports.find((e) => e.id === r.export_id)?.name ?? r.project_name` over `r.export_id`. `Train.tsx` passes
 `exports={exportsList}`.
 

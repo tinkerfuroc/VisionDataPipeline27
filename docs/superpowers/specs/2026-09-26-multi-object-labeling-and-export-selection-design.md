@@ -206,7 +206,8 @@ defaults to `"all"`; "all" includes objects hidden in the GUI).
   returns `export_id` and `name`.
 - `ExportInfo` gains `name`; `to_json` and the web export type include it. Everywhere an export is shown: `name` when
   set, with the id beneath; otherwise the id. Runs store only `export_id` (run.json), so the Runs table and the
-  prediction gallery look the name up in the `/api/exports` list and fall back to the id.
+  prediction gallery look the name up in the `/api/exports` list; without a name the Runs table keeps today's
+  project name over the id.
 - Rename: `PATCH /api/exports/{id}` `{name}` rewrites `export.json`'s `name` atomically under a per-export lock (the
   folder id never changes, so runs that reference it stay valid). Train page: a rename field for the selected export
   in the sidebar.
