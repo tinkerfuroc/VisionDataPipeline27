@@ -67,6 +67,42 @@ The transfer is a single request, so it needs the page to stay open: reloading o
 and leaves nothing behind. The GUI shows percentage progress and a Cancel button. Resumable uploads are not
 implemented yet. Peak disk use during an import is the upload plus the JPEG frames and thumbnails it writes.
 
+### Several objects per clip (server API)
+
+A clip can hold more than one labelled object (`clip.objects`, each with its own `id`, `class_id`, keyframes and
+`propagated_ranges`; ids are never reused). This is server-side only so far: the web Label page still shows and
+edits just `clip.objects[0]` (`web/src/pages/Label.tsx`), so until it is updated (plan B) every request it makes
+omits `object_id` entirely and gets the legacy behaviour described below.
+
+`/prompt`, `/accept` and `/mask` treat an `object_id` key that is *absent* from the JSON body differently from one
+sent as `null`: leaving it out targets the clip's first object (`/accept` and `/mask` create one, given
+`class_id`, when the clip has none yet); sending `"object_id": null` opts into the per-object behaviour instead,
+where `null` means "create a new object" (`class_id` required) rather than falling back to the first one.
+
+- `POST /api/clips/{id}/prompt` and `POST /api/clips/{id}/accept` take an optional `object_id`. `/accept` also
+  takes `candidates` (a list of candidate indices from a text prompt that found several detections) as an
+  alternative to the single `candidate` index; `candidates` requires `object_id` to be `null`, since each accepted
+  candidate becomes its own new object (with `class_id`), and their ids come back in `object_ids`. An existing
+  `object_id` cannot be combined with `class_id` (relabel with the `PATCH` route below instead).
+- `POST /api/clips/{id}/mask` (the brush) takes the same optional `object_id`/`class_id` and returns the object id
+  it wrote to as `object_id`.
+- `POST /api/clips/{id}/propagate` and `POST /api/clips/{id}/clear-range` take an `objects` field: `"all"`
+  (default) or a non-empty list of object ids. Propagate resolves and validates the objects up front, so an
+  unknown id or a listed object with no mask on `from_frame` is a 400 before the job starts, not a failed job.
+  The job result keeps `processed`/`written`/`cleared`/`lost_at`/`cancelled`/`oom_retries` and adds
+  `lost_by_direction` (per direction, object id → the frame it was first empty on), `lost` (merged over both
+  directions, object id → frame), `skipped` (object ids the job itself left out when it re-read the clip —
+  deleted, or with no seed mask on `from_frame`) and `objects` (the ids that actually ran). Each `"frame"`
+  progress event's `objects` list carries `{"id", "has_mask"}` per object that covered that frame.
+- `PATCH /api/clips/{id}/objects/{object_id}` (body `{"class_id": ...}`) relabels an object;
+  `DELETE /api/clips/{id}/objects/{object_id}` removes it and its mask files (409 while an export or a GPU job is
+  using the clip, same as deleting the clip itself).
+- `GET /api/clips/{id}/objects/{object_id}/masks/{idx}` serves one object's mask PNG (404 for an unknown object).
+  The legacy `GET /api/clips/{id}/masks/{idx}` still serves the first object's mask (404 if the clip has none).
+- Clip detail responses (`GET /api/clips/{id}` and every route that returns one) add `object_states`: a map from
+  each object's id (as a string key) to its own per-frame state list (`empty`/`masked`/`keyframe`/`deleted`),
+  alongside the `states` field, which keeps reporting the whole clip (any object).
+
 ## Web GUI
 
 Node 22 is installed with nvm (`source ~/.nvm/nvm.sh` in a fresh shell).
@@ -208,3 +244,5 @@ middle-drag pan · right click = negative point. `Enter`, `Esc` and `Z` act on t
     with no white halo outside the mask. Reload the page: the setting is kept. Reset restores the class colour at 5 px.
 18. Named datasets: export twice with the name "Cups v2"; the folders are `cups-v2` and `cups-v2-2`; rename one on the
     Train page; the Runs table shows the new name.
+19. (server) With two objects on a clip, `POST /propagate` with `objects: "all"` writes both objects' masks in one
+    run; with `[2]` only object 2's; an object that disappears is reported under `lost` while the other continues.
