@@ -225,7 +225,8 @@ defaults to `"all"`; "all" includes objects hidden in the GUI).
 With several objects per frame, cutting composites per class region of the semantic PNG would cut two touching
 objects of one class as one. `_cutouts_and_sizes` therefore cuts per object from the source's COCO train annotations
 (`coco/annotations/instances_train.json`; each annotation's `file_name` maps to `images/<stem>.jpg`; rasterised with
-the export's own `polygons_to_mask`; class = `category_id - 1`, an export id) when the source has the `coco` format,
+the export's own `polygons_to_mask`; class = `category_id - 1`, an export id; each object minus the pixels another
+object in the frame also claims, so a cutout never carries a neighbour's pixels) when the source has the `coco` format,
 and falls back to per-class regions of the mask PNGs otherwise. The `masks` format stays required (real frames are
 listed from it). The derived manifest records `cutouts: "per_object" | "per_class_region"`, and the Train page's
 augment panel notes the fallback. The same seed on an older export may now produce different composites (different
