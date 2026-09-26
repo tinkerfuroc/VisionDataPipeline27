@@ -23,8 +23,10 @@ plan A rows).
 - Library functions (`accept`, `set_mask`, `clear_range`, `run_propagation`, ...) take explicit object ids; there is
   no implicit "first object" anywhere in `server/vsp/labeling/`.
 - Legacy shims (plan B removes them; each carries the comment `# legacy shim: removed in plan B`):
-  1. `POST /accept` and `POST /mask` with the `object_id` key **absent** from the JSON body use the clip's first
-     object, or create one with `class_id` when there is none, and apply `class_id` as a relabel (today's behaviour).
+  1. `POST /prompt`, `POST /accept` and `POST /mask` with the `object_id` key **absent** from the JSON body use the
+     clip's first object (`/accept`, `/mask`: or create one with `class_id` when there is none, and apply a
+     `class_id` as a relabel after the write succeeded; `/prompt`: derive the click box from the first object's
+     mask), which is today's behaviour.
   2. `GET /api/clips/{id}/masks/{idx}` serves the first object's mask (404 when the clip has no object).
   3. Propagation `frame` events carry `has_mask` = any reported object has a mask, next to the new `objects` list.
 - Every commit leaves `uv run pytest server/tests -q -m "not gpu"` and `uv run ruff check server` green, and the web
@@ -147,7 +149,8 @@ def create_object(clip: Clip, class_id: int) -> LabelObject:
     return obj
 ```
 
-Remove the now-unused `Conflict` import only if nothing else in the file uses it.
+Remove the now-unused `Conflict` import only if nothing else in the file uses it. In `test_prompts.py`, removing
+the one-object guard test leaves `Conflict` unused there too: drop it from that import.
 
 `project.py` — refactor `frame_states` and add the two methods:
 
@@ -238,10 +241,12 @@ def test_tracks_every_seed_independently():
     a = _seed()
     b = np.zeros_like(a)
     b[40:50, 60:70] = True
-    out = dict(eng.propagate(_frames(3), {1: a, 5: b}))
-    assert set(out[2]) == {1, 5}
+    c = np.zeros_like(a)
+    c[5:20, 90:110] = True
+    out = dict(eng.propagate(_frames(3), {1: a, 5: b, 7: c}))
+    assert set(out[2]) == {1, 5, 7}
     assert np.array_equal(out[2][1][:, 4:], a[:, :-4]) and np.array_equal(out[2][5][:, 4:], b[:, :-4])
-    assert eng.seed_calls == [[1, 5]]
+    assert eng.seed_calls == [[1, 5, 7]]
 
 
 def test_per_object_emptiness_hook():
@@ -398,25 +403,20 @@ first `next()`). Add `is_empty_obj` to `__init__` (stored as an attribute) and `
 (the rest of the loop body unchanged; Task 3 replaces this function).
 
 - [ ] **Step 7: Adapt test doubles** — every test subclass overriding `propagate(self, frames, seed_mask,
-  cancel_cb=None)` becomes `propagate(self, frames, seeds, cancel_cb=None)` and passes `seeds` through. In
+  cancel_cb=None)` becomes `propagate(self, frames, seeds, cancel_cb=None)` and passes `seeds` through. The stubs in
+  `test_propagate.py` that build outputs themselves (`OomProgressThenStarve`, `OnlySeed`, `Skips`) must yield dicts:
+  e.g. `OnlySeed`: `yield 0, {k: v.copy() for k, v in seeds.items()}`; `Skips`: `(k, seed_mask), = seeds.items()` then
+  `yield offset, {k: shifted}`; `OomProgressThenStarve`: the same with a per-key shift. In
   `test_engine_gpu.py`, calls become `engine.propagate(frames, {1: truth[0]})` and each result `m` becomes `m[1]`
   (e.g. `got = {k: v[1] for k, v in engine.propagate(frames, {1: truth[0]})}`). Add a two-object GPU test next to
   the existing single-object accuracy test, reusing its fixture clip and ground truth:
 
-```python
-@pytest.mark.gpu
-def test_two_objects_in_one_session_each_follow_their_own_seed(engine, ...):  # same fixtures as the single-object accuracy test
-    # seed object 1 with the true mask, object 2 with the same mask shifted into the empty half of the frame
-    # is not a real object; instead split the true mask into its left and right halves (two "objects" that
-    # touch), propagate both, and check each output overlaps its own half's ground truth more than the other's
-    ...
-```
-
-The implementer writes this test concretely from the existing single-object GPU accuracy test in the file: split
-`truth[i]` at its bbox's horizontal centre into `left`/`right`, seed `{1: left[0], 2: right[0]}`, and assert for
-every frame that `iou(out[1], left[i]) > iou(out[1], right[i])` and the same for object 2, plus that each returned
-dict has keys `{1, 2}`. If the file has no ground-truth fixture that makes a split meaningful, report
-DONE_WITH_CONCERNS with the reason instead of weakening the assertion.
+The two-object GPU test builds its own two-disc video (a half-disc seed tends to grow back into the whole disc, so
+splitting the existing single disc would not test anything): disc A exactly as the existing single-object fixture
+(`test_engine_gpu.py` ~lines 26-58), plus disc B in green (BGR `(60, 200, 60)`) starting at (500, 300) and moving
+-6 px per frame, with its own ground-truth masks. Seed `{1: A[0], 2: B[0]}`, propagate the whole clip, and assert
+that every yielded dict has keys `{1, 2}` and that `iou(out[i][k], truth_k[i]) > 0.7` on at least 18 of 19
+frames for each object `k` (this also catches a row/id swap).
 
 - [ ] **Step 8: Run** — `uv run pytest server/tests -q -m "not gpu"` → pass; `uv run ruff check server` → clean;
   then `CUDA_VISIBLE_DEVICES=1 uv run pytest server/tests/test_engine_gpu.py -q -m gpu` (the RTX 2080 Ti; cuda:0 runs
@@ -476,23 +476,31 @@ Semantics (spec §6), exactly:
 - Stopped short (fewer frames yielded than the chunk has, while a member is still active): `cancel()` true →
   `cancelled`, stop the whole run; else `PropagationFailed` as today.
 - `done`/`processed` = frames covered by at least one object: per direction `max(t.pos)`, summed over finished
-  directions.
+  directions. When groups diverge, frame events are not monotonic (the lagging group re-emits earlier frames, e.g.
+  1..16 then 9..16) — plan B's event handling must not assume order.
 - `lost_by_direction[d][oid]`, `lost[oid]` (first direction in run order that lost it), `lost_at` = in the first
   direction (run order) with any loss, the lost frame nearest `from_frame`.
 
 - [ ] **Step 1: Write the failing tests** — first, mechanically move every existing test in `test_propagate.py`
   to the new API: `OBJECT_ID` → `OBJ` (from `conftest`), `accept(...)` calls pass `object_id=None, class_id=0` for the
   first keyframe and `object_id=OBJ` for later ones (this needs Task 4's `accept` signature — **so in this task keep
-  the existing `accept` calls as they are**; Task 4 moves them), result field reads unchanged (`lost_at` keeps its
-  meaning for one object). Then add:
+  the existing `accept` calls as they are**; Task 4 moves them). `lost_at` keeps its meaning for one object. Three
+  existing tests change **as expected** (not a regression; do not stop for them):
+  `test_both_reports_a_lost_forward_pass` → `assert res.lost_by_direction == {"forward": {OBJ: 13}}`;
+  `test_both_when_both_directions_lose` → `{"forward": {OBJ: 13}, "backward": {OBJ: 2}}`;
+  `test_propagate_result_as_dict` → the expected key set gains `"lost", "skipped", "objects"`. The diverge test below also
+  asserts `len(eng.prepare_calls) == len(eng.propagate_calls)` (every prepared chunk is used exactly once: the
+  prefetcher never prepares a chunk for a group that does not run next). If a correct runner cannot satisfy it,
+  report DONE_WITH_CONCERNS with the call sequence instead of dropping the assertion. Then add:
 
 ```python
 def _two_objects(store, make_clip, eng, n_frames=30, white=(), a_kf=(0,), b_kf=(0,)):
-    """Object 1 = the CLICK rect (x 20:40), object 2 = a rect lower down (x 60:80), both class 0."""
+    """Object 1 = a rect at x 20:40, object 2 = a rect at x 50:70 (both rows 40:55), class 0. Object 2 starts at 50,
+    not further right, so the fake's +2 px per frame never pushes it below min_area_px within 30 frames."""
     _, clip = make_clip(n_frames=n_frames, white=white)
     clip = store.read_clip(clip.id)
     a, b = create_object(clip, 0), create_object(clip, 0)
-    for obj, kfs, x in ((a, a_kf, 20), (b, b_kf, 60)):
+    for obj, kfs, x in ((a, a_kf, 20), (b, b_kf, 50)):
         for kf in kfs:
             m = np.zeros((60, 120), dtype=bool)
             m[40:55, x:x + 20] = True
@@ -514,10 +522,11 @@ def test_all_objects_share_one_engine_call_per_chunk(store, make_clip):
     res = run_propagation(store, eng, clip.id, 0, "forward", emit=events.append, **KW)
     assert (res.processed, res.written, res.objects, res.skipped) == (29, 58, [1, 2], [])
     assert eng.propagate_calls == [9, 9, 9, 6] and all(s == [1, 2] for s in eng.seed_calls)
-    assert _xs(store, clip.id, 1, 9) == 20 + 18 and _xs(store, clip.id, 2, 9) == 60 + 18
+    assert _xs(store, clip.id, 1, 9) == 20 + 18 and _xs(store, clip.id, 2, 9) == 50 + 18
     frame_events = [e for e in events if e["type"] == "frame"]
     assert frame_events[0]["objects"] == [{"id": 1, "has_mask": True}, {"id": 2, "has_mask": True}]
     assert frame_events[0]["has_mask"] is True and frame_events[-1]["done"] == 29
+    assert events[0] == {"type": "progress", "done": 0, "total": 29}
     c = store.read_clip(clip.id)
     assert [o.propagated_ranges for o in c.objects] == [[(1, 29)], [(1, 29)]]
 
@@ -553,9 +562,10 @@ def test_anchors_diverge_into_two_groups_and_each_keeps_its_own_seed(store, make
     assert res.lost == {} and res.processed == 19
     assert [1] in eng.seed_calls and [2] in eng.seed_calls  # split after frame 8
     assert _xs(store, clip.id, 2, 8) is None
+    assert len(eng.prepare_calls) == len(eng.propagate_calls)
     # object 2's frame 9 is tracked from its frame-7 anchor prepended to the chunk (offset 1), like the single-object
     # rule after a missed frame: the fake shifts by dx per chunk offset, not per frame distance
-    assert _xs(store, clip.id, 2, 9) == 60 + 2 * 7 + 2
+    assert _xs(store, clip.id, 2, 9) == 50 + 2 * 7 + 2
 
 
 def test_objects_without_a_seed_are_skipped_and_explicit_lists_are_strict(store, make_clip):
@@ -584,11 +594,12 @@ def test_both_directions_lost_at_prefers_the_first_direction_and_the_nearest_fra
     # frames 0..2 and 13..19 are white (nothing visible). Object 2 has a keyframe at 4, so backward it stops at 5
     # and never reaches the white frames; object 1 is lost in both directions.
     eng = FakeEngine(is_empty=is_white)
-    clip = _two_objects(store, make_clip, eng, n_frames=20, white=(*range(0, 3), *range(13, 20)),
+    clip = _two_objects(store, make_clip, eng, n_frames=20, white=(*range(3), *range(13, 20)),
                         a_kf=(8,), b_kf=(4, 8))
     res = run_propagation(store, eng, clip.id, 8, "both", **KW)
     assert res.lost_by_direction == {"forward": {1: 13, 2: 13}, "backward": {1: 2}}
     assert res.lost == {1: 13, 2: 13} and res.lost_at == 13  # forward runs first
+    assert res.processed <= 11 + 8  # total = 11 forward frames (9..19) + 8 backward (7..0)
     assert store.mask_indices(clip.id, 2) == list(range(4, 13))
 
 
@@ -744,7 +755,9 @@ def _run_direction(
         # OOM back-off, another group running next, an anchor that is not the chunk's last frame -- only costs a
         # rebuild from the frames the prefetcher still holds).
         after = frames_list[pos + size:min(pos + 2 * size, end)]
-        if after:
+        others = [t for t in live if t not in members]
+        # only when this group will run next: no other group may be left behind this chunk's end
+        if after and all(t.pos >= pos + len(chunk) for t in others):
             prefetch.schedule(chunk[-1], after)
         seeds = {t.obj_id: t.anchor_mask for t in members}
         covered: dict[int, list[int]] = {t.obj_id: [] for t in members}
@@ -913,7 +926,8 @@ chunks (spec 5.3, multi-object spec §6)...".
         plan_indices(clip, participants[0][0], body.from_frame, d)
 ```
 
-and drop its `if not clip.objects` block (resolve_participants raises the same message).
+and drop its `if not clip.objects` block (resolve_participants raises the same message); drop `BadRequest` from
+that file's imports if nothing else uses it (ruff F401).
 
 - [ ] **Step 4: Run** — `uv run pytest server/tests -q -m "not gpu"`, `uv run ruff check server` → green. If an
   existing single-object test's exact numbers change, stop and report it (for one object the new runner must
@@ -934,7 +948,7 @@ and drop its `if not clip.objects` block (resolve_participants raises the same m
 **Interfaces:**
 - Produces:
   - `preview(store, engine, clip, frame, prompt, *, object_id: int | None = None) -> list[Detection]`
-  - `accept(store, engine, clip_id, frame, prompt, *, object_id: int | None, class_id: int | None = None, candidates: list[int] | None = None) -> tuple[Clip, list[int]]` (the clip and the ids written to)
+  - `accept(store, engine, clip_id, frame, prompt, *, object_id: int | None, class_id: int | None = None, candidate: int = 0, candidates: list[int] | None = None) -> tuple[Clip, list[int]]` (the clip and the ids written to)
   - `set_mask(store, clip_id, frame, mask, *, object_id: int | None, class_id: int | None = None) -> tuple[Clip, int]`
   - `clear_range(store, clip_id, start, end, *, objects: Literal["all"] | list[int] = "all") -> Clip`
   - `objects.find_object(clip, object_id) -> LabelObject` (NotFound), `relabel_object(store, clip_id, object_id, class_id) -> Clip`, `delete_object(store, clip_id, object_id) -> Clip`
@@ -958,7 +972,9 @@ Rules:
 - `clear_range(objects=[...])`: unknown ids → NotFound; only those objects' masks, keyframes and ranges in the
   range are cleared.
 
-- [ ] **Step 1: Write failing tests** — move existing calls to the new signatures (first accept on a clip:
+- [ ] **Step 1: Write failing tests** — in `test_frames.py`, `test_paint.py` and `test_prompts.py` replace the
+  `OBJECT_ID` import with `from conftest import OBJ` (Task 5 deletes `OBJECT_ID`). Change `test_paint.py`'s
+  `match="no object"` to `match="the mask is empty"`. Move existing calls to the new signatures (first accept on a clip:
   `object_id=None, class_id=0`; later: `object_id=OBJ`; tests that relabelled via `class_id` on a later accept now
   call `relabel_object`); `accept` returns `(clip, ids)` so existing `out = accept(...)` becomes
   `out, _ = accept(...)`; the same for `set_mask`. Then add to `test_objects.py`:
@@ -1014,7 +1030,7 @@ def test_click_box_is_derived_from_the_chosen_object(store, make_clip):
     eng = FakeEngine()
     _, clip = make_clip()
     accept(store, eng, clip.id, 0, CLICK, object_id=None, class_id=0)  # object 1 around (30, 30)
-    set_mask(store, clip.id, 0, _rect(60, 120, x=70, w=30), object_id=None, class_id=0)  # object 2 at x 70..100
+    set_mask(store, clip.id, 0, _rect(x=70, width=30), object_id=None, class_id=0)  # object 2 at x 70..100
     clip = store.read_clip(clip.id)
     click = PromptSpec(type="clicks", points=[(80, 30, 1)])
     (det,) = preview(store, eng, clip, 0, click, object_id=2)
@@ -1048,8 +1064,14 @@ def test_clear_range_per_object(store, make_clip):
         clear_range(store, clip.id, 0, 5, objects=[7])
 ```
 
-with a local `_rect(h, w, x, w_)` helper returning a bool mask with `[20:40, x:x + w_] = True` (check the frame size
-from `make_clip`: 60×120). If `NotFound` is not exported by `vsp.store`, import it from where `prompts.py` gets it.
+with a local helper:
+
+```python
+def _rect(x, width):
+    m = np.zeros((60, 120), dtype=bool)
+    m[20:40, x:x + width] = True
+    return m
+``` If `NotFound` is not exported by `vsp.store`, import it from where `prompts.py` gets it.
 
 - [ ] **Step 2: Run to see them fail.**
 
@@ -1105,8 +1127,10 @@ creates the objects and writes their masks and keyframes under one lock.
 
 - [ ] **Step 4: Run** — full non-GPU suite and ruff → green. **The API still calls the old signatures**: update
   `api/labeling.py` call sites in this task just enough to compile and keep today's behaviour (the legacy shim
-  lives in Task 5; here, pass `object_id=clip.objects[0].id if clip.objects else None` and move a given `class_id`
-  on an existing object into a `relabel_object` call first). Mark those lines `# legacy shim: removed in plan B`.
+  lives in Task 5; here, `/prompt`, `/accept` and `/mask` pass `object_id=clip.objects[0].id if clip.objects else None`; a
+  `class_id` given for an existing object is applied with `relabel_object` **after** the accept/paint succeeded,
+  still inside the `gpu_lease` block, so a failed accept changes nothing). Mark those lines
+  `# legacy shim: removed in plan B`.
 
 - [ ] **Step 5: Commit** — "Labelling: explicit object ids for accept, paint, clear; relabel and delete objects".
 
@@ -1125,8 +1149,9 @@ creates the objects and writes their masks and keyframes under one lock.
   candidates: list[int] | null`. Response: `clip_detail(...)` plus `"object_ids": [...]`.
 - `POST /mask` body: `frame, mask_png_b64, object_id: int | null, class_id: int | null`. Response adds
   `"object_id"`.
-- Legacy shim 1 (both routes): `object_id` **absent** (`"object_id" not in body.model_fields_set`) → today's
-  behaviour: first object, or create with `class_id`; a `class_id` on an existing object relabels it first.
+- Legacy shim 1 (`/prompt`, `/accept`, `/mask`): `object_id` **absent** (`"object_id" not in
+  body.model_fields_set`) → today's behaviour: first object (or create with `class_id`); a `class_id` on an existing
+  object relabels it after the write succeeded.
 - `PATCH /api/clips/{id}/objects/{object_id}` body `{class_id: int}` → `clip_detail`. Clip lock only (no GPU lease).
 - `DELETE /api/clips/{id}/objects/{object_id}` → `clip_detail`. Inside `gpu_lease(state)`: if
   `state.jobs.active("export")` → `JobBusy`; then `delete_object`. (A running propagation makes `gpu_lease` itself
@@ -1134,10 +1159,11 @@ creates the objects and writes their masks and keyframes under one lock.
 - `GET /api/clips/{id}/objects/{object_id}/masks/{idx}` → the PNG, `Cache-Control: no-cache`; 404 for an unknown
   object or a missing mask.
 - Legacy shim 2: `GET /api/clips/{id}/masks/{idx}` serves the first object's mask; 404 when the clip has none.
-- `POST /propagate` body adds `objects: Literal["all"] | list[int] = "all"`; the route validates with
+- `POST /propagate` body adds `objects: Literal["all"] | Annotated[list[int], Field(min_length=1)] = "all"` (an
+  empty list is a 422, not a misleading "no mask"); the route validates with
   `resolve_participants(..., strict=True)` and `plan_indices` for every participant and direction, and passes
   `objects` to `run_propagation`.
-- `POST /clear-range` body adds `objects: Literal["all"] | list[int] = "all"`.
+- `POST /clear-range` body adds `objects: Literal["all"] | Annotated[list[int], Field(min_length=1)] = "all"`.
 - `clip_detail` adds `"object_states": {str(o.id): store.object_states(clip, o) for o in clip.objects}`.
 
 - [ ] **Step 1: Write failing API tests** (in `test_api_labeling.py`; reuse its `_client`/`_clip` helpers and
@@ -1174,6 +1200,9 @@ def test_legacy_bodies_without_object_id_keep_one_object(tmp_path):
         r = client.post(f"/api/clips/{cid}/accept", json={"frame": 3, "prompt": CLICK})
         assert [o["id"] for o in r.json()["clip"]["objects"]] == [1]
         assert client.get(f"/api/clips/{cid}/masks/3").status_code == 200
+        # /prompt without object_id derives the click box from the first object's mask, as /accept does
+        r = client.post(f"/api/clips/{cid}/prompt", json={"frame": 0, "prompt": {"type": "clicks", "points": [[44, 30, 1]]}})
+        assert r.json()["candidates"][0]["bbox"] == [10, 10, 50, 50]
 
 
 def test_propagate_objects_body_and_events(tmp_path):
@@ -1182,9 +1211,10 @@ def test_propagate_objects_body_and_events(tmp_path):
          # a WebSocket/job event of type "frame" has "objects" and the legacy "has_mask"
 
 
-def test_delete_object_is_refused_while_a_propagation_or_an_export_runs(tmp_path):
+def test_delete_object_is_refused_while_a_propagation_or_an_export_runs(tmp_path, monkeypatch):
     ...  # SlowEngine propagation running -> DELETE object -> 409 with job_id; after it ends, start an export job
-         # whose engine/exporter is slowed the way test_api_export.py already does it -> DELETE object -> 409;
+         # held open with the `Coco.write` gate copied from test_api_export.py (~lines 128-148, via monkeypatch)
+         # -> DELETE object -> 409;
          # PATCH during the propagation -> 200
 
 
@@ -1200,7 +1230,8 @@ assertions are listed in each comment and are required). Move the existing `/mas
 - [ ] **Step 2: Run to see them fail.**
 
 - [ ] **Step 3: Implement** the routes and bodies above; remove `OBJECT_ID` from `prompts.py` and its import in
-  `api/clips.py` (the legacy mask route uses `clip.objects[0].id`). Error mapping: `NotFound` → 404, `BadRequest`
+  `api/clips.py` (the legacy mask route uses `clip.objects[0].id`); afterwards `grep -rn OBJECT_ID server` must
+  print nothing. Error mapping: `NotFound` → 404, `BadRequest`
   → 400, `JobBusy` → 409 (already mapped in `app.py`; check).
 
 - [ ] **Step 4: Run** — full non-GPU suite, ruff, and the web tests (`cd web && node node_modules/.bin/vitest run`)

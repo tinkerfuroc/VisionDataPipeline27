@@ -90,8 +90,9 @@ defaults to `"all"`; "all" includes objects hidden in the GUI).
   prefetcher is keyed per group (`(anchor, chunk)`, as today), and `schedule()` predicts the group of the object
   that wrote the chunk's last frame.
 - **Inside a chunk**: an object that reaches its bound or gets lost mid-chunk stays in that engine call, but its
-  outputs past that point are discarded. `done_in_chunk` stays per frame (a frame is done when every group has
-  yielded it). Masks are written per object (deleted frames are not written; `None` deletes that object's stored
+  outputs past that point are discarded. Progress (`done`, `processed`) counts frames covered by at least one
+  object; when groups diverge the lagging group re-emits frame events for earlier frames, so events are not in frame
+  order. Masks are written per object (deleted frames are not written; `None` deletes that object's stored
   mask on that frame). `_record_range(obj, frames)` is called per object with only the frames that object covered,
   on every exit path, as today. "Stopped short" compares the frames yielded with the chunk's length, per group.
 - **Lost**: counted per object (`lost_after` consecutive empties). A lost object stops being seeded. A direction ends
