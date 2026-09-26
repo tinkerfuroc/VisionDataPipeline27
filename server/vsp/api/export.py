@@ -21,6 +21,7 @@ class ExportOptionsBody(BaseModel):
     stride: int = Field(default=1, ge=1)
     include_empty: bool = True
     min_area_px: int | None = Field(default=None, ge=0)
+    classes: list[int] | None = None  # project class ids; null = every class
 
 
 class ExportBody(BaseModel):
@@ -38,6 +39,7 @@ def start_export(project_id: str, body: ExportBody, state: State) -> dict:
         split_mode=o.split_mode, val_clip_ids=None if o.val_clips is None else tuple(o.val_clips),
         val_fraction=cfg.val_fraction if o.val_fraction is None else o.val_fraction, stride=o.stride,
         include_empty=o.include_empty, min_area_px=cfg.min_area_px if o.min_area_px is None else o.min_area_px,
+        class_ids=None if o.classes is None else tuple(o.classes),
     )
     check_request(state.store, project_id, body.clips, body.formats, options)  # 400 / 404 now, not as a job error
     name = clean_name(body.name)  # 400 now too, before any job starts

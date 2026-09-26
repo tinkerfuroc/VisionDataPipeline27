@@ -167,3 +167,20 @@ def test_a_clip_cannot_be_deleted_while_an_export_reads_it(client, tmp_path, mon
     release.set()
     assert wait_job(client, job_id)["status"] == "done"
     assert client.delete(f"/api/clips/{clip_id}").status_code == 204
+
+
+def test_export_class_selection_is_validated_before_the_job_and_applied(client, tmp_path):
+    project_id = _project(client, classes=("part", "cup"))
+    clip_id = _clip_with_masks(client, tmp_path, project_id)  # one object of class 0 ("part")
+    url = f"/api/projects/{project_id}/export"
+    empty = client.post(url, json={"clips": [clip_id], "formats": ["coco"], "options": {"classes": []}})
+    assert empty.status_code == 400 and "at least one class" in empty.json()["detail"]
+    unknown = client.post(url, json={"clips": [clip_id], "formats": ["coco"], "options": {"classes": [7]}})
+    assert unknown.status_code == 400 and "unknown class 7" in unknown.json()["detail"]
+    started = client.post(url, json={"clips": [clip_id], "formats": ["yolo_seg"], "options": {"classes": [0]}})
+    assert started.status_code == 202, started.text
+    snap = wait_job(client, started.json()["job_id"])
+    assert snap["status"] == "done", snap
+    manifest = json.loads((Path(snap["result"]["path"]) / "export.json").read_text())
+    assert manifest["options"]["class_ids"] == [0]
+    assert [c["name"] for c in manifest["classes"]] == ["part"]

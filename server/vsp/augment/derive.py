@@ -27,10 +27,9 @@ from PIL import Image
 from ..export import ExportCancelled, manifest_for, write_dataset
 from ..export.base import ExportSummary, place_image
 from ..export.naming import MAX_NAME
-from ..export.plan import ExportOptions, ExportPlan, PlanFrame, PlanObject
+from ..export.plan import ExportPlan, PlanFrame, PlanObject, classes_from_manifest, options_from_manifest
 from ..export.polygons import clean_mask
 from ..labeling.errors import BadRequest
-from ..store.models import ClassDef
 from ..train.models import find_export
 from .backgrounds import POOLS, list_images
 from .composite import Cutout, cutout_from, make_composite
@@ -238,13 +237,12 @@ def run_augment(
                 image_path=image_path, width=width, height=height, objects=tuple(objects),
             ))
 
-        classes = tuple(ClassDef(id=c["id"], name=c["name"], color=c["color"]) for c in manifest["classes"])
-        val_clip_ids = tuple(manifest["options"]["val_clip_ids"] or ())
-        options = ExportOptions(**{**manifest["options"], "val_clip_ids": val_clip_ids})
+        classes, class_map = classes_from_manifest(manifest)
+        options = options_from_manifest(manifest["options"])
         plan = ExportPlan(
             project_id=manifest["project"]["id"], project_name=manifest["project"]["name"], classes=classes,
-            options=options, clip_ids=tuple(c["id"] for c in manifest["clips"]),
-            clip_names={c["id"]: c["name"] for c in manifest["clips"]}, val_clip_ids=val_clip_ids,
+            class_map=class_map, options=options, clip_ids=tuple(c["id"] for c in manifest["clips"]),
+            clip_names={c["id"]: c["name"] for c in manifest["clips"]}, val_clip_ids=options.val_clip_ids or (),
             frames=tuple(synthetic),  # the exporters run on the synthetic frames only; real ones are copied
         )
         synth_summaries, _synth_counts, synth_linked = write_dataset(
