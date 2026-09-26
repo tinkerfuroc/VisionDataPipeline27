@@ -1,6 +1,6 @@
 # vision-sampler-pipeline
 
-SAM3-driven video labeling for one user-chosen component per clip.
+SAM3-driven video labeling for any number of user-chosen objects per clip.
 Design: `docs/superpowers/specs/2026-09-20-vision-sampler-design.md`.
 
 ## Setup
@@ -119,6 +119,25 @@ With the server running, `uv run python scripts/seed_demo.py` creates a project 
 (a disc moving across the frame), labels frame 0 with one click and propagates forward, then prints the URL to open.
 `--no-label` imports only.
 
+### Label page: several objects
+
+A clip can hold any number of objects, each with its own class (two cups and a bowl are three objects). The
+**Objects** panel in the right sidebar lists them as `#id class` with the number of frames each has a mask on; the
+highlighted row is the **active object**, which every prompt, accept, brush save, "Selected" propagation and
+"Active object" clear acts on. Click a row (or its lane name in the timeline, or press `O` / `Shift+O`) to change it.
+The eye hides an object from the frame (display only, for this page session). The class select relabels the active
+object at once — also during a propagation. **+ New object** (`N`) starts a row "New object (class)": the object is
+created by its first accepted or painted mask. A text prompt that finds several candidates on a New object row offers
+**Accept all as new objects**, one object per candidate. **Delete object** asks first, naming how many frames lose
+their mask; it is refused while a propagation or an export runs.
+
+The frame shows every visible object in its class colour; only the active object gets the Mask outline. The timeline
+has one lane per object (the active lane tall), a name gutter on the left, and the playhead across all lanes; past six
+lanes the lanes scroll with the mouse wheel. Hovering a frame lists every object's state on it. The Propagate panel
+runs **All objects** (every object with a mask on the current frame; the others are named as skipped) or **Selected**
+only; lost objects are named one by one. Cleanup's "Clear masks" acts on the **Active object** (default) or **All
+objects**. `K`, `G` and "has a mask here" follow the active object's lane.
+
 ### Exporting
 
 An export lands under `data/exports/<export_id>/`: an `images/` directory holding one copy of every
@@ -206,7 +225,7 @@ Installing `albumentations` (a dependency since this branch, `uv sync` pulls it 
 ### Keyboard
 
 `Enter` accept · `Esc` clear · `Z` undo click · `←/→` step · `Shift+←/→` ±10 · `Space` play/pause · `K` / `Shift+K`
-next / previous keyframe · `G` next empty frame · `Del` delete or restore frame · `[` / `]` mark the first / last frame to clear · `-` / `=` shrink / grow the brush (Brush tool) · `M` mask overlay · mouse wheel zoom ·
+next / previous keyframe of the active object · `G` its next empty frame · `O` / `Shift+O` next / previous object · `N` new object · `Del` delete or restore frame · `[` / `]` mark the first / last frame to clear · `-` / `=` shrink / grow the brush (Brush tool) · `M` mask overlay · mouse wheel zoom ·
 middle-drag pan · right click = negative point. `Enter`, `Esc` and `Z` act on the brush while it is selected (Save, Discard, Undo stroke) instead of accept / clear / undo click.
 
 ### Manual QA checklist (run on real footage before trusting a dataset)
@@ -222,7 +241,7 @@ middle-drag pan · right click = negative point. `Enter`, `Esc` and `Z` act on t
 6. Scrub the timeline and play at clip fps with the overlay on; delete a frame, restore it, prune the tail. Clear masks:
    Shift-drag a stretch of the timeline (or press `[` and `]`), check the button names the frames and the note counts
    the masks and keyframes, clear them, and confirm the keyframes inside the stretch are gone from the timeline too,
-   the mark disappears, and a new prompt on the clip still lands on the same object and class.
+   the mark disappears, and a new prompt lands on the active object with its class.
 7. Reload the page during a propagation: the panel should re-attach to the running job.
 8. Stop the server: the banner says it is unreachable; start it without weights: the banner shows the reason and
    importing / cleanup still work.
@@ -265,3 +284,16 @@ middle-drag pan · right click = negative point. `Enter`, `Esc` and `Z` act on t
     large one: the mask PNG shows the small one, and `overlap_px` is non-zero. Make an augmented copy of an
     export with COCO: `augment.cutouts` is `per_object`; of one without COCO: the panel notes the fallback and
     it is `per_class_region`.
+21. Several objects: on one clip label a cup (#1), press `N`, choose another class and label it (#2). The Objects
+    panel lists both with frame counts; the timeline shows two lanes, the active one tall; clicking a lane or its name
+    selects that object, and `O` / `Shift+O` cycle. Hide #1 with its eye: it leaves the frame and its lane dims.
+    Only the active object carries the Mask outline; brushing #2 keeps #1 visible underneath.
+22. Propagate "All objects" from a frame where both have masks: both lanes fill in one run. Then "Selected: #2" from
+    another of its keyframes: only lane 2 changes. Let one object leave the frame: the panel names it as lost while
+    the other continues; start from a frame where only #1 has a mask with "All objects": #2 is named as skipped.
+23. Shift-drag a stretch and clear it with "Active object", then again with "All objects"; check the note counts the
+    right masks each time. Relabel #2 during a propagation (allowed); try to delete #1 during a propagation and during
+    an export (refused), then delete it (the dialog names its frame count) and check #2 becomes active.
+24. Text-prompt "cup" on a New object row with several cups in view: "Accept all as new objects" creates one object
+    per candidate. With seven or more objects the timeline stops growing at six lanes, scrolls with the wheel, and
+    `O` onto an off-screen object scrolls its lane into view.
