@@ -435,10 +435,67 @@ def test_cutouts_are_per_object_when_the_source_has_coco(store, make_clip, tmp_p
     assert mode == "per_object"
     assert sizes == [(120, 60)] * n and len(ticks) == n
     assert len(cutouts) == 3 * n
-    # each object minus the pixels another object also claims: m1 (rows 10-29, cols 5-29) loses col 29 to m2 and
-    # rows 20-29 x cols 20-29 to m3 -> 500 - 110 = 390; m2 (cols 29-49) loses col 29 and rows 20-29 x cols 29-44 ->
-    # 420 - 170 = 250; m3 (rows 20-44, cols 20-44) loses rows 20-29 x cols 20-44 -> 625 - 250 = 375
-    assert sorted((c.class_id, int(c.mask.sum())) for c in cutouts[:3]) == [(0, 250), (0, 390), (1, 375)]
+    # paint() paints largest first and a later (smaller) object overwrites an earlier (larger) one wherever they
+    # overlap: painted order is m3 (625) then m1 (500) then m2 (420).
+    # m2 is painted last, so it wins every pixel it covers: 420 (no loss).
+    # m1 is painted before m2, so it only loses to m2: m1 ^ m2 is column 29, rows 10-29 = 1 x 20 = 20 px ->
+    # 500 - 20 = 480.
+    # m3 is painted first, so it loses to both m1 (rows 20-29 x cols 20-29 = 10 x 10 = 100 px) and m2 (rows 20-29 x
+    # cols 29-44 = 10 x 16 = 160 px); those two losses share column 29, rows 20-29 (10 px), so together they take
+    # 100 + 160 - 10 = 250 px -> 625 - 250 = 375.
+    assert sorted((c.class_id, int(c.mask.sum())) for c in cutouts[:3]) == [(0, 420), (0, 480), (1, 375)]
+
+
+def test_cutouts_keep_a_fully_contained_object_and_the_rest_of_its_host(store, make_clip, tmp_path):
+    """A screw entirely inside a board: the old `mask & (owners == 1)` rule claimed every one of the screw's
+    pixels for "more than one owner" and dropped it completely, and holed the board where the screw sat. `paint`
+    paints the board (bigger) first and the screw (smaller) on top, so the screw's cutout is its own full area
+    and the board keeps whatever is left over."""
+    project, clip = make_clip(n_frames=1, classes=("board", "screw"))
+    clip.objects = [LabelObject(id=1, class_id=0), LabelObject(id=2, class_id=1)]
+    store.write_clip(clip)
+    board = np.zeros((60, 120), bool)
+    board[5:45, 5:45] = True  # 40x40 = 1600 px
+    screw = np.zeros((60, 120), bool)
+    screw[15:25, 15:25] = True  # 10x10 = 100 px, entirely inside the board
+    store.write_mask(clip.id, 1, 0, board)
+    store.write_mask(clip.id, 2, 0, screw)
+    data_root = tmp_path / "data"
+    formats = ["yolo_seg", "coco", "masks"]
+    src = _export(store, project, clip, formats, data_root)
+
+    cutouts, _sizes, mode = _cutouts_and_sizes(Path(src["path"]), formats, 64, lambda: None)
+    assert mode == "per_object"
+    by_class = {c.class_id: int(c.mask.sum()) for c in cutouts}
+    assert by_class == {1: 100, 0: 1600 - 100}  # the screw keeps its full 10x10; the board keeps the rest
+
+
+def test_cutouts_restore_a_hole_from_the_mask_png(store, make_clip, tmp_path):
+    """COCO polygons are outer contours only (`mask_to_polygons` uses `RETR_EXTERNAL`): a ring's polygon,
+    refilled by `polygons_to_mask`, is a solid square with its hole filled in. Intersecting the painted canvas
+    with the semantic `masks` PNG (which keeps the true, holed mask) restores the hole; a dot sitting inside
+    that hole still gets its own full cutout, since `paint` puts it on top of the (reconstructed, hole-filled)
+    ring."""
+    project, clip = make_clip(n_frames=1, classes=("ring", "dot"))
+    clip.objects = [LabelObject(id=1, class_id=0), LabelObject(id=2, class_id=1)]
+    store.write_clip(clip)
+    ring = np.zeros((60, 120), bool)
+    ring[10:50, 10:50] = True  # 40x40 outer = 1600 px
+    ring[20:34, 20:34] = False  # 14x14 hole = 196 px -> the ring itself is 1600 - 196 = 1404 px
+    dot = np.zeros((60, 120), bool)
+    dot[22:32, 22:32] = True  # 10x10 = 100 px, entirely inside the hole
+    store.write_mask(clip.id, 1, 0, ring)
+    store.write_mask(clip.id, 2, 0, dot)
+    data_root = tmp_path / "data"
+    formats = ["yolo_seg", "coco", "masks"]
+    src = _export(store, project, clip, formats, data_root)
+
+    cutouts, _sizes, mode = _cutouts_and_sizes(Path(src["path"]), formats, 64, lambda: None)
+    assert mode == "per_object"
+    by_class = {c.class_id: int(c.mask.sum()) for c in cutouts}
+    assert int(ring.sum()) == 1404
+    assert by_class[0] == 1404  # cut without the (polygon-filled) hole, matching the ring mask's own pixel count
+    assert by_class[1] == 100  # the dot keeps its full cutout
 
 
 def test_cutouts_fall_back_to_class_regions_without_coco(store, make_clip, tmp_path):

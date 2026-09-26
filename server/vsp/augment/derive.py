@@ -29,6 +29,7 @@ from PIL import Image
 
 from ..export import ExportCancelled, manifest_for, write_dataset
 from ..export.base import ExportSummary, place_image
+from ..export.mask_png import paint
 from ..export.naming import MAX_NAME
 from ..export.plan import ExportPlan, PlanFrame, PlanObject, classes_from_manifest, options_from_manifest
 from ..export.polygons import Polygon, clean_mask, polygons_to_mask
@@ -96,13 +97,30 @@ def _coco_train_objects(source_dir: Path) -> dict[str, list[tuple[int, list[Poly
     return out
 
 
+# `paint`'s canvas is uint8 (0..255): a per-object index needs one value per annotation, so a frame with more
+# than this many objects falls back to per-class-region for that one frame instead (picked over widening the
+# canvas: it is the same fallback the source already has for a `coco`-less export, so it is exercised and
+# understood, and a frame this crowded is far outside normal use).
+MAX_PAINT_OBJECTS = 255
+
+
 def _cutouts_and_sizes(
     source_dir: Path, formats: list[str], min_area_px: int, tick: Callable[[], None],
 ) -> tuple[list[Cutout], list[tuple[int, int]], CutoutMode]:
     """Cutouts and `(width, height)` of every real train frame (the frames are listed from the `masks` format).
-    Per object from the COCO train annotations when the source has `coco` (each object minus the pixels another
-    object also claims), else per class region of the indexed mask PNGs (touching objects of one class then come out
-    as one). Feeds composites only."""
+    Per object from the COCO train annotations when the source has `coco`, else per class region of the indexed
+    mask PNGs (touching objects of one class then come out as one). Feeds composites only.
+
+    The per-object case resolves shared pixels the way the semantic mask PNG does, then restores holes from it:
+    COCO polygons are outer contours only (`mask_to_polygons` uses `RETR_EXTERNAL`), so `polygons_to_mask` fills
+    a holed object's hole in and gives an object entirely inside another one the same footprint as its host. So
+    each annotation's polygons are rasterised, painted onto a canvas with `paint` (the same "largest first"
+    ownership `masks` uses, so a smaller object on top of a larger one wins the shared pixels) using per-object
+    indices instead of class values, and each object's cutout is `(canvas == its index) & (semantic_png > 0)`:
+    the canvas settles who owns a pixel, the true (unfilled, unmerged) `masks` PNG says whether that pixel is
+    really part of any object at all, restoring holes and dropping the leftover pixels a filled-in hole steals
+    from nobody.
+    """
     per_object = "coco" in formats
     by_stem = _coco_train_objects(source_dir) if per_object else {}
     cutouts: list[Cutout] = []
@@ -111,18 +129,15 @@ def _cutouts_and_sizes(
         tick()
         with Image.open(mask_path) as png:
             width, height = png.size
-            indexed = None if per_object else np.array(png)
+            semantic = np.array(png)
         sizes.append((width, height))
-        if indexed is None:
-            found = [
-                (cls, polygons_to_mask(polygons, width, height)) for cls, polygons in by_stem.get(mask_path.stem, [])
-            ]
-            # Where labelled masks overlap, whose pixels those are is unknown: an object's cutout keeps only the pixels
-            # no other object claims, so it never carries a piece of its neighbour into a composite.
-            owners = sum((mask.astype(np.uint8) for _, mask in found), np.zeros((height, width), np.uint8))
-            found = [(cls, mask & (owners == 1)) for cls, mask in found]
+        objects = by_stem.get(mask_path.stem, [])
+        if per_object and len(objects) <= MAX_PAINT_OBJECTS:
+            polys = [(cls, polygons_to_mask(polygons, width, height)) for cls, polygons in objects]
+            canvas, _overlap = paint([(i + 1, mask) for i, (_cls, mask) in enumerate(polys)], height, width)
+            found = [(cls, (canvas == i + 1) & (semantic > 0)) for i, (cls, _mask) in enumerate(polys)]
         else:
-            found = [(int(v) - 1, indexed == v) for v in sorted(int(v) for v in np.unique(indexed) if v > 0)]
+            found = [(int(v) - 1, semantic == v) for v in sorted(int(v) for v in np.unique(semantic) if v > 0)]
         found = [(cls, clean_mask(mask, min_area_px)) for cls, mask in found]
         found = [(cls, mask) for cls, mask in found if mask.any()]
         if not found:

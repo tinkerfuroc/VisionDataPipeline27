@@ -1242,9 +1242,16 @@ git commit -m "Docs: export class selection, class map, mask overlap, per-object
 
 ## Note for the negatives branch
 
-`negative-crops` (not merged here) adds `server/vsp/augment/negatives.py`, which rebuilds a plan from a source
-manifest with `ExportOptions(**manifest["options"])` and passes it to `manifest_for`. When it is merged on top of
-this plan:
+`negative-crops` (not merged here; checked against `git show negative-crops:server/vsp/augment/negatives.py` and
+`git show negative-crops:server/vsp/augment/derive.py`) adds `server/vsp/augment/negatives.py`, which rebuilds a
+plan from a source manifest with `ExportOptions(**manifest["options"])` and passes it to `manifest_for`. Its own
+`derive.py` — forked before this plan's Task 4 — still defines `merge_real_frames`, `merge_coco` and
+`merged_format_summaries` as public names (no leading underscore), and `negatives.py` imports them by those names
+(`from .derive import merge_coco, merge_real_frames, merged_format_summaries`); this plan renames all three to
+`_merge_real_frames`, `_merge_coco`, `_merged_format_summaries`. So merging `negative-crops` conflicts twice:
+in `derive.py`'s own definitions (public vs. private) and in `negatives.py`'s import line, which needs the
+leading underscores added; the `ExportPlan(...)` block (point 2 below) is a separate, third conflict. When it is
+merged on top of this plan:
 
 1. Build options with `options_from_manifest(manifest["options"])` instead of `ExportOptions(**...)`: it turns
    `class_ids` (and `val_clip_ids`) back into tuples, fills keys an older manifest lacks, and ignores unknown keys.
@@ -1254,11 +1261,24 @@ this plan:
    export ids, and `options.class_ids` stays the source's project class ids (informational).
 3. Negative frames carry no objects, so no class id is involved; any object it does copy keeps the source's export
    id.
-4. If it merges format summaries, merge through `_merged_format_summaries` (or copy its `overlap_px` rule): the
-   masks entry sums `overlap_px`, a side without the key counting 0; negative frames add 0.
+4. Merge format summaries through the renamed `_merged_format_summaries`, not the branch's own copy: its own
+   `merged_format_summaries` has no `overlap_px` handling at all today, so the rule (the masks entry sums
+   `overlap_px`, a side without the key counting 0; negative frames add 0) must be carried into the renamed
+   function, not dropped when the two are reconciled.
 5. If it cuts anything from the source's objects, use `_cutouts_and_sizes(source_dir, formats, min_area_px, tick)`
    (three return values now) rather than the mask PNG regions.
-6. Its derived name suffix stays ` +<N>% negatives` (spec §11).
+6. The branch writes no `name` to its result manifest today (`result_manifest` has no `"name"` key). It must gain
+   one, following the dataset-name rules (spec §11: the source's display name — name, else id — plus a suffix,
+   truncated to `MAX_NAME` with the suffix kept whole, as `_derived_name` already does for augmented copies) —
+   here the suffix is ` +<N>% negatives`, not ` ×<N> augmented`.
+7. After switching to `options_from_manifest` / `classes_from_manifest` (points 1-2), its
+   `from ..export.plan import ExportOptions` and `from ..store.models import ClassDef` imports become unused
+   (ruff F401) and should be dropped.
+8. Its exclusion mask is built from the `masks` PNG (`mask = indexed > 0`): on a filtered export (`class_ids` set),
+   objects of unticked classes are already absent from that PNG, so a negative crop's free-rectangle search treats
+   their pixels as background too and may place a crop over one. This is consistent with how the rest of a
+   filtered export treats unticked classes (as if they were never labelled), but it should be stated in the
+   branch's own docs/comments so it isn't mistaken for a bug later.
 
 Tests to add there: a negatives copy of an export made with `class_ids=(2,)` keeps
 `[(0, 2, "plate")]` as `(id, project_class_id, name)`, and one of a manifest without `project_class_id` maps to
