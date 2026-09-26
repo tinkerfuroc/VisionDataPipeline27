@@ -53,6 +53,8 @@ def delete_object(store: ProjectStore, clip_id: str, object_id: int) -> Clip:
         clip = store.read_clip(clip_id)
         find_object(clip, object_id)
         clip.objects = [o for o in clip.objects if o.id != object_id]
+        # never reuse a deleted id, even on a clip written before next_object_id existed (default 0)
+        clip.next_object_id = max(clip.next_object_id, object_id + 1)
         store.write_clip(clip)  # the entry goes first: a crash between the two leaves orphan files, not a
         store.delete_object_masks(clip_id, object_id)  # listed object without masks
         return clip

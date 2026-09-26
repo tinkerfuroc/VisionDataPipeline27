@@ -122,6 +122,10 @@ def accept(
 ) -> tuple[Clip, list[int]]:
     if candidates is not None and object_id is not None:
         raise BadRequest("candidates needs object_id null")
+    if object_id is None and class_id is None:
+        # same check resolve_target makes below, but hoisted above preview: a request that is doomed
+        # regardless of what the engine finds should not pay for an inference call first
+        raise BadRequest("class_id is required to create a new object")
     clip = store.read_clip(clip_id)
     if frame in clip.deleted_frames:
         raise BadRequest(f"frame {frame} is deleted; restore it before labeling")

@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 
 from ..jobs import Job, JobBusy
 from ..labeling import frames as frame_ops
-from ..labeling.objects import check_class, delete_object, relabel_object
+from ..labeling.objects import check_class, delete_object, find_object, relabel_object
 from ..labeling.paint import decode_mask_png, set_mask
 from ..labeling.prompts import PromptSpec, accept, preview
 from ..labeling.propagate import plan_indices, resolve_participants, run_propagation
@@ -72,6 +72,8 @@ def prompt_preview(clip_id: str, body: PromptBody, state: State) -> dict:
         else:
             # legacy shim: removed in plan B -- click box derived from the clip's first object, as today
             object_id = clip.objects[0].id if clip.objects else None
+        if object_id is not None:
+            find_object(clip, object_id)  # 404 for an unknown object, before running any inference
         detections = preview(state.store, engine, clip, body.frame, body.prompt, object_id=object_id)
     return {"candidates": [candidate_view(d) for d in detections]}
 

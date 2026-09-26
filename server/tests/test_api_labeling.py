@@ -304,6 +304,14 @@ def test_prompt_preview_uses_the_given_object(tmp_path):
         assert without_obj.json()["candidates"][0]["bbox"][2] <= 95  # a fresh click prediction, no object to derive from
 
 
+def test_prompt_with_an_unknown_object_id_is_404(tmp_path):
+    with _client(tmp_path, FakeEngine()) as client:
+        cid = _clip(client, tmp_path)
+        client.post(f"/api/clips/{cid}/accept", json={"frame": 0, "prompt": CLICK, "object_id": None, "class_id": 0})
+        r = client.post(f"/api/clips/{cid}/prompt", json={"frame": 0, "prompt": CLICK, "object_id": 5})
+        assert r.status_code == 404
+
+
 def test_legacy_bodies_without_object_id_keep_one_object(tmp_path):
     with _client(tmp_path, FakeEngine()) as client:
         cid = _clip(client, tmp_path)

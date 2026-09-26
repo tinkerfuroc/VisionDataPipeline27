@@ -112,6 +112,8 @@ def test_import_frames_then_browse_the_clip(client, tmp_path):
     assert client.get(f"/api/clips/{clip_id}/thumbs/0").status_code == 200
     assert client.get(f"/api/clips/{clip_id}/frames/3").status_code == 404
     assert client.get(f"/api/clips/{clip_id}/objects/1/masks/0").status_code == 404
+    # legacy shim (removed in plan B): a clip with no objects also 404s on the un-scoped mask route
+    assert client.get(f"/api/clips/{clip_id}/masks/0").status_code == 404
 
     assert client.delete(f"/api/clips/{clip_id}").status_code == 204
     assert client.get(f"/api/clips/{clip_id}").status_code == 404

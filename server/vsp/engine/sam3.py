@@ -4,7 +4,8 @@ Ported from tinkerfuroc/tk25_vision_train (MIT, (c) 2025 tinker@furoc),
 server/tk_vision/annotate/sam3.py @ 5874ba0. Changes from the template:
   * device auto-selection; torch.autocast always gets device_type "cuda";
   * tracker_neck weights are synced from whichever key layout the checkpoint uses;
-  * single-object API matching vsp.engine.types.Engine;
+  * propagate() tracks several objects (one per seed) in a single tracker session; predict_prompt()
+    and predict_text() remain single-object previews, matching vsp.engine.types.Engine;
   * predict_prompt(): real point/box prompts through the tracker's prompt encoder
     (the template collapsed clicks into a padded box on the detector).
 """

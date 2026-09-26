@@ -63,6 +63,26 @@ def test_first_accept_needs_a_valid_class(store, make_clip):
     assert store.read_clip(clip.id).objects == []
 
 
+def test_accept_without_object_id_or_class_id_runs_no_inference(store, make_clip):
+    """The request is doomed (resolve_target always needs class_id for a new object) -- reject it before
+    the engine call, not after."""
+
+    class CountingEngine(FakeEngine):
+        def __init__(self):
+            super().__init__()
+            self.predict_prompt_calls = 0
+
+        def predict_prompt(self, *args, **kwargs):
+            self.predict_prompt_calls += 1
+            return super().predict_prompt(*args, **kwargs)
+
+    _, clip = make_clip()
+    eng = CountingEngine()
+    with pytest.raises(BadRequest, match="class_id is required"):
+        accept(store, eng, clip.id, 0, CLICK, object_id=None, class_id=None)
+    assert eng.predict_prompt_calls == 0
+
+
 def test_text_accept_uses_the_chosen_candidate(store, make_clip):
     _project, clip = make_clip()
     eng = FakeEngine(n_text_candidates=3)

@@ -7,7 +7,7 @@ from vsp.labeling.frames import clear_range
 from vsp.labeling.objects import delete_object, relabel_object
 from vsp.labeling.paint import set_mask
 from vsp.labeling.prompts import PromptSpec, accept, preview
-from vsp.store import NotFound
+from vsp.store import LabelObject, NotFound
 
 CLICK = PromptSpec(type="clicks", points=[(30, 30, 1)])
 TEXT = PromptSpec(type="text", phrase="part")
@@ -75,6 +75,19 @@ def test_relabel_and_delete_object(store, make_clip):
     assert [o.id for o in out.objects] == [2] and store.mask_indices(clip.id, 1) == []
     with pytest.raises(NotFound):
         delete_object(store, clip.id, 1)
+
+
+def test_delete_object_never_reuses_ids_on_a_clip_from_before_next_object_id(store, make_clip):
+    """A clip written before this branch has objects but next_object_id defaults to 0 (models.py). Deleting an
+    object must still bump next_object_id past it, or a later create reuses the deleted id."""
+    eng = FakeEngine()
+    _, clip = make_clip()
+    clip.objects = [LabelObject(id=1, class_id=0)]
+    clip.next_object_id = 0
+    store.write_clip(clip)
+    delete_object(store, clip.id, 1)
+    _, (new_id,) = accept(store, eng, clip.id, 0, CLICK, object_id=None, class_id=0)
+    assert new_id == 2
 
 
 def test_clear_range_per_object(store, make_clip):

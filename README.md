@@ -96,8 +96,8 @@ where `null` means "create a new object" (`class_id` required) rather than falli
   deleted, or with no seed mask on `from_frame`) and `objects` (the ids that actually ran). Each `"frame"`
   progress event's `objects` list carries `{"id", "has_mask"}` per object that covered that frame.
 - `PATCH /api/clips/{id}/objects/{object_id}` (body `{"class_id": ...}`) relabels an object;
-  `DELETE /api/clips/{id}/objects/{object_id}` removes it and its mask files (409 while an export or a GPU job is
-  using the clip, same as deleting the clip itself).
+  `DELETE /api/clips/{id}/objects/{object_id}` removes it and its mask files (409 while any export or GPU job
+  is running, server-wide, as for deleting a clip).
 - `GET /api/clips/{id}/objects/{object_id}/masks/{idx}` serves one object's mask PNG (404 for an unknown object).
   The legacy `GET /api/clips/{id}/masks/{idx}` still serves the first object's mask (404 if the clip has none).
 - Clip detail responses (`GET /api/clips/{id}` and every route that returns one) add `object_states`: a map from
