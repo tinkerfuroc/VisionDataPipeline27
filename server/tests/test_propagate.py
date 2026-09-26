@@ -199,15 +199,15 @@ class OomAfter(FakeEngine):
         self.n_failures = n_failures
         self.calls = 0
 
-    def propagate(self, frames, seed_mask, cancel_cb=None):
+    def propagate(self, frames, seeds, cancel_cb=None):
         self.calls += 1
         if self.calls <= self.n_failures:
-            gen = super().propagate(frames, seed_mask, cancel_cb)
+            gen = super().propagate(frames, seeds, cancel_cb)
             for _ in range(self.k + 1):
                 yield next(gen)
             gen.close()
             raise ChunkOOMError(f"fake OOM after {self.k} real frames")
-        yield from super().propagate(frames, seed_mask, cancel_cb)
+        yield from super().propagate(frames, seeds, cancel_cb)
 
 
 class OomProgressThenStarve(FakeEngine):
@@ -218,32 +218,33 @@ class OomProgressThenStarve(FakeEngine):
         super().__init__(**kw)
         self.calls = 0
 
-    def propagate(self, frames, seed_mask, cancel_cb=None):
+    def propagate(self, frames, seeds, cancel_cb=None):
         self.calls += 1
         self.propagate_calls.append(len(frames))
+        (k, seed_mask), = seeds.items()
         if self.calls == 1:
-            yield 0, seed_mask.copy()
+            yield 0, {k: seed_mask.copy()}
             shifted = np.zeros_like(seed_mask)
             shifted[:, self.dx:] = seed_mask[:, :-self.dx]
-            yield 1, shifted
+            yield 1, {k: shifted}
         raise ChunkOOMError("fake OOM")
 
 
 class OnlySeed(FakeEngine):
     """Yields only the anchor's own offset-0 output, then stops -- no real frame ever lands."""
 
-    def propagate(self, frames, seed_mask, cancel_cb=None):
+    def propagate(self, frames, seeds, cancel_cb=None):
         self.propagate_calls.append(len(frames))
-        yield 0, seed_mask.copy()
+        yield 0, {k: v.copy() for k, v in seeds.items()}
 
 
 class StopsAfterTwo(FakeEngine):
     """Yields the anchor plus exactly 2 real frames of a longer chunk, then stops without OOM or
     cancellation -- exercises the "stopped short with partial progress" PropagationFailed message."""
 
-    def propagate(self, frames, seed_mask, cancel_cb=None):
+    def propagate(self, frames, seeds, cancel_cb=None):
         self.propagate_calls.append(len(frames))
-        gen = super().propagate(frames, seed_mask, cancel_cb)
+        gen = super().propagate(frames, seeds, cancel_cb)
         for _ in range(3):  # offset 0 (anchor, discarded) + 2 real frames
             yield next(gen)
         gen.close()
@@ -252,19 +253,20 @@ class StopsAfterTwo(FakeEngine):
 class Skips(FakeEngine):
     """Yields offsets 0, 1, 3 -- skipping 2 -- to exercise offset validation."""
 
-    def propagate(self, frames, seed_mask, cancel_cb=None):
+    def propagate(self, frames, seeds, cancel_cb=None):
         self.propagate_calls.append(len(frames))
+        (k, seed_mask), = seeds.items()
         for offset in (0, 1, 3):
             if offset >= len(frames):
                 return
             if offset == 0:
-                yield 0, seed_mask.copy()
+                yield 0, {k: seed_mask.copy()}
                 continue
             shifted = np.zeros_like(seed_mask)
             s = offset * self.dx
             if s < seed_mask.shape[1]:
                 shifted[:, s:] = seed_mask[:, :-s]
-            yield offset, shifted
+            yield offset, {k: shifted}
 
 
 # ---------------------------------------------------------------- fix round 1: new tests

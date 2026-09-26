@@ -17,8 +17,8 @@ CLICK = {"type": "clicks", "points": [[30, 30, 1]]}
 
 
 class SlowEngine(FakeEngine):
-    def propagate(self, frames, seed_mask, cancel_cb=None):
-        for item in super().propagate(frames, seed_mask, cancel_cb):
+    def propagate(self, frames, seeds, cancel_cb=None):
+        for item in super().propagate(frames, seeds, cancel_cb):
             time.sleep(0.03)
             yield item
 

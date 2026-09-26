@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 
 import numpy as np
 
@@ -17,6 +17,7 @@ class FakeEngine:
         n_text_candidates: int = 2,
         oom_if_more_than: int | None = None,
         is_empty: Callable[[np.ndarray], bool] | None = None,
+        is_empty_obj: Callable[[np.ndarray, int], bool] | None = None,
         max_area_frac: float = 0.45,
         min_area_px: int = 64,
     ) -> None:
@@ -24,10 +25,12 @@ class FakeEngine:
         self.n_text_candidates = n_text_candidates
         self.oom_if_more_than = oom_if_more_than
         self.is_empty = is_empty
+        self.is_empty_obj = is_empty_obj
         self.max_area_frac = max_area_frac
         self.min_area_px = min_area_px
         self.prepare_calls: list[int] = []
         self.propagate_calls: list[int] = []
+        self.seed_calls: list[list[int]] = []
 
     def _is_degenerate(self, mask: np.ndarray) -> bool:
         return is_degenerate_mask(mask, max_area_frac=self.max_area_frac, min_area_px=self.min_area_px)
@@ -82,22 +85,34 @@ class FakeEngine:
     def propagate(
         self,
         frames: list[np.ndarray] | PreparedChunk,
-        seed_mask: np.ndarray,
+        seeds: Mapping[int, np.ndarray],
         cancel_cb: Callable[[], bool] | None = None,
-    ) -> Iterator[tuple[int, np.ndarray | None]]:
+    ) -> Iterator[tuple[int, dict[int, np.ndarray | None]]]:
         self.propagate_calls.append(len(frames))
+        self.seed_calls.append(sorted(seeds))
         if self.oom_if_more_than is not None and len(frames) > self.oom_if_more_than:
             raise ChunkOOMError(f"fake OOM: {len(frames)} frames > {self.oom_if_more_than}")
+        if not seeds:
+            raise ValueError("at least one seed is required")
+        h, w = frames[0].shape[:2]
+        for oid, seed in seeds.items():
+            if seed.shape != (h, w):
+                raise ValueError(f"seed {oid} shape {seed.shape} does not match frames {(h, w)}")
+            if not seed.any():
+                raise ValueError(f"seed {oid} must be non-empty")
         for offset, frame in enumerate(frames):
             if cancel_cb is not None and cancel_cb():
                 return
-            if self.is_empty is not None and self.is_empty(frame):
-                yield offset, None
-                continue
-            shifted = np.zeros_like(seed_mask)
-            s = offset * self.dx
-            if s == 0:
-                shifted = seed_mask.copy()
-            elif s < seed_mask.shape[1]:
-                shifted[:, s:] = seed_mask[:, :-s]
-            yield offset, (None if self._is_degenerate(shifted) else shifted)
+            out: dict[int, np.ndarray | None] = {}
+            for oid, seed in seeds.items():
+                if (self.is_empty is not None and self.is_empty(frame)) or (
+                    self.is_empty_obj is not None and self.is_empty_obj(frame, oid)
+                ):
+                    out[oid] = None
+                    continue
+                s = offset * self.dx
+                shifted = seed.copy() if s == 0 else np.zeros_like(seed)
+                if 0 < s < seed.shape[1]:
+                    shifted[:, s:] = seed[:, :-s]
+                out[oid] = None if self._is_degenerate(shifted) else shifted
+            yield offset, out

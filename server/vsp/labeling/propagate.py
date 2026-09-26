@@ -113,8 +113,9 @@ def _run_direction(
         oom_error: ChunkOOMError | None = None
         direction_lost_frame: int | None = None
         try:
-            with closing(engine.propagate(frames, anchor_mask, cancel_cb=cancel)) as masks:
-                for offset, mask in masks:
+            with closing(engine.propagate(frames, {object_id: anchor_mask}, cancel_cb=cancel)) as masks:
+                for offset, out in masks:
+                    mask = out[object_id]
                     if offset == 0:
                         continue  # the anchor's own output is discarded
                     expected = len(done_in_chunk) + 1
