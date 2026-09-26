@@ -215,11 +215,6 @@ def _run_direction(
                     done = base + max(t.pos for t in tracks)
                     emit({
                         "type": "frame", "frame": idx, "objects": report,
-                        # legacy shim: removed in plan B -- covers only `report`, i.e. the objects of *this*
-                        # engine call (`members`) that emitted the event; an object in a lagging group not yet
-                        # at `idx`, or one already bounded/lost, is left out of both `report` and this OR.
-                        # Fine for the single-object legacy web app, which only ever has one object to ask about.
-                        "has_mask": any(r["has_mask"] for r in report),
                         "done": done, "total": total,
                     })
                     if not any(t.active for t in members):

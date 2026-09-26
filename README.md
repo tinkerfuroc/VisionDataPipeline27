@@ -72,22 +72,20 @@ implemented yet. Peak disk use during an import is the upload plus the JPEG fram
 ### Several objects per clip (server API)
 
 A clip can hold more than one labelled object (`clip.objects`, each with its own `id`, `class_id`, keyframes and
-`propagated_ranges`; ids are never reused). This is server-side only so far: the web Label page still shows and
-edits just `clip.objects[0]` (`web/src/pages/Label.tsx`), so until it is updated (plan B) every request it makes
-omits `object_id` entirely and gets the legacy behaviour described below.
+`propagated_ranges`; ids are never reused). The web Label page edits them one active object at a time (see "Label
+page: several objects" below).
 
-`/prompt`, `/accept` and `/mask` treat an `object_id` key that is *absent* from the JSON body differently from one
-sent as `null`: leaving it out targets the clip's first object (`/accept` and `/mask` create one, given
-`class_id`, when the clip has none yet); sending `"object_id": null` opts into the per-object behaviour instead,
-where `null` means "create a new object" (`class_id` required) rather than falling back to the first one.
+`/prompt`, `/accept` and `/mask` require an `object_id` key (a body without it is a 422): `null` means a new object
+(`/accept` and `/mask` then need `class_id`; `/prompt` derives no click box from an existing mask), an id targets
+that object.
 
-- `POST /api/clips/{id}/prompt` and `POST /api/clips/{id}/accept` take an optional `object_id`. `/accept` also
+- `POST /api/clips/{id}/prompt` and `POST /api/clips/{id}/accept` take the required `object_id`. `/accept` also
   takes `candidates` (a list of candidate indices from a text prompt that found several detections) as an
   alternative to the single `candidate` index; `candidates` requires `object_id` to be `null`, since each accepted
   candidate becomes its own new object (with `class_id`), and their ids come back in `object_ids`. An existing
   `object_id` cannot be combined with `class_id` (relabel with the `PATCH` route below instead).
-- `POST /api/clips/{id}/mask` (the brush) takes the same optional `object_id`/`class_id` and returns the object id
-  it wrote to as `object_id`.
+- `POST /api/clips/{id}/mask` (the brush) takes the same required `object_id` and optional `class_id` and returns
+  the object id it wrote to as `object_id`.
 - `POST /api/clips/{id}/propagate` and `POST /api/clips/{id}/clear-range` take an `objects` field: `"all"`
   (default) or a non-empty list of object ids. Propagate resolves and validates the objects up front, so an
   unknown id is a 404 and a listed object with no mask on `from_frame` is a 400, both before the job starts, not
@@ -96,12 +94,12 @@ where `null` means "create a new object" (`class_id` required) rather than falli
   `lost_by_direction` (per direction, object id → the frame it was first empty on), `lost` (merged over both
   directions, object id → frame), `skipped` (object ids the job itself left out when it re-read the clip —
   deleted, or with no seed mask on `from_frame`) and `objects` (the ids that actually ran). Each `"frame"`
-  progress event's `objects` list carries `{"id", "has_mask"}` per object that covered that frame.
+  progress event's `objects` list carries `{"id", "has_mask"}` per object that covered that frame. There is no
+  clip-level `has_mask`: a frame's overall state follows from the objects' lanes.
 - `PATCH /api/clips/{id}/objects/{object_id}` (body `{"class_id": ...}`) relabels an object;
   `DELETE /api/clips/{id}/objects/{object_id}` removes it and its mask files (409 while any export or GPU job
   is running, server-wide, as for deleting a clip).
 - `GET /api/clips/{id}/objects/{object_id}/masks/{idx}` serves one object's mask PNG (404 for an unknown object).
-  The legacy `GET /api/clips/{id}/masks/{idx}` still serves the first object's mask (404 if the clip has none).
 - Clip detail responses (`GET /api/clips/{id}` and every route that returns one) add `object_states`: a map from
   each object's id (as a string key) to its own per-frame state list (`empty`/`masked`/`keyframe`/`deleted`),
   alongside the `states` field, which keeps reporting the whole clip (any object).

@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 
 from ..jobs import Job, JobBusy
 from ..labeling import frames as frame_ops
-from ..labeling.objects import check_class, delete_object, find_object, relabel_object
+from ..labeling.objects import delete_object, find_object, relabel_object
 from ..labeling.paint import decode_mask_png, set_mask
 from ..labeling.prompts import PromptSpec, accept, preview
 from ..labeling.propagate import plan_indices, resolve_participants, run_propagation
@@ -26,7 +26,8 @@ ObjectSelection = Literal["all"] | Annotated[list[int], Field(min_length=1)]
 class PromptBody(BaseModel):
     frame: int = Field(ge=0)
     prompt: PromptSpec
-    object_id: int | None = None
+    # required, null allowed: null = a new object (no click box derived from an existing mask); an id = that object
+    object_id: int | None
 
 
 class AcceptBody(PromptBody):
@@ -38,7 +39,7 @@ class AcceptBody(PromptBody):
 class MaskBody(BaseModel):
     frame: int = Field(ge=0)
     mask_png_b64: str
-    object_id: int | None = None
+    object_id: int | None  # required, null allowed: null = a new object, which needs class_id
     class_id: int | None = None
 
 
@@ -67,14 +68,9 @@ def prompt_preview(clip_id: str, body: PromptBody, state: State) -> dict:
     clip = state.store.read_clip(clip_id)
     engine = require_engine(state)
     with gpu_lease(state):
-        if "object_id" in body.model_fields_set:
-            object_id = body.object_id
-        else:
-            # legacy shim: removed in plan B -- click box derived from the clip's first object, as today
-            object_id = clip.objects[0].id if clip.objects else None
-        if object_id is not None:
-            find_object(clip, object_id)  # 404 for an unknown object, before running any inference
-        detections = preview(state.store, engine, clip, body.frame, body.prompt, object_id=object_id)
+        if body.object_id is not None:
+            find_object(clip, body.object_id)  # 404 for an unknown object, before running any inference
+        detections = preview(state.store, engine, clip, body.frame, body.prompt, object_id=body.object_id)
     return {"candidates": [candidate_view(d) for d in detections]}
 
 
@@ -82,31 +78,6 @@ def prompt_preview(clip_id: str, body: PromptBody, state: State) -> dict:
 def prompt_accept(clip_id: str, body: AcceptBody, state: State) -> dict:
     state.store.read_clip(clip_id)  # 404 before requiring the engine, same order as every other route here
     engine = require_engine(state)
-    if "object_id" not in body.model_fields_set:
-        with gpu_lease(state):
-            # legacy shim: removed in plan B -- write to the clip's first object, or create one when there is
-            # none. The clip lock -- re-entrant, so accept() below may take it again -- covers the re-read, the
-            # object_id choice and the write as one atomic step: two concurrent legacy first-accepts must not
-            # each create their own object.
-            with state.store.lock(clip_id):
-                clip = state.store.read_clip(clip_id)
-                object_id = clip.objects[0].id if clip.objects else None
-                if object_id is not None and body.class_id is not None:
-                    # legacy shim: removed in plan B -- validate the relabel class before the write, so an
-                    # unknown class is a 400 and changes nothing (relabelling itself happens after, below)
-                    check_class(state.store, clip, body.class_id)
-                clip, ids = accept(
-                    state.store, engine, clip_id, body.frame, body.prompt,
-                    object_id=object_id,
-                    class_id=body.class_id if object_id is None else None,
-                    candidate=body.candidate,
-                    candidates=body.candidates,
-                )
-            # legacy shim: removed in plan B -- a class_id for an existing object relabels it, only once the
-            # accept above has succeeded, so a failed accept changes nothing
-            if object_id is not None and body.class_id is not None:
-                clip = relabel_object(state.store, clip_id, object_id, body.class_id)
-            return {**clip_detail(state, clip), "object_ids": ids}
     with gpu_lease(state):
         clip, ids = accept(
             state.store, engine, clip_id, body.frame, body.prompt,
@@ -117,30 +88,9 @@ def prompt_accept(clip_id: str, body: AcceptBody, state: State) -> dict:
 
 @router.post("/mask")
 def paint_mask(clip_id: str, body: MaskBody, state: State) -> dict:
-    """A hand-painted mask for one frame (brush spec). The frame becomes a `paint` keyframe."""
+    """A hand-painted mask for one frame of one object (brush spec). The frame becomes a `paint` keyframe."""
     state.store.read_clip(clip_id)
     mask = decode_mask_png(body.mask_png_b64)
-    if "object_id" not in body.model_fields_set:
-        with gpu_lease(state):  # a propagation writes the very masks this replaces
-            # legacy shim: removed in plan B -- write to the clip's first object, or create one when there is
-            # none, atomically with the object_id choice (see /accept above for why)
-            with state.store.lock(clip_id):
-                clip = state.store.read_clip(clip_id)
-                object_id = clip.objects[0].id if clip.objects else None
-                if object_id is not None and body.class_id is not None:
-                    # legacy shim: removed in plan B -- validate before the write: unknown class -> 400, nothing
-                    # written
-                    check_class(state.store, clip, body.class_id)
-                clip, new_id = set_mask(
-                    state.store, clip_id, body.frame, mask,
-                    object_id=object_id,
-                    class_id=body.class_id if object_id is None else None,
-                )
-            # legacy shim: removed in plan B -- a class_id for an existing object relabels it, only once the
-            # paint above has succeeded, so a failed save changes nothing
-            if object_id is not None and body.class_id is not None:
-                clip = relabel_object(state.store, clip_id, object_id, body.class_id)
-            return {**clip_detail(state, clip), "object_id": new_id}
     with gpu_lease(state):  # a propagation writes the very masks this replaces
         clip, object_id = set_mask(
             state.store, clip_id, body.frame, mask, object_id=body.object_id, class_id=body.class_id,

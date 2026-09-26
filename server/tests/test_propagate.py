@@ -529,7 +529,7 @@ def test_all_objects_share_one_engine_call_per_chunk(store, make_clip):
     assert _xs(store, clip.id, 1, 9) == 20 + 18 and _xs(store, clip.id, 2, 9) == 50 + 18
     frame_events = [e for e in events if e["type"] == "frame"]
     assert frame_events[0]["objects"] == [{"id": 1, "has_mask": True}, {"id": 2, "has_mask": True}]
-    assert frame_events[0]["has_mask"] is True and frame_events[-1]["done"] == 29
+    assert "has_mask" not in frame_events[0] and frame_events[-1]["done"] == 29
     assert events[0] == {"type": "progress", "done": 0, "total": 29}
     c = store.read_clip(clip.id)
     assert [o.propagated_ranges for o in c.objects] == [[(1, 29)], [(1, 29)]]

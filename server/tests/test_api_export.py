@@ -58,7 +58,10 @@ def _project(client, classes=("part",)):
 def _clip_with_masks(client, tmp_path, project_id):
     started = client.post(f"/api/projects/{project_id}/clips/import-frames", json={"path": str(_frames_dir(tmp_path, n=6)), "fps": 10})
     clip_id = wait_job(client, started.json()["job_id"])["result"]["clip_id"]
-    accepted = client.post(f"/api/clips/{clip_id}/accept", json={"frame": 0, "prompt": {"type": "clicks", "points": [[30, 30, 1]]}, "class_id": 0})
+    accepted = client.post(
+        f"/api/clips/{clip_id}/accept",
+        json={"frame": 0, "prompt": {"type": "clicks", "points": [[30, 30, 1]]}, "object_id": None, "class_id": 0},
+    )
     assert accepted.status_code == 200, accepted.text
     job = client.post(f"/api/clips/{clip_id}/propagate", json={"from_frame": 0, "direction": "forward"}).json()["job_id"]
     assert wait_job(client, job)["status"] == "done"
@@ -122,7 +125,10 @@ def test_export_is_refused_while_a_propagation_runs(tmp_path):
         started = slow.post(f"/api/projects/{project_id}/clips/import-frames", json={"path": str(_frames_dir(tmp_path, n=40)), "fps": 10})
         clip_id = wait_job(slow, started.json()["job_id"])["result"]["clip_id"]
         click = {"type": "clicks", "points": [[30, 30, 1]]}
-        assert slow.post(f"/api/clips/{clip_id}/accept", json={"frame": 0, "prompt": click, "class_id": 0}).status_code == 200
+        assert slow.post(
+            f"/api/clips/{clip_id}/accept",
+            json={"frame": 0, "prompt": click, "object_id": None, "class_id": 0},
+        ).status_code == 200
         job_id = slow.post(f"/api/clips/{clip_id}/propagate", json={"from_frame": 0, "direction": "forward"}).json()["job_id"]
         busy = slow.post(f"/api/projects/{project_id}/export", json={"clips": [clip_id], "formats": ["coco"]})
         assert busy.status_code == 409 and busy.json()["job_id"] == job_id
