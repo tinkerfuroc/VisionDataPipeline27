@@ -5,7 +5,7 @@ import type { ClipSummary, ExportFormat, ExportRequest, ExportResult, Project } 
 import { AppHeader } from "../components/AppHeader";
 import { useJob } from "../hooks/useJob";
 import { slug } from "../lib/exportName";
-import { defaultValClips, exportProblem, splitModeFor } from "../lib/exportSelection";
+import { classObjectCounts, defaultValClips, exportProblem, splitModeFor } from "../lib/exportSelection";
 import { isTerminal } from "../lib/jobReducer";
 import { percentLabeled } from "../lib/timeline";
 
@@ -39,6 +39,8 @@ export function Export() {
   const [valSharePercent, setValSharePercent] = useState(20);
   const [stride, setStride] = useState(1);
   const [includeEmpty, setIncludeEmpty] = useState(true);
+  // excluded rather than ticked, so every class — including one added later — starts ticked
+  const [excludedClasses, setExcludedClasses] = useState<Set<number>>(new Set());
   const [name, setName] = useState("");
 
   const [jobId, setJobId] = useState<string | null>(null);
@@ -64,6 +66,7 @@ export function Export() {
     setClips(list);
     setIncludedIds(new Set(list.map((c) => c.id)));
     setTouched(false);
+    setExcludedClasses(new Set());
   }, []);
 
   useEffect(() => {
@@ -103,9 +106,13 @@ export function Export() {
   );
   const mode = splitModeFor(orderedIncluded.length);
   const orderedFormats = useMemo(() => FORMATS.filter((f) => formatIds.has(f.id)).map((f) => f.id), [formatIds]);
+  const classes = useMemo(() => [...(project?.classes ?? [])].sort((a, b) => a.id - b.id), [project]);
+  const objectCounts = useMemo(() => classObjectCounts(clips, orderedIncluded), [clips, orderedIncluded]);
+  const chosenClasses = classes.filter((c) => !excludedClasses.has(c.id)).map((c) => c.id);
 
   const problem = exportProblem({
-    selected: orderedIncluded, formats: orderedFormats, valClips: orderedVal, valFraction: valSharePercent / 100, stride,
+    selected: orderedIncluded, formats: orderedFormats, classes: chosenClasses, classCount: classes.length,
+    valClips: orderedVal, valFraction: valSharePercent / 100, stride,
   });
 
   const job = useJob(jobId);
@@ -135,6 +142,14 @@ export function Export() {
       return next;
     });
   };
+  const toggleClass = (id: number) => {
+    setExcludedClasses((s) => {
+      const next = new Set(s);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
 
   const startExport = () => {
     if (startingRef.current || running || problem !== null) return;
@@ -143,6 +158,7 @@ export function Export() {
     setStartError(null);
     const options: ExportRequest["options"] = {
       split_mode: mode, val_fraction: valSharePercent / 100, stride, include_empty: includeEmpty,
+      classes: chosenClasses.length === classes.length ? null : chosenClasses,
       ...(mode === "per_clip" ? { val_clips: orderedVal } : {}),
     };
     api.startExport(projectId, {
@@ -245,6 +261,33 @@ export function Export() {
                 <span className="note">{f.dir}</span>
               </label>
             ))}
+          </section>
+
+          <section className="flex flex-col gap-2">
+            <h2 className="heading">Classes</h2>
+            {classes.length === 0 && <p className="note">This project has no classes yet.</p>}
+            {classes.map((c) => {
+              const n = objectCounts.get(c.id) ?? 0;
+              return (
+                <label key={c.id} className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    aria-label={`Class ${c.name}`}
+                    checked={!excludedClasses.has(c.id)}
+                    onChange={() => toggleClass(c.id)}
+                  />
+                  <span aria-hidden className="inline-block h-3 w-3 shrink-0 rounded-sm" style={{ backgroundColor: c.color }} />
+                  <span className="min-w-0 flex-1 truncate">{c.name}</span>
+                  <span className="font-cond text-dim">
+                    {n} object{n === 1 ? "" : "s"}
+                  </span>
+                </label>
+              );
+            })}
+            <p className="note">
+              Objects of unticked classes are left out; a frame left without objects follows "Include frames without a
+              mask". The exported classes are numbered 0, 1, … in this order.
+            </p>
           </section>
 
           <section className="flex flex-col gap-2">

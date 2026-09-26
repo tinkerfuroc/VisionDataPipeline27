@@ -132,7 +132,7 @@ describe("api", () => {
     const body: ExportRequest = {
       clips: ["a", "b"],
       formats: ["coco", "masks"],
-      options: { split_mode: "per_clip", val_clips: ["b"], val_fraction: 0.2, stride: 1, include_empty: true },
+      options: { split_mode: "per_clip", val_clips: ["b"], val_fraction: 0.2, stride: 1, include_empty: true, classes: [0, 2] },
     };
     expect(await api.startExport("p1", body)).toEqual({ job_id: "j3" });
     const [url, init] = fetchMock.mock.calls[0];

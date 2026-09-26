@@ -61,7 +61,65 @@ afterEach(() => {
 
 const formatNames = ["YOLO segmentation", "YOLO detection", "COCO", "Mask images"];
 
+const threeClasses: Project = {
+  ...project,
+  classes: [
+    { id: 0, name: "connector", color: "#e6194b" },
+    { id: 1, name: "cup", color: "#3cb44b" },
+    { id: 2, name: "bowl", color: "#ffe119" },
+  ],
+};
+const obj = (id: number, class_id: number) => ({ id, class_id, keyframes: [], propagated_ranges: [] });
+const classClips = [
+  { ...clipA, objects: [obj(1, 1), obj(2, 1), obj(3, 0)] },
+  { ...clipB, objects: [obj(1, 2)] },
+  clipC,
+];
+const classRow = (name: string) => screen.getByRole("checkbox", { name: `Class ${name}` }).closest("label")!;
+
 describe("Export page", () => {
+  it("lists every class ticked, with its object count over the included clips, and sends null for all", async () => {
+    m.listProjects.mockResolvedValue([threeClasses]);
+    m.listClips.mockResolvedValue(classClips);
+    m.startExport.mockResolvedValue({ job_id: "j1" });
+    renderPage();
+    await screen.findByText("a.mp4");
+    for (const name of ["connector", "cup", "bowl"]) {
+      expect((screen.getByRole("checkbox", { name: `Class ${name}` }) as HTMLInputElement).checked).toBe(true);
+    }
+    expect(classRow("connector").textContent).toContain("1 object");
+    expect(classRow("cup").textContent).toContain("2 objects");
+    expect(classRow("bowl").textContent).toContain("1 object");
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Include b.mp4" }));
+    expect(classRow("bowl").textContent).toContain("0 objects");
+
+    fireEvent.click(screen.getByRole("button", { name: "Export 2 clips" }));
+    await waitFor(() => expect(m.startExport).toHaveBeenCalled());
+    expect(m.startExport.mock.calls[0][1].options.classes).toBeNull();
+  });
+
+  it("sends only the ticked classes, in class order", async () => {
+    m.listProjects.mockResolvedValue([threeClasses]);
+    m.listClips.mockResolvedValue(classClips);
+    m.startExport.mockResolvedValue({ job_id: "j1" });
+    renderPage();
+    await screen.findByText("a.mp4");
+    fireEvent.click(screen.getByRole("checkbox", { name: "Class connector" }));
+    fireEvent.click(screen.getByRole("button", { name: "Export 3 clips" }));
+    await waitFor(() => expect(m.startExport).toHaveBeenCalled());
+    expect(m.startExport.mock.calls[0][1].options.classes).toEqual([1, 2]);
+  });
+
+  it("says why it cannot start when no class is ticked", async () => {
+    m.listProjects.mockResolvedValue([threeClasses]);
+    m.listClips.mockResolvedValue(classClips);
+    renderPage();
+    await screen.findByText("a.mp4");
+    for (const name of ["connector", "cup", "bowl"]) fireEvent.click(screen.getByRole("checkbox", { name: `Class ${name}` }));
+    expect(screen.getByText("Choose at least one class.")).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Export 3 clips" }) as HTMLButtonElement).disabled).toBe(true);
+  });
   it("selects every clip, pre-selects the newest for validation, and starts the export with exactly what is shown", async () => {
     m.startExport.mockResolvedValue({ job_id: "j1" });
     renderPage();
@@ -86,7 +144,7 @@ describe("Export page", () => {
       expect(m.startExport).toHaveBeenCalledWith("p1", {
         clips: ["a", "b", "c"],
         formats: ["yolo_seg", "yolo_det", "coco", "masks"],
-        options: { split_mode: "per_clip", val_clips: ["b"], val_fraction: 0.2, stride: 1, include_empty: true },
+        options: { split_mode: "per_clip", val_clips: ["b"], val_fraction: 0.2, stride: 1, include_empty: true, classes: null },
         name: null,
       }),
     );

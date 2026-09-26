@@ -67,7 +67,11 @@ export type SplitMode = "per_clip" | "contiguous";
 export type ExportRequest = {
   clips: string[];
   formats: ExportFormat[];
-  options: { split_mode: SplitMode; val_clips?: string[]; val_fraction: number; stride: number; include_empty: boolean };
+  options: {
+    split_mode: SplitMode; val_clips?: string[]; val_fraction: number; stride: number; include_empty: boolean;
+    /** Project class ids to export; null = every class. */
+    classes: number[] | null;
+  };
   name?: string | null;
 };
 export type SplitCounts = { images: number; annotated: number; empty: number };
