@@ -57,10 +57,38 @@ export const PREVIEW_ALPHA = 0.55;
 
 /** Small on purpose: a decoded 1080p frame or layer is about 8 MB. */
 const MAX_IMAGES = 64;
+/** One composite per frame, however many objects it has. */
 const MAX_LAYERS = 48;
 /** Preview keys are whole base64 data URLs (one per candidate, per prompt); kept tiny and separate so a run
  * of text-prompt previews can never evict prefetched playback mask layers. */
 const MAX_PREVIEWS = 12;
+
+/** One object's stored mask on one frame, as drawn: filled in `rgb`, plus the configurable outline for the active
+ * object only (`null` = fill only). */
+export type MaskPart = { url: string; rgb: Rgb; outline: Outline | null };
+
+/** Everything a composite layer depends on: each part's URL (object id, frame, mask version) in draw order, its class
+ * colour and its outline, and the fill alpha. Equal keys mean an identical layer. */
+export function compositeKey(parts: readonly MaskPart[], alpha: number): string {
+  const one = (p: MaskPart) =>
+    `${p.url}|${p.rgb.join(",")}|${p.outline === null ? "-" : `${p.outline.rgb.join(",")}/${p.outline.edge}`}`;
+  return `${alpha};${parts.map(one).join(";")}`;
+}
+
+/** Draw tinted layers into one canvas, in order (later on top); a single layer is returned as is. The inputs are
+ * released: only the composite is cached. */
+export function composeLayers(layers: HTMLCanvasElement[]): HTMLCanvasElement {
+  if (layers.length === 1) return layers[0];
+  const out = document.createElement("canvas");
+  out.width = layers[0].width;
+  out.height = layers[0].height;
+  const ctx = out.getContext("2d")!;
+  for (const layer of layers) {
+    ctx.drawImage(layer, 0, 0, out.width, out.height);
+    layer.width = 0;
+  }
+  return out;
+}
 
 export class FrameStore {
   private readonly images = new LruCache<Promise<HTMLImageElement | null>>(MAX_IMAGES);
@@ -70,6 +98,7 @@ export class FrameStore {
   constructor(
     private readonly load: (url: string) => Promise<HTMLImageElement | null> = loadImage,
     private readonly tint: (img: HTMLImageElement, rgb: Rgb, alpha: number, outline: Outline) => HTMLCanvasElement = tintToCanvas,
+    private readonly compose: (layers: HTMLCanvasElement[]) => HTMLCanvasElement = composeLayers,
   ) {}
 
   image(url: string): Promise<HTMLImageElement | null> {
@@ -84,33 +113,43 @@ export class FrameStore {
     return pending;
   }
 
-  layer(url: string, rgb: Rgb, alpha: number, outline: Outline): Promise<HTMLCanvasElement | null> {
-    return this.layerFrom(this.layers, url, rgb, alpha, outline);
-  }
-
-  /** Like `layer()`, but cached separately so text-prompt candidate previews cannot evict stored mask layers. */
-  preview(dataUrl: string, rgb: Rgb, alpha: number, outline: Outline): Promise<HTMLCanvasElement | null> {
-    return this.layerFrom(this.previews, dataUrl, rgb, alpha, outline);
-  }
-
-  private layerFrom(
-    cache: LruCache<Promise<HTMLCanvasElement | null>>,
-    url: string,
-    rgb: Rgb,
-    alpha: number,
-    outline: Outline,
-  ): Promise<HTMLCanvasElement | null> {
-    const key = `${url}|${rgb.join(",")}|${alpha}|${outline.rgb.join(",")}|${outline.edge}`;
-    let pending = cache.get(key);
+  /**
+   * A frame's visible objects, tinted and drawn in order into ONE cached layer, so the 48-entry cache holds 48 frames
+   * whatever the object count. A mask that fails to load is left out and the partial layer is not cached (the next
+   * request fetches again); with no parts, or nothing loaded, the result is null.
+   */
+  composite(parts: readonly MaskPart[], alpha: number = MASK_ALPHA): Promise<HTMLCanvasElement | null> {
+    if (parts.length === 0) return Promise.resolve(null);
+    const key = compositeKey(parts, alpha);
+    let pending = this.layers.get(key);
     if (pending === undefined) {
-      pending = this.load(url).then((img) => {
+      pending = Promise.all(parts.map((p) => this.load(p.url))).then((imgs) => {
+        const tinted: HTMLCanvasElement[] = [];
+        imgs.forEach((img, i) => {
+          const p = parts[i];
+          if (img !== null) tinted.push(this.tint(img, p.rgb, alpha, p.outline ?? { rgb: p.rgb, edge: 0 }));
+        });
+        if (tinted.length < parts.length) this.layers.delete(key);
+        return tinted.length === 0 ? null : this.compose(tinted);
+      });
+      this.layers.set(key, pending);
+    }
+    return pending;
+  }
+
+  /** A text-prompt candidate, cached separately so previews cannot evict stored mask layers. */
+  preview(dataUrl: string, rgb: Rgb, alpha: number, outline: Outline): Promise<HTMLCanvasElement | null> {
+    const key = `${dataUrl}|${rgb.join(",")}|${alpha}|${outline.rgb.join(",")}|${outline.edge}`;
+    let pending = this.previews.get(key);
+    if (pending === undefined) {
+      pending = this.load(dataUrl).then((img) => {
         if (img === null) {
-          cache.delete(key);
+          this.previews.delete(key);
           return null;
         }
         return this.tint(img, rgb, alpha, outline);
       });
-      cache.set(key, pending);
+      this.previews.set(key, pending);
     }
     return pending;
   }

@@ -143,7 +143,6 @@ const patch = (body: unknown): RequestInit => ({
 
 export const frameUrl = (clipId: string, idx: number) => `/api/clips/${clipId}/frames/${idx}`;
 export const thumbUrl = (clipId: string, idx: number) => `/api/clips/${clipId}/thumbs/${idx}`;
-export const maskUrl = (clipId: string, idx: number, version: string) => `/api/clips/${clipId}/masks/${idx}?v=${version}`;
 /** One object's stored mask on one frame; `version` busts the cache when the mask is rewritten in place. */
 export const objectMaskUrl = (clipId: string, objectId: number, idx: number, version: string) =>
   `/api/clips/${clipId}/objects/${objectId}/masks/${idx}?v=${version}`;

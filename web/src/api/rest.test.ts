@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError, UploadCancelled, api, detailText, maskUrl, objectMaskUrl, request, retryInteractive } from "./rest";
+import { ApiError, UploadCancelled, api, detailText, objectMaskUrl, request, retryInteractive } from "./rest";
 import type { ExportRequest } from "./types";
 
 function mockFetch(...responses: Response[]) {
@@ -147,10 +147,6 @@ describe("api", () => {
     const fetchMock = mockFetch(jsonResponse({}));
     await api.prune("c1", 12);
     expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ from: 12 });
-  });
-
-  it("versions mask URLs", () => {
-    expect(maskUrl("c1", 4, "2.1")).toBe("/api/clips/c1/masks/4?v=2.1");
   });
 
   it("posts an export request with the server's field names", async () => {

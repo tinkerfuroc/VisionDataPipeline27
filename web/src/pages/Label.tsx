@@ -1,6 +1,6 @@
 import { useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { ApiError, INTERACTIVE, api, frameUrl, maskUrl, retryInteractive, thumbUrl } from "../api/rest";
+import { ApiError, INTERACTIVE, api, frameUrl, objectMaskUrl, retryInteractive, thumbUrl } from "../api/rest";
 import type { ClipDetail, Direction, JobEvent } from "../api/types";
 import { AppHeader } from "../components/AppHeader";
 import { BrushPanel } from "../components/BrushPanel";
@@ -21,15 +21,17 @@ import { useJob } from "../hooks/useJob";
 import { useKeyboard, type KeyAction } from "../hooks/useKeyboard";
 import { usePlayback } from "../hooks/usePlayback";
 import { usePrompting } from "../hooks/usePrompting";
-import { FrameStore, MASK_ALPHA } from "../lib/frameCache";
+import { FrameStore } from "../lib/frameCache";
 import { isTerminal } from "../lib/jobReducer";
 import { hexToRgb } from "../lib/mask";
-import { parseFrameEvent, type FrameEvent } from "../lib/objects";
+import { maskParts, parseFrameEvent, type FrameEvent } from "../lib/objects";
 import { loadStyle, outlineFor, saveStyle, type OverlayStyle } from "../lib/overlayStyle";
 import { clampFrame, findNext } from "../lib/timeline";
 
 const jobKey = (clipId: string) => `vsp.job.${clipId}`;
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
+/** Interim, until Task 3 gives the page an Objects panel: no object is hidden. */
+const NO_HIDDEN: ReadonlySet<number> = new Set();
 
 export function Label() {
   const { clipId = "" } = useParams();
@@ -55,6 +57,7 @@ export function Label() {
   usePlayback({ playing, fps, frame, frameCount, setFrame, setPlaying });
 
   const object = detail?.clip.objects[0] ?? null;
+  const activeId = object?.id ?? null; // interim: Task 3 makes this the Objects panel's active object
   useEffect(() => {
     if (classId === null && detail !== null) setClassId(object?.class_id ?? detail.classes[0]?.id ?? null);
   }, [classId, detail, object]);
@@ -208,11 +211,13 @@ export function Label() {
         : null;
   const brush = useBrush({
     clipId, frame, width: detail?.clip.width ?? 1, height: detail?.clip.height ?? 1, rgb, store,
-    maskUrl: hasMask(frame) ? maskUrl(clipId, frame, maskVersion(frame)) : null,
+    maskUrl: activeId !== null && hasMask(frame) ? objectMaskUrl(clipId, activeId, frame, maskVersion(frame)) : null,
     active: mode === "brush" && brushReason === null && detail !== null,
     classId, needsClass: object === null, apply,
   });
   const lockReason = brush.dirty ? `Save or discard the brush strokes on frame ${frame} first.` : null;
+  // while the active object is being edited, its preview or brush layer is drawn in its place
+  const editing = (mode === "brush" && brushReason === null) || prompting.candidates.length > 0;
 
   // `busyJobId` outlives the 409 that produced it (only a later preview clears it), so each id is handled once;
   // otherwise the page would re-attach to that long-finished job every time a job of its own ends.
@@ -310,10 +315,14 @@ export function Label() {
     const ahead = playing ? 30 : 4;
     for (let i = frame + 1; i <= Math.min(frame + ahead, frameCount - 1); i++) {
       void store.image(frameUrl(clipId, i));
-      if (overlay && hasMask(i)) void store.layer(maskUrl(clipId, i, maskVersion(i)), rgb, MASK_ALPHA, outline);
+      if (!overlay) continue;
+      // the parts FrameCanvas will ask for on that frame, so playback hits the composite cache
+      const parts = maskParts(detail, {
+        clipId, frame: i, version: maskVersion(i), hidden: NO_HIDDEN, activeId, excludeActive: editing, style: overlayStyle,
+      });
+      if (parts.length > 0) void store.composite(parts);
     }
-    // hasMask is derived from detail
-  }, [store, clipId, frame, playing, overlay, detail, rgb, outline, frameCount, maskVersion, running]);
+  }, [store, clipId, frame, playing, overlay, detail, overlayStyle, activeId, editing, frameCount, maskVersion, running]);
 
   const addClass = useCallback(
     async (name: string) => {
@@ -385,7 +394,14 @@ export function Label() {
             width={width}
             height={height}
             frameUrl={frameUrl(clipId, frame)}
-            maskUrl={overlay && hasMask(frame) ? maskUrl(clipId, frame, maskVersion(frame)) : null}
+            masks={
+              overlay
+                ? maskParts(detail, {
+                    clipId, frame, version: maskVersion(frame), hidden: NO_HIDDEN, activeId, excludeActive: editing,
+                    style: overlayStyle,
+                  })
+                : []
+            }
             color={color}
             outline={outline}
             tool={mode === "prompt" && disabledReason === null ? draft.tool : null}

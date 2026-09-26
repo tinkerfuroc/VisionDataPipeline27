@@ -1,4 +1,8 @@
-import type { ClipDetail, FrameState, JobEvent } from "../api/types";
+import { objectMaskUrl } from "../api/rest";
+import type { ClipDetail, FrameState, JobEvent, LabelObject } from "../api/types";
+import type { MaskPart } from "./frameCache";
+import { hexToRgb } from "./mask";
+import { outlineFor, type OverlayStyle } from "./overlayStyle";
 import { applyFrameEvent } from "./timeline";
 
 /** One object's outcome on one frame of a propagation: the server's `{id, has_mask}`. */
@@ -86,4 +90,55 @@ export function patchObjectFrames(detail: ClipDetail, events: readonly FrameEven
     states[f] = s;
   }
   return { ...detail, object_states: lanes, states };
+}
+
+/** Colour of an object whose class is unknown (and of the page before a clip loads). */
+export const FALLBACK_COLOR = "#22c55e";
+
+export function sortedObjects(detail: ClipDetail): LabelObject[] {
+  return [...detail.clip.objects].sort((a, b) => a.id - b.id);
+}
+
+export function className(detail: ClipDetail, classId: number | null): string | null {
+  return detail.classes.find((c) => c.id === classId)?.name ?? null;
+}
+
+export function classColor(detail: ClipDetail, classId: number | null): string {
+  return detail.classes.find((c) => c.id === classId)?.color ?? FALLBACK_COLOR;
+}
+
+/** "#2 cup": how every panel, lane and message names an object. */
+export function objectLabel(detail: ClipDetail, obj: LabelObject): string {
+  return `#${obj.id} ${className(detail, obj.class_id) ?? `class ${obj.class_id}`}`;
+}
+
+/**
+ * The stored masks to draw on one frame (spec §8): every visible object with a mask there, in its class colour; the
+ * inactive ones in id order, fill only, and the active one last with the Mask outline. `excludeActive` leaves the
+ * active object out while its candidate preview or brush layer is drawn in its place.
+ */
+export function maskParts(
+  detail: ClipDetail,
+  o: {
+    clipId: string; frame: number; version: string; hidden: ReadonlySet<number>; activeId: number | null;
+    excludeActive: boolean; style: OverlayStyle;
+  },
+): MaskPart[] {
+  const parts: MaskPart[] = [];
+  let active: MaskPart | null = null;
+  for (const obj of sortedObjects(detail)) {
+    if (o.hidden.has(obj.id) || !isLabeled(laneOf(detail, obj.id)[o.frame])) continue;
+    const isActive = obj.id === o.activeId;
+    if (isActive && o.excludeActive) continue;
+    const rgb = hexToRgb(classColor(detail, obj.class_id));
+    const part: MaskPart = {
+      url: objectMaskUrl(o.clipId, obj.id, o.frame, o.version),
+      rgb,
+      outline: isActive ? outlineFor(o.style, rgb) : null,
+    };
+    if (isActive) active = part;
+    else parts.push(part);
+  }
+  if (active !== null) parts.push(active);
+  return parts;
 }

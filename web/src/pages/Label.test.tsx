@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError, api } from "../api/rest";
 import type { ClipDetail, FrameState } from "../api/types";
 import { HealthContext, type HealthState } from "../hooks/useHealth";
+import { FrameStore } from "../lib/frameCache";
 import { stubCanvasAndObservers } from "../test/setup-dom";
 import { Label } from "./Label";
 
@@ -60,6 +61,18 @@ const detail: ClipDetail = {
 };
 /** a one-object detail with these states; its object's lane equals the clip's, as the server reports for one object */
 const oneObject = (s: FrameState[]): ClipDetail => ({ ...detail, states: s, object_states: { "1": s } });
+
+/** two objects: #1 connector (as in `detail`) and #2 cup, keyframed on 5 and masked on 6..9 */
+const cupLane: FrameState[] = Array.from({ length: 40 }, (_, i) =>
+  i === 5 ? "keyframe" : i > 5 && i < 10 ? "masked" : i === 30 ? "deleted" : "empty",
+);
+const two: ClipDetail = {
+  ...detail,
+  clip: { ...detail.clip, objects: [...detail.clip.objects, { id: 2, class_id: 1, keyframes: [], propagated_ranges: [] }] },
+  states: states.map((s, i) => (i === 5 ? "keyframe" : s)),
+  classes: [...detail.classes, { id: 1, name: "cup", color: "#3cb44b" }],
+  object_states: { "1": states, "2": cupLane },
+};
 
 const ready: HealthState = {
   health: { status: "ok", version: "0", engine: { loaded: true, device: "cuda:0", error: null } },
@@ -132,6 +145,23 @@ describe("Label page (viewer)", () => {
     renderLabel();
     expect(await screen.findByText(/clip c1 not found/)).toBeTruthy();
     expect(screen.getByRole("link", { name: /back to clips/i })).toBeTruthy();
+  });
+  it("draws every visible object's stored mask on the frame, the active object last and outlined", async () => {
+    const composite = vi.spyOn(FrameStore.prototype, "composite").mockResolvedValue(null);
+    try {
+      vi.mocked(api.getClip).mockResolvedValue(two);
+      renderLabel();
+      await screen.findByText("bench.mp4");
+      for (let i = 0; i < 6; i++) fireEvent.keyDown(window, { key: "ArrowRight" });
+      expect(screen.getByText("frame 6 / 39")).toBeTruthy();
+      const onFrame6 = composite.mock.calls.map(([parts]) => parts).filter((parts) => parts.some((p) => p.url.includes("/masks/6?")));
+      const last = onFrame6[onFrame6.length - 1];
+      expect(last.map((p) => p.url.split("?")[0])).toEqual(["/api/clips/c1/objects/2/masks/6", "/api/clips/c1/objects/1/masks/6"]);
+      expect(last[0].outline).toBeNull();
+      expect(last[1].outline).toEqual({ rgb: [230, 25, 75], edge: 5 });
+    } finally {
+      composite.mockRestore();
+    }
   });
 });
 

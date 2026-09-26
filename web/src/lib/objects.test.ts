@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { ClipDetail, FrameState, JobEvent } from "../api/types";
-import { aggregateAt, emptyLane, labeledCount, laneOf, parseFrameEvent, patchObjectFrames } from "./objects";
+import {
+  aggregateAt, classColor, className, emptyLane, FALLBACK_COLOR, labeledCount, laneOf, maskParts, objectLabel,
+  parseFrameEvent, patchObjectFrames, sortedObjects,
+} from "./objects";
 
 const LETTER: Record<string, FrameState> = { e: "empty", m: "masked", k: "keyframe", d: "deleted" };
 const S = (s: string): FrameState[] => s.split("").map((c) => LETTER[c]);
@@ -88,5 +91,54 @@ describe("patchObjectFrames", () => {
         { frame: 1, objects: [{ id: 2, hasMask: true }] },
       ]),
     ).toBe(d);
+  });
+});
+
+describe("names and colours", () => {
+  it("names objects by id and class, in id order", () => {
+    const d = detail();
+    d.clip.objects.reverse();
+    expect(sortedObjects(d).map((o) => o.id)).toEqual([1, 2]);
+    expect(objectLabel(d, d.clip.objects[0])).toBe("#2 bowl");
+    expect(objectLabel(d, { ...obj(3), class_id: 7 })).toBe("#3 class 7");
+    expect(className(d, 7)).toBeNull();
+    expect(classColor(d, 1)).toBe("#00ff00");
+    expect(classColor(d, null)).toBe(FALLBACK_COLOR);
+  });
+});
+
+describe("maskParts", () => {
+  const style = { color: null, thickness: 5 };
+  /** frame 1: both objects masked */
+  const both = () => patchObjectFrames(detail(), [{ frame: 1, objects: [{ id: 1, hasMask: true }] }]);
+  type Opts = Parameters<typeof maskParts>[1];
+  const ids = (over: Partial<Opts>) =>
+    maskParts(both(), {
+      clipId: "c1", frame: 1, version: "0.0", hidden: new Set(), activeId: 1, excludeActive: false, style, ...over,
+    }).map((p) => p.url.split("/")[5]);
+
+  it("lists the objects with a mask on the frame, the active one last and outlined, the others fill only", () => {
+    const parts = maskParts(both(), {
+      clipId: "c1", frame: 1, version: "2.3", hidden: new Set(), activeId: 1, excludeActive: false, style,
+    });
+    expect(parts).toEqual([
+      { url: "/api/clips/c1/objects/2/masks/1?v=2.3", rgb: [0, 255, 0], outline: null },
+      { url: "/api/clips/c1/objects/1/masks/1?v=2.3", rgb: [255, 0, 0], outline: { rgb: [255, 0, 0], edge: 5 } },
+    ]);
+  });
+  it("leaves out hidden objects, objects without a mask there, and the active object while it is edited", () => {
+    expect(ids({ hidden: new Set([2]) })).toEqual(["1"]);
+    expect(ids({ excludeActive: true })).toEqual(["2"]);
+    expect(ids({ frame: 2 })).toEqual([]); // neither has a mask
+    expect(ids({ frame: 0 })).toEqual(["1"]); // a keyframe counts
+    expect(ids({ frame: 3 })).toEqual([]); // deleted
+    expect(ids({ activeId: null })).toEqual(["1", "2"]); // a New object row: id order, nothing outlined
+  });
+  it("outlines the active object in the Mask outline colour when one is set", () => {
+    const [, active] = maskParts(both(), {
+      clipId: "c1", frame: 1, version: "0.0", hidden: new Set(), activeId: 1, excludeActive: false,
+      style: { color: "#0000ff", thickness: 2 },
+    });
+    expect(active.outline).toEqual({ rgb: [0, 0, 255], edge: 2 });
   });
 });
