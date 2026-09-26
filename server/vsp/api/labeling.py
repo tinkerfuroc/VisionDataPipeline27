@@ -9,10 +9,9 @@ from pydantic import BaseModel, Field
 
 from ..jobs import Job
 from ..labeling import frames as frame_ops
-from ..labeling.errors import BadRequest
 from ..labeling.paint import decode_mask_png, set_mask
 from ..labeling.prompts import PromptSpec, accept, preview
-from ..labeling.propagate import check_seed, plan_indices, run_propagation
+from ..labeling.propagate import plan_indices, resolve_participants, run_propagation
 from .deps import GPU, State, gpu_lease, require_engine
 from .views import candidate_view, clip_detail
 
@@ -82,12 +81,10 @@ def paint_mask(clip_id: str, body: MaskBody, state: State) -> dict:
 def propagate(clip_id: str, body: PropagateBody, state: State) -> dict:
     clip = state.store.read_clip(clip_id)
     engine = require_engine(state)
-    if not clip.objects:
-        raise BadRequest("nothing to propagate: accept a prompt first")
+    participants, _ = resolve_participants(state.store, clip, body.from_frame, "all", strict=True)
     directions = ["forward", "backward"] if body.direction == "both" else [body.direction]
     for d in directions:  # validate now so a bad request is a 400, not a failed job
-        plan_indices(clip, clip.objects[0], body.from_frame, d)
-    check_seed(state.store, clip, clip.objects[0], body.from_frame)
+        plan_indices(clip, participants[0][0], body.from_frame, d)
     cfg = state.settings.propagate
 
     def work(job: Job) -> dict:

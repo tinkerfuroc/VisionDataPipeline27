@@ -3,14 +3,15 @@ import threading
 import numpy as np
 import pytest
 import vsp.labeling.prefetch as prefetch_mod
-from conftest import is_white
+from conftest import OBJ, is_white
 from vsp.engine.fake import FakeEngine
 from vsp.engine.types import ChunkOOMError
 from vsp.labeling.errors import BadRequest, PropagationFailed
 from vsp.labeling.frames import restore_frame
 from vsp.labeling.paint import set_mask
-from vsp.labeling.prompts import OBJECT_ID, PromptSpec, accept
-from vsp.labeling.propagate import plan_indices, run_propagation
+from vsp.labeling.prompts import OBJECT_ID, PromptSpec, accept, create_object
+from vsp.labeling.propagate import plan_indices, resolve_participants, run_propagation
+from vsp.store import Keyframe, NotFound, Prompt, now_iso
 
 CLICK = PromptSpec(type="clicks", points=[(30, 30, 1)])  # seed rect x 20:40; FakeEngine shifts +2 px per offset
 KW = {"chunk_size": 8, "min_chunk_size": 4, "lost_after": 3}
@@ -310,7 +311,7 @@ def test_both_reports_a_lost_forward_pass(store, make_clip):
     clip = _seeded(store, make_clip, eng, n_frames=20, keyframes=(10,), white=range(13, 20))
     res = run_propagation(store, eng, clip.id, 10, "both", **KW)
     assert res.lost_at == 13
-    assert res.lost_by_direction == {"forward": 13}
+    assert res.lost_by_direction == {"forward": {OBJ: 13}}
     for i in range(10):
         assert store.read_mask(clip.id, OBJECT_ID, i) is not None
 
@@ -319,7 +320,7 @@ def test_both_when_both_directions_lose(store, make_clip):
     eng = FakeEngine(is_empty=is_white)
     clip = _seeded(store, make_clip, eng, n_frames=20, keyframes=(10,), white=(0, 1, 2, 13, 14, 15, 16, 17, 18, 19))
     res = run_propagation(store, eng, clip.id, 10, "both", **KW)
-    assert res.lost_by_direction == {"forward": 13, "backward": 2}
+    assert res.lost_by_direction == {"forward": {OBJ: 13}, "backward": {OBJ: 2}}
     assert res.lost_at == 13  # forward wins when both lose
 
 
@@ -397,6 +398,7 @@ def test_propagate_result_as_dict(store, make_clip):
     res = run_propagation(store, eng, clip.id, 0, "forward", **KW)
     assert set(res.as_dict().keys()) == {
         "processed", "written", "cleared", "lost_at", "cancelled", "oom_retries", "lost_by_direction",
+        "lost", "skipped", "objects",
     }
 
 
@@ -491,3 +493,139 @@ def test_propagation_seeds_from_a_painted_keyframe_and_stops_at_it(store, make_c
     assert _x0(store, clip.id, 10) == 60  # and is untouched
     res = run_propagation(store, eng, clip.id, 10, "forward", **KW)
     assert res.processed == 9 and _x0(store, clip.id, 11) == 62  # seeded by the painted mask, shifted once
+
+
+# ---------------------------------------------------------------- multi-object propagation
+
+
+def _two_objects(store, make_clip, eng, n_frames=30, white=(), a_kf=(0,), b_kf=(0,)):
+    """Object 1 = a rect at x 20:40, object 2 = a rect at x 50:70 (both rows 40:55), class 0. Object 2 starts at 50,
+    not further right, so the fake's +2 px per frame never pushes it below min_area_px within 30 frames."""
+    _, clip = make_clip(n_frames=n_frames, white=white)
+    clip = store.read_clip(clip.id)
+    a, b = create_object(clip, 0), create_object(clip, 0)
+    for obj, kfs, x in ((a, a_kf, 20), (b, b_kf, 50)):
+        for kf in kfs:
+            m = np.zeros((60, 120), dtype=bool)
+            m[40:55, x:x + 20] = True
+            store.write_mask(clip.id, obj.id, kf, m)
+            obj.keyframes.append(Keyframe(frame_idx=kf, prompt=Prompt(type="paint", payload={}), created_at=now_iso()))
+    store.write_clip(clip)
+    return clip
+
+
+def _xs(store, clip_id, oid, idx):
+    mask = store.read_mask(clip_id, oid, idx)
+    return None if mask is None else int(np.where(mask)[1].min())
+
+
+def test_all_objects_share_one_engine_call_per_chunk(store, make_clip):
+    eng = FakeEngine()
+    clip = _two_objects(store, make_clip, eng)
+    events = []
+    res = run_propagation(store, eng, clip.id, 0, "forward", emit=events.append, **KW)
+    assert (res.processed, res.written, res.objects, res.skipped) == (29, 58, [1, 2], [])
+    assert eng.propagate_calls == [9, 9, 9, 6] and all(s == [1, 2] for s in eng.seed_calls)
+    assert _xs(store, clip.id, 1, 9) == 20 + 18 and _xs(store, clip.id, 2, 9) == 50 + 18
+    frame_events = [e for e in events if e["type"] == "frame"]
+    assert frame_events[0]["objects"] == [{"id": 1, "has_mask": True}, {"id": 2, "has_mask": True}]
+    assert frame_events[0]["has_mask"] is True and frame_events[-1]["done"] == 29
+    assert events[0] == {"type": "progress", "done": 0, "total": 29}
+    c = store.read_clip(clip.id)
+    assert [o.propagated_ranges for o in c.objects] == [[(1, 29)], [(1, 29)]]
+
+
+def test_each_object_stops_at_its_own_next_keyframe(store, make_clip):
+    eng = FakeEngine()
+    clip = _two_objects(store, make_clip, eng, n_frames=20, a_kf=(0, 6), b_kf=(0,))
+    before = store.mask_path(clip.id, 1, 6).read_bytes()
+    res = run_propagation(store, eng, clip.id, 0, "forward", **KW)
+    assert res.processed == 19 and res.written == 5 + 19
+    assert store.mask_path(clip.id, 1, 6).read_bytes() == before
+    assert store.mask_indices(clip.id, 1) == [0, 1, 2, 3, 4, 5, 6]
+    assert store.mask_indices(clip.id, 2) == list(range(20))
+
+
+def test_one_object_lost_while_the_other_continues(store, make_clip):
+    # object 2 is invisible on frames 6..29; object 1 is always visible
+    eng = FakeEngine(is_empty_obj=lambda frame, oid: oid == 2 and is_white(frame))
+    clip = _two_objects(store, make_clip, eng, white=range(6, 30))
+    res = run_propagation(store, eng, clip.id, 0, "forward", **KW)
+    assert res.lost == {2: 6} and res.lost_by_direction == {"forward": {2: 6}} and res.lost_at == 6
+    assert store.mask_indices(clip.id, 1) == list(range(30))
+    assert store.mask_indices(clip.id, 2) == [0, 1, 2, 3, 4, 5]
+    assert all(s == [1, 2] for s in eng.seed_calls[:1]) and eng.seed_calls[-1] == [1]
+
+
+def test_anchors_diverge_into_two_groups_and_each_keeps_its_own_seed(store, make_clip):
+    # object 2 is invisible on frame 8 only (lost_after=3, so it is not lost): its anchor stays at 7 while
+    # object 1's moves on, so from the next chunk the two run as separate engine calls
+    eng = FakeEngine(is_empty_obj=lambda frame, oid: oid == 2 and is_white(frame))
+    clip = _two_objects(store, make_clip, eng, n_frames=20, white=(8,))
+    res = run_propagation(store, eng, clip.id, 0, "forward", **KW)
+    assert res.lost == {} and res.processed == 19
+    assert [1] in eng.seed_calls and [2] in eng.seed_calls  # split after frame 8
+    assert _xs(store, clip.id, 2, 8) is None
+    assert len(eng.prepare_calls) == len(eng.propagate_calls)
+    # object 2's frame 9 is tracked from its frame-7 anchor prepended to the chunk (offset 1), like the single-object
+    # rule after a missed frame: the fake shifts by dx per chunk offset, not per frame distance
+    assert _xs(store, clip.id, 2, 9) == 50 + 2 * 7 + 2
+
+
+def test_objects_without_a_seed_are_skipped_and_explicit_lists_are_strict(store, make_clip):
+    eng = FakeEngine()
+    clip = _two_objects(store, make_clip, eng, a_kf=(0,), b_kf=(5,))
+    res = run_propagation(store, eng, clip.id, 0, "forward", **KW)
+    assert res.objects == [1] and res.skipped == [2]
+    clip = store.read_clip(clip.id)
+    with pytest.raises(BadRequest, match="object 2 has no mask on frame 0"):
+        resolve_participants(store, clip, 0, [2], strict=True)
+    with pytest.raises(NotFound, match="object 9"):
+        resolve_participants(store, clip, 0, [9], strict=True)
+    parts, skipped = resolve_participants(store, clip, 0, [1, 9], strict=False)
+    assert [o.id for o, _ in parts] == [1] and skipped == [9]
+
+
+def test_selected_object_only_leaves_the_others_untouched(store, make_clip):
+    eng = FakeEngine()
+    clip = _two_objects(store, make_clip, eng)
+    res = run_propagation(store, eng, clip.id, 0, "forward", objects=[2], **KW)
+    assert res.objects == [2] and store.mask_indices(clip.id, 1) == [0]
+    assert store.mask_indices(clip.id, 2) == list(range(30))
+
+
+def test_both_directions_lost_at_prefers_the_first_direction_and_the_nearest_frame(store, make_clip):
+    # frames 0..2 and 13..19 are white (nothing visible). Object 2 has a keyframe at 4, so backward it stops at 5
+    # and never reaches the white frames; object 1 is lost in both directions.
+    eng = FakeEngine(is_empty=is_white)
+    clip = _two_objects(store, make_clip, eng, n_frames=20, white=(*range(3), *range(13, 20)),
+                        a_kf=(8,), b_kf=(4, 8))
+    res = run_propagation(store, eng, clip.id, 8, "both", **KW)
+    assert res.lost_by_direction == {"forward": {1: 13, 2: 13}, "backward": {1: 2}}
+    assert res.lost == {1: 13, 2: 13} and res.lost_at == 13  # forward runs first
+    assert res.processed <= 11 + 8  # total = 11 forward frames (9..19) + 8 backward (7..0)
+    assert store.mask_indices(clip.id, 2) == list(range(4, 13))
+
+
+def test_two_objects_cancel_and_oom(store, make_clip):
+    eng = FakeEngine(oom_if_more_than=5)
+    clip = _two_objects(store, make_clip, eng)
+    res = run_propagation(store, eng, clip.id, 0, "forward", **KW)
+    assert res.oom_retries >= 1 and res.processed == 29 and res.written == 58
+    seen = []
+    clip2 = _two_objects(store, make_clip, FakeEngine())
+    res = run_propagation(store, FakeEngine(), clip2.id, 0, "forward", emit=seen.append,
+                          cancel=lambda: len(seen) >= 4, **KW)
+    assert res.cancelled
+    idx1, idx2 = store.mask_indices(clip2.id, 1), store.mask_indices(clip2.id, 2)
+    assert idx1 == idx2 and len(idx1) < 30
+
+
+def test_an_object_deleted_before_the_job_starts_is_skipped(store, make_clip):
+    eng = FakeEngine()
+    clip = _two_objects(store, make_clip, eng)
+    c = store.read_clip(clip.id)
+    c.objects = [o for o in c.objects if o.id != 2]
+    store.write_clip(c)
+    res = run_propagation(store, eng, clip.id, 0, "forward", objects=[1, 2], **KW)
+    assert res.objects == [1] and res.skipped == [2]

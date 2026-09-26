@@ -16,6 +16,7 @@ from vsp.store import ProjectStore
 pytest_plugins = ["train_fixtures"]
 
 FRAME_W, FRAME_H = 120, 60
+OBJ = 1  # the id of a clip's first object
 
 
 def is_white(frame: np.ndarray) -> bool:
