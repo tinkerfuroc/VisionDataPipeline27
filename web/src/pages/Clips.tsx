@@ -435,7 +435,7 @@ export function Clips() {
                       <button
                         type="button"
                         aria-label={`Remove ${item.file.name} from the queue`}
-                        className="btn shrink-0 px-1.5"
+                        className="btn shrink-0 px-3"
                         onClick={() => removeQueuedUpload(item.id)}
                       >
                         ×
