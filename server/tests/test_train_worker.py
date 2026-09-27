@@ -176,14 +176,16 @@ def test_worker_continue_first_launch_targets_the_new_run_dir_never_the_source(t
     assert (run_dir / "data.yaml").is_file()
 
 
-def test_worker_plain_resume_after_a_continue_run_stopped_has_no_override(tmp_path, monkeypatch):
-    """A cancelled/interrupted "continue" run resumes through the ordinary path (no `data`/
-    `save_dir` override) once `resume` is set: its own `last.pt`, saved into this run's dir by a
-    prior epoch, already carries the right save_dir and data path."""
+def test_worker_resume_of_a_stopped_continue_run_stays_pinned_to_its_own_run(tmp_path, monkeypatch):
+    """A stopped "continue" run resumes pinned to its own `data.yaml` and `save_dir`. Its last.pt may
+    still be the copy from the source run (it crashed before saving one of its own), whose embedded
+    save_dir/data point at the source; unpinned, Ultralytics would train on the source's data and
+    write into the source run's directory."""
     run_dir = tmp_path / "run"
     weights = run_dir / "train" / "weights"
     weights.mkdir(parents=True)
     (weights / "last.pt").write_bytes(b"last")
+    (run_dir / "data.yaml").write_text("path: /new/export/yolo_seg\n")
     run = {"export_dir": "unused", "model": "yolo26s-seg", "resume": True, "finish": False,
            "start_mode": "continue", "params": {"epochs": 10}}
     (run_dir / "run.json").write_text(json.dumps(run))
@@ -195,7 +197,10 @@ def test_worker_plain_resume_after_a_continue_run_stopped_has_no_override(tmp_pa
 
     assert code == 0
     assert calls["init_path"] == str(weights / "last.pt")
-    assert calls["train_kwargs"] == {"resume": True}
+    assert calls["train_kwargs"] == {
+        "resume": True, "data": str(run_dir / "data.yaml"), "save_dir": str(run_dir / "train"),
+    }
+    assert (run_dir / "data.yaml").read_text() == "path: /new/export/yolo_seg\n"  # kept, not rewritten
 
 
 def test_worker_finetune_loads_init_pt_instead_of_pretrained(tmp_path, monkeypatch):
