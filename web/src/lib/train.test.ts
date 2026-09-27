@@ -98,7 +98,7 @@ describe("train helpers", () => {
     expect(continueModeLabel(r)).toBe(
       "Continue (from epoch 70 of 200: same optimizer and schedule, remaining epochs on the new data)",
     );
-    expect(finetuneModeLabel(r)).toBe("Fine-tune (fresh schedule from best.pt, epoch 70)");
+    expect(finetuneModeLabel(r)).toBe("Fine-tune (fresh schedule from best.pt)"); // stopped: best epoch unknown
     expect(finetuneModeLabel(run("b", { best: best(0.5), epochs_done: 40 }))).toBe(
       "Fine-tune (fresh schedule from best.pt, epoch 1)",
     );

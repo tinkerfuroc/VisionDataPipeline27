@@ -97,7 +97,8 @@ export const continueModeLabel = (run: Run): string =>
   `Continue (from epoch ${run.epochs_done} of ${run.params.epochs}: same optimizer and schedule, remaining epochs on the new data)`;
 
 export const finetuneModeLabel = (run: Run): string =>
-  `Fine-tune (fresh schedule from best.pt, epoch ${run.best?.epoch ?? run.epochs_done})`;
+  // a stopped run's `best` is null (its best epoch is only summarised when a run finishes), so name the epoch only when known
+  `Fine-tune (fresh schedule from best.pt${run.best != null ? `, epoch ${run.best.epoch}` : ""})`;
 
 /** Why `mode` cannot be used to train from `run`, or null when it can. */
 export function modeDisabledReason(run: Run, mode: StartMode): string | null {
