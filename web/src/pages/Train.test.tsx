@@ -105,8 +105,8 @@ describe("Train page", () => {
     const select = (await screen.findByLabelText("GPU")) as HTMLSelectElement;
     const options = Array.from(select.options).map((o) => o.text);
     expect(options).toEqual([
-      "cuda:0 · RTX 3080 Ti · est. 34 TFLOPS · 9.1 GiB free · SAM3 · default",
-      "cuda:1 · RTX 2080 Ti · est. 14 TFLOPS · 5.5 GiB free",
+      "cuda:0 · RTX 3080 Ti · default · ~34 TFLOPS · 9.1 GiB free · SAM3",
+      "cuda:1 · RTX 2080 Ti · ~14 TFLOPS · 5.5 GiB free",
     ]);
   });
 

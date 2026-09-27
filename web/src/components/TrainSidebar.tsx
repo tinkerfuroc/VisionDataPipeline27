@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../api/rest";
 import type { AugmentMode, AugParams, ExportInfo, GpuQueue, Run, StartRunsRequest, TrainParams, TrainStatus } from "../api/types";
 import { exportLabel } from "../lib/exportName";
@@ -63,11 +63,13 @@ function stoppedAt(run: Run, status: TrainStatus): string {
  * button naming exactly which GPU it will resume on. Its own component (rather than inline in
  * `TrainSidebar`) so its state can key off `run.id` and reset cleanly when the selection changes. */
 function ResumeSection({
-  status, runs, run, onResume,
+  status, runs, run, focus, onResume,
 }: {
   status: TrainStatus;
   runs: Run[];
   run: Run;
+  /** changes whenever the table's Resume button is pressed */
+  focus: number;
   onResume: (id: string, gpu: number) => Promise<void>;
 }) {
   const [gpu, setGpu] = useState(defaultGpu(status) ?? status.gpus[0]?.index ?? 0);
@@ -75,6 +77,9 @@ function ResumeSection({
   const [error, setError] = useState<string | null>(null);
   const onSam3 = status.sam3_gpu !== null && gpu === status.sam3_gpu;
   const note = gpuBusyNote(status, runs, gpu);
+  // the table's Resume button opens this section; bring it into view even if the sidebar was scrolled down
+  const ref = useRef<HTMLElement>(null);
+  useEffect(() => ref.current?.scrollIntoView?.({ block: "nearest" }), [focus]);
 
   const resume = async () => {
     setResuming(true);
@@ -89,7 +94,7 @@ function ResumeSection({
   };
 
   return (
-    <section className="flex flex-col gap-2">
+    <section ref={ref} className="flex flex-col gap-2">
       <h2 className="heading">Resume {run.model} run</h2>
       <p className="note">{stoppedAt(run, status)}</p>
       <label className="flex flex-col gap-1 text-sm text-dim">
@@ -125,10 +130,12 @@ type Props = {
   onCancel: (id: string) => void;
   selectedRun: Run | null;
   onResume: (id: string, gpu: number) => Promise<void>;
+  /** bumped by the table's Resume button: scrolls the Resume section into view */
+  resumeFocus?: number;
 };
 
 export function TrainSidebar({
-  status, exports, runs, exportId, onExportChange, onExportsChanged, onStart, onCancel, selectedRun, onResume,
+  status, exports, runs, exportId, onExportChange, onExportsChanged, onStart, onCancel, selectedRun, onResume, resumeFocus = 0,
 }: Props) {
   const [picks, setPicks] = useState<Record<string, ModelPick>>({});
   const [batchGpu, setBatchGpu] = useState<number | null>(null);
@@ -206,7 +213,7 @@ export function TrainSidebar({
   return (
     <aside className="flex shrink-0 flex-col gap-5 border-t border-line bg-panel p-3 md:w-96 md:overflow-y-auto md:border-l md:border-t-0">
       {selectedRun !== null && selectedRun.resumable && (
-        <ResumeSection key={selectedRun.id} status={status} runs={runs} run={selectedRun} onResume={onResume} />
+        <ResumeSection key={selectedRun.id} status={status} runs={runs} run={selectedRun} focus={resumeFocus} onResume={onResume} />
       )}
       <section className="flex flex-col gap-2">
         <h2 className="heading">New runs</h2>

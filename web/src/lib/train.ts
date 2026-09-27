@@ -26,15 +26,16 @@ export function defaultGpu(status: Pick<TrainStatus, "gpus" | "default_gpu">): n
   return status.default_gpu ?? status.gpus[0]?.index ?? null;
 }
 
-/** e.g. "cuda:0 · RTX 3080 Ti · est. 34 TFLOPS · 9.1 GiB free · SAM3 · default". Options are already
+/** e.g. "cuda:0 · RTX 3080 Ti · default · ~34 TFLOPS · 9.1 GiB free · SAM3". The default tag comes right after the
+ * name so a closed, narrow select still shows it; TFLOPS is an estimate (NVML's max clock). Options are already
  * server-sorted fastest first; this only formats one of them. */
 export function gpuOptionLabel(g: GpuQueue, status: Pick<TrainStatus, "default_gpu" | "sam3_gpu">): string {
-  const parts = [`cuda:${g.index}`, g.name.replace(/^NVIDIA GeForce /, ""), `est. ${Math.round(g.tflops)} TFLOPS`];
+  const parts = [`cuda:${g.index}`, g.name.replace(/^NVIDIA GeForce /, "")];
+  if (g.index === status.default_gpu) parts.push("default");
+  parts.push(`~${Math.round(g.tflops)} TFLOPS`);
   if (g.memory_free !== null) parts.push(`${(g.memory_free / 2 ** 30).toFixed(1)} GiB free`);
   if (g.index === status.sam3_gpu) parts.push("SAM3");
-  let label = parts.join(" · ");
-  if (g.index === status.default_gpu) label += " · default";
-  return label;
+  return parts.join(" · ");
 }
 
 export function polygonPoints(flat: number[], w: number, h: number): string {

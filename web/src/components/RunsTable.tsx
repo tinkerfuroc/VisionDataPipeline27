@@ -19,6 +19,8 @@ type Props = {
   onSelect: (id: string) => void;
   onToggleCompare: (id: string) => void;
   onCancel: (id: string) => void;
+  /** the Resume button: select the run and bring the sidebar's "Resume run" section (with its GPU choice) into view */
+  onAskResume: (id: string) => void;
   onOnnx: (id: string) => void;
   onDelete: (id: string) => void;
 };
@@ -35,7 +37,7 @@ function OnnxCell({ run, onOnnx }: { run: Run; onOnnx: (id: string) => void }) {
   );
 }
 
-export function RunsTable({ runs, selectedId, compareIds, exports = [], onSelect, onToggleCompare, onCancel, onOnnx, onDelete }: Props) {
+export function RunsTable({ runs, selectedId, compareIds, exports = [], onSelect, onToggleCompare, onCancel, onAskResume, onOnnx, onDelete }: Props) {
   const best = Object.fromEntries(METRICS.map((m) => [m.key, bestRunIds(runs, m.key)]));
   if (runs.length === 0) return <p className="note">No training runs yet. Start one from the panel on the right.</p>;
   return (
@@ -107,9 +109,8 @@ export function RunsTable({ runs, selectedId, compareIds, exports = [], onSelect
                     {r.has_best && <a className="btn" href={weightsUrl(r.id, "best.pt")} download>best.pt</a>}
                     <OnnxCell run={r} onOnnx={onOnnx} />
                     {active && <button type="button" className="btn" onClick={() => onCancel(r.id)}>Cancel</button>}
-                    {/* Resume does not resume directly: it selects the run, so the right sidebar shows
-                       its "Resume run" section with a GPU choice. */}
-                    {r.resumable && <button type="button" className="btn" onClick={() => onSelect(r.id)}>Resume</button>}
+                    {/* Resume does not resume directly: the right sidebar's "Resume run" section asks for the GPU. */}
+                    {r.resumable && <button type="button" className="btn" onClick={() => onAskResume(r.id)}>Resume</button>}
                     {!active && r.onnx !== "queued" && r.onnx !== "running" && (
                       <button type="button" className="btn btn-danger" onClick={() => onDelete(r.id)}>Delete</button>
                     )}
