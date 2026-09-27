@@ -17,6 +17,7 @@ from vsp.train.models import (
     find_export,
     list_exports,
     rename_export,
+    run_classes,
     train_overrides,
 )
 
@@ -118,6 +119,33 @@ def test_aug_presets_and_overrides():
                          aug=AugParams(degrees=5, photometric=False)).model_dump()
     kw, photo = train_overrides(custom)
     assert kw["degrees"] == 5 and kw["fliplr"] == 0.5 and photo is False
+
+
+def test_run_classes_from_data_yaml_dict_names_ordered_by_yolo_id(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "data.yaml").write_text("path: .\nnames:\n  1: Bar\n  0: Foo\n")
+    assert run_classes(run_dir, {"export_id": "nope"}, tmp_path) == ("Foo", "Bar")
+
+
+def test_run_classes_from_data_yaml_list_names(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "data.yaml").write_text("path: .\nnames:\n  - Foo\n  - Bar\n")
+    assert run_classes(run_dir, {"export_id": "nope"}, tmp_path) == ("Foo", "Bar")
+
+
+def test_run_classes_falls_back_to_export_without_a_data_yaml(tmp_path):
+    make_export(tmp_path)
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    assert run_classes(run_dir, {"export_id": EXPORT_ID}, tmp_path) == ("Module",)
+
+
+def test_run_classes_none_when_neither_data_yaml_nor_export_is_available(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    assert run_classes(run_dir, {"export_id": "missing"}, tmp_path) is None
 
 
 def test_custom_needs_values_and_bounds():

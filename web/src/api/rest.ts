@@ -1,5 +1,5 @@
 import type {
-  AcceptResult, AugmentRequest, BackgroundPool, Candidate, ClassDef, ClipDetail, ClipSummary, Direction, ExportInfo, ExportRequest, ExportSample, Health, JobSnapshot, MaskResult, ObjectSelection, PredictionFilter, PredictionPage, Project, PromptSpec, Run, RunDetail, StartRunsRequest, TrainStatus, WriteTarget,
+  AcceptResult, AugmentRequest, BackgroundPool, Candidate, ClassDef, ClipDetail, ClipSummary, Direction, ExportInfo, ExportRequest, ExportSample, FromCheckpointRequest, Health, JobSnapshot, MaskResult, ObjectSelection, PredictionFilter, PredictionPage, Project, PromptSpec, Run, RunDetail, StartRunsRequest, TrainStatus, WriteTarget,
 } from "./types";
 
 /** The `job_id` the server reports while a prompt/accept/clear-range call holds the GPU lease. */
@@ -223,6 +223,8 @@ export const api = {
   listRuns: () => request<Run[]>("/api/train/runs"),
   getRun: (id: string) => request<RunDetail>(`/api/train/runs/${id}`),
   startRuns: (body: StartRunsRequest) => request<{ run_ids: string[] }>("/api/train/runs", post(body)),
+  trainFromCheckpoint: (runId: string, body: FromCheckpointRequest) =>
+    request<{ run_id: string }>(`/api/train/runs/${runId}/from-checkpoint`, post(body)),
   cancelRun: (id: string) => request<Run>(`/api/train/runs/${id}/cancel`, post()),
   resumeRun: (id: string, gpu?: number) =>
     request<Run>(`/api/train/runs/${id}/resume`, post(gpu === undefined ? undefined : { gpu })),

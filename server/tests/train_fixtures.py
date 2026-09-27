@@ -25,8 +25,10 @@ JPEG = b"\xff\xd8\xff\xe0fakejpeg"
 def make_export(
     data_root: Path, export_id: str = EXPORT_ID, n_train: int = 2, n_val: int = 2, *,
     created_at: str = "2026-01-01T00:00:00+00:00", name: str | None = None,
+    classes: tuple[str, ...] = ("Module",),
 ) -> Path:
-    """An export directory shaped like vsp's exporter output, with one class and a square on every image."""
+    """An export directory shaped like vsp's exporter output, with one class (or `classes`, for
+    testing the same-classes rule) and a square on every image (always labelled class 0)."""
     d = data_root / "exports" / export_id
     y = d / "yolo_seg"
     for split, n in (("train", n_train), ("val", n_val)):
@@ -37,12 +39,14 @@ def make_export(
             cv2.rectangle(img, (24, 16), (72, 48), (200, 200, 200), -1)
             assert cv2.imwrite(str(y / "images" / split / f"clip_{i:06d}.jpg"), img)
             (y / "labels" / split / f"clip_{i:06d}.txt").write_text(SQUARE + "\n")
-    (y / "data.yaml").write_text('path: .\ntrain: images/train\nval: images/val\nnames:\n  0: "Module"\n')
+    names_yaml = "".join(f'  {i}: "{c}"\n' for i, c in enumerate(classes))
+    (y / "data.yaml").write_text(f"path: .\ntrain: images/train\nval: images/val\nnames:\n{names_yaml}")
     manifest = {
         "export_id": export_id, "created_at": created_at,
         "project": {"id": "p1", "name": "Bench"},
         "classes": [
-            {"id": 0, "name": "Module", "color": "#e6194b", "yolo_id": 0, "coco_id": 1, "mask_value": 1}
+            {"id": i, "name": c, "color": "#e6194b", "yolo_id": i, "coco_id": i + 1, "mask_value": i + 1}
+            for i, c in enumerate(classes)
         ],
         "formats": [
             {

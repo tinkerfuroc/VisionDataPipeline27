@@ -123,6 +123,127 @@ def test_train_finish_branch_skips_training_strips_best_and_predicts(tmp_path, m
     assert "best" in result  # {"best": summarize(read_metrics(run_dir))}, same as a normal run
 
 
+def _install_fake_yolo(monkeypatch):
+    """A minimal `YOLO` stand-in that records the checkpoint path it was constructed with and the
+    keyword arguments `.train()` was called with, instead of actually training anything."""
+    calls: dict = {}
+
+    class FakeModel:
+        def __init__(self, path):
+            calls["init_path"] = path
+
+        def add_callback(self, *_a, **_k):
+            pass
+
+        def train(self, **kwargs):
+            calls["train_kwargs"] = kwargs
+
+    fake = types.ModuleType("ultralytics")
+    fake.__path__ = []
+    fake.YOLO = FakeModel
+    fake.settings = SimpleNamespace(get=lambda *a: False, update=lambda *a: None)
+    monkeypatch.setitem(sys.modules, "ultralytics", fake)
+    return calls
+
+
+def test_worker_continue_first_launch_targets_the_new_run_dir_never_the_source(tmp_path, monkeypatch):
+    """The very first launch of a "Continue on new data" run (`start_mode` "continue", `resume`
+    still False -- it has not trained a single epoch under this run id yet) must pass `data` and
+    `save_dir` explicitly: the copied `last.pt` embeds the *source* run's save_dir, and without an
+    override Ultralytics would resume training into the source run's own directory."""
+    run_dir = tmp_path / "run"
+    weights = run_dir / "train" / "weights"
+    weights.mkdir(parents=True)
+    (weights / "last.pt").write_bytes(b"last")
+    export_dir = make_export(tmp_path)
+    run = {
+        "export_dir": str(export_dir), "model": "yolo26s-seg", "resume": False, "finish": False,
+        "start_mode": "continue", "source_run": "some-source-id",
+        "params": {"epochs": 10, "imgsz": 640, "batch": 4, "patience": 30, "workers": 0, "seed": 0},
+    }
+    (run_dir / "run.json").write_text(json.dumps(run))
+
+    calls = _install_fake_yolo(monkeypatch)
+    monkeypatch.setattr(worker, "_predict", lambda rd, r, p: None)
+
+    code = worker.train(run_dir)
+
+    assert code == 0
+    assert calls["init_path"] == str(weights / "last.pt")
+    assert calls["train_kwargs"] == {
+        "resume": True, "data": str(run_dir / "data.yaml"), "save_dir": str(run_dir / "train"),
+    }
+    assert (run_dir / "data.yaml").is_file()
+
+
+def test_worker_plain_resume_after_a_continue_run_stopped_has_no_override(tmp_path, monkeypatch):
+    """A cancelled/interrupted "continue" run resumes through the ordinary path (no `data`/
+    `save_dir` override) once `resume` is set: its own `last.pt`, saved into this run's dir by a
+    prior epoch, already carries the right save_dir and data path."""
+    run_dir = tmp_path / "run"
+    weights = run_dir / "train" / "weights"
+    weights.mkdir(parents=True)
+    (weights / "last.pt").write_bytes(b"last")
+    run = {"export_dir": "unused", "model": "yolo26s-seg", "resume": True, "finish": False,
+           "start_mode": "continue", "params": {"epochs": 10}}
+    (run_dir / "run.json").write_text(json.dumps(run))
+
+    calls = _install_fake_yolo(monkeypatch)
+    monkeypatch.setattr(worker, "_predict", lambda rd, r, p: None)
+
+    code = worker.train(run_dir)
+
+    assert code == 0
+    assert calls["init_path"] == str(weights / "last.pt")
+    assert calls["train_kwargs"] == {"resume": True}
+
+
+def test_worker_finetune_loads_init_pt_instead_of_pretrained(tmp_path, monkeypatch):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir(parents=True)
+    (run_dir / "init.pt").write_bytes(b"best")
+    export_dir = make_export(tmp_path)
+    run = {
+        "export_dir": str(export_dir), "model": "yolo26s-seg", "resume": False, "finish": False,
+        "start_mode": "finetune", "source_run": "some-source-id",
+        "params": {"epochs": 7, "imgsz": 640, "batch": 4, "patience": 30, "workers": 0, "seed": 0,
+                   "augment": "default"},
+    }
+    (run_dir / "run.json").write_text(json.dumps(run))
+
+    calls = _install_fake_yolo(monkeypatch)
+    monkeypatch.setattr(worker, "_predict", lambda rd, r, p: None)
+
+    code = worker.train(run_dir)
+
+    assert code == 0
+    assert calls["init_path"] == str(run_dir / "init.pt")
+    assert calls["train_kwargs"]["data"] == str(run_dir / "data.yaml")
+    assert calls["train_kwargs"]["epochs"] == 7
+
+
+def test_worker_plain_new_run_still_loads_the_pretrained_checkpoint(tmp_path, monkeypatch):
+    """No `start_mode` at all (an ordinary run, as today): still `YOLO(f"{model}.pt")`, not
+    `init.pt`."""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir(parents=True)
+    export_dir = make_export(tmp_path)
+    run = {
+        "export_dir": str(export_dir), "model": "yolo26s-seg", "resume": False, "finish": False,
+        "params": {"epochs": 7, "imgsz": 640, "batch": 4, "patience": 30, "workers": 0, "seed": 0,
+                   "augment": "default"},
+    }
+    (run_dir / "run.json").write_text(json.dumps(run))
+
+    calls = _install_fake_yolo(monkeypatch)
+    monkeypatch.setattr(worker, "_predict", lambda rd, r, p: None)
+
+    code = worker.train(run_dir)
+
+    assert code == 0
+    assert calls["init_path"] == "yolo26s-seg.pt"
+
+
 def test_train_finish_branch_cancel_reports_cancelled(tmp_path, monkeypatch):
     """A cancel (SIGTERM, here simulated by the predict step raising KeyboardInterrupt) during a
     "finish" job is reported exactly like cancelling any other run."""

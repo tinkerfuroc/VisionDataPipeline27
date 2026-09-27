@@ -12,6 +12,7 @@ from fake_train_worker import HEADER, row
 from train_fixtures import FAKE_WORKER, make_export, wait_for
 from vsp.labeling.errors import BadRequest, Conflict
 from vsp.train.models import TrainParams, find_export
+from vsp.train.runs import best_weights
 from vsp.train.scheduler import (
     Gpu,
     TrainScheduler,
@@ -491,6 +492,118 @@ def test_cancel_during_finish_then_resume_does_not_skip_training(env):
     wait_for(lambda: "resume=True" in (sched.runs.dir(rid) / "worker.log").read_text())
     sched.cancel(rid)
     until(sched, rid, "cancelled")
+
+
+def test_submit_from_continue_happy_path(env):
+    sched, export = env
+    sched.start()
+    (rid,) = sched.submit(export, [("yolo26s-seg", 1)], TrainParams(epochs=99, batch=4))
+    until(sched, rid, "running")
+    wait_for(lambda: (sched.runs.dir(rid) / "train" / "weights" / "last.pt").is_file())
+    sched.cancel(rid)
+    until(sched, rid, "cancelled")
+    (sched.runs.dir(rid) / "train" / "results.csv").write_text(HEADER + "\n" + row(1) + "\n")
+
+    new_export = find_export(sched.data_root, make_export(sched.data_root, "20260201-000000-newexp").name)
+    new_id = sched.submit_from(rid, new_export, "continue", 0)
+
+    new = sched.runs.read(new_id)
+    assert new_id != rid
+    assert new["model"] == "yolo26s-seg" and new["gpu"] == 0 and new["status"] == "queued"
+    assert new["export_id"] == new_export.id and new["source_run"] == rid
+    assert new["start_mode"] == "continue" and new["continued_from_epoch"] == 1
+    assert new["params"]["batch"] == 4 and new["params"]["epochs"] == 99  # the source's own params, verbatim
+    new_dir = sched.runs.dir(new_id)
+    assert (new_dir / "train" / "weights" / "last.pt").read_bytes() == b"last"
+    assert (new_dir / "train" / "results.csv").read_text() == (sched.runs.dir(rid) / "train" / "results.csv").read_text()
+
+    until(sched, new_id, "running")
+    wait_for(lambda: "gpu=0" in (new_dir / "worker.log").read_text())
+    sched.cancel(new_id)
+    until(sched, new_id, "cancelled")
+    # the source run is untouched
+    source = sched.runs.read(rid)
+    assert source["status"] == "cancelled" and source.get("source_run") is None
+
+
+def test_submit_from_finetune_happy_path(env):
+    sched, export = env
+    (rid,) = sched.submit(export, [("yolo26s-seg", 1)], TrainParams(epochs=2))
+    sched.start()
+    until(sched, rid, "done")
+    assert best_weights(sched.runs.dir(rid)).is_file()
+
+    new_export = find_export(sched.data_root, make_export(sched.data_root, "20260201-000000-newexp").name)
+    new_params = TrainParams(epochs=7)
+    new_id = sched.submit_from(rid, new_export, "finetune", 0, new_params)
+
+    new = sched.runs.read(new_id)
+    assert new["model"] == "yolo26s-seg" and new["source_run"] == rid and new["start_mode"] == "finetune"
+    assert new["params"]["epochs"] == 7
+    assert "continued_from_epoch" not in new
+    new_dir = sched.runs.dir(new_id)
+    assert (new_dir / "init.pt").read_bytes() == b"best"
+    assert new["init_weights"] == str((new_dir / "init.pt").resolve())
+    assert not (new_dir / "train" / "weights" / "last.pt").exists()
+    # the source run is untouched
+    source = sched.runs.read(rid)
+    assert source["status"] == "done" and source.get("source_run") is None
+
+
+def test_submit_from_defaults_params_when_finetune_gets_none(env):
+    sched, export = env
+    (rid,) = sched.submit(export, [("yolo26s-seg", 1)], TrainParams(epochs=2))
+    sched.start()
+    until(sched, rid, "done")
+    new_id = sched.submit_from(rid, export, "finetune", 0)
+    assert sched.runs.read(new_id)["params"]["epochs"] == TrainParams().epochs
+
+
+def test_submit_from_rejects_a_class_mismatch(env):
+    sched, export = env
+    (rid,) = sched.submit(export, [("yolo26s-seg", 1)], TrainParams(epochs=2))
+    sched.start()
+    until(sched, rid, "done")
+    other = find_export(
+        sched.data_root,
+        make_export(sched.data_root, "20260201-000000-other", classes=("Widget",)).name,
+    )
+    with pytest.raises(Conflict, match="Widget") as exc:
+        sched.submit_from(rid, other, "finetune", 0)
+    assert "Module" in str(exc.value)
+
+
+def test_submit_from_continue_rejects_a_done_run(env):
+    sched, export = env
+    (rid,) = sched.submit(export, [("yolo26s-seg", 1)], TrainParams(epochs=2))
+    sched.start()
+    until(sched, rid, "done")
+    with pytest.raises(Conflict, match="cannot be continued"):
+        sched.submit_from(rid, export, "continue", 0)
+
+
+def test_submit_from_finetune_rejects_without_best_pt(env):
+    sched, export = env
+    sched.start()
+    (rid,) = sched.submit(export, [("yolo26s-seg", 1)], TrainParams(epochs=99))
+    until(sched, rid, "running")
+    wait_for(lambda: (sched.runs.dir(rid) / "train" / "weights" / "last.pt").is_file())
+    sched.cancel(rid)
+    until(sched, rid, "cancelled")
+    assert not best_weights(sched.runs.dir(rid)).is_file()
+    with pytest.raises(Conflict, match="no best.pt"):
+        sched.submit_from(rid, export, "finetune", 0)
+
+
+def test_submit_from_validates_gpu_and_mode(env):
+    sched, export = env
+    (rid,) = sched.submit(export, [("yolo26s-seg", 1)], TrainParams(epochs=2))
+    sched.start()
+    until(sched, rid, "done")
+    with pytest.raises(BadRequest):
+        sched.submit_from(rid, export, "finetune", 7)
+    with pytest.raises(BadRequest):
+        sched.submit_from(rid, export, "nonsense", 0)
 
 
 def test_onnx_export(env):

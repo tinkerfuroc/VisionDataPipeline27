@@ -194,6 +194,18 @@ def train(run_dir: Path) -> int:
             strip_optimizer(str(best_weights(run_dir)))
         elif run.get("resume") and best_weights(run_dir).is_file() and _resume_already_finished(run_dir):
             pass  # training already ran to completion (cancelled/interrupted mid-prediction); just predict
+        elif run.get("start_mode") == "continue" and not run.get("resume"):
+            # First launch of a "Continue on new data" run: resume the source run's own optimizer,
+            # LR schedule and params (embedded in the last.pt copied into this run's own dir) on the
+            # newly chosen export. `data` and `save_dir` must both be given explicitly -- without
+            # them Ultralytics would resume using the *source* run's data.yaml and directory (still
+            # embedded in that copied checkpoint), which must never happen. Once this first epoch
+            # saves a new last.pt here, it carries this run's own save_dir/data, so a later plain
+            # Resume (after a cancel) needs no such override -- see the `elif run.get("resume")` case.
+            data = write_data_yaml(Path(run["export_dir"]) / "yolo_seg", run_dir / "data.yaml")
+            model = YOLO(str(last_weights(run_dir)))
+            _attach_progress(model, progress)
+            model.train(resume=True, data=str(data), save_dir=str(run_dir / "train"))
         elif run.get("resume"):
             model = YOLO(str(last_weights(run_dir)))
             _attach_progress(model, progress)
@@ -203,7 +215,10 @@ def train(run_dir: Path) -> int:
                 Path(run["export_dir"]) / "yolo_seg", run_dir / "data.yaml"
             )
             p = run["params"]
-            model = YOLO(f"{run['model']}.pt")
+            # "Fine-tune on new data" starts from the source run's best.pt (copied into this run's
+            # dir as init.pt) instead of the pretrained checkpoint; otherwise identical.
+            weights = str(run_dir / "init.pt") if run.get("start_mode") == "finetune" else f"{run['model']}.pt"
+            model = YOLO(weights)
             _attach_progress(model, progress)
             overrides, photometric = train_overrides(p)
             if photometric:

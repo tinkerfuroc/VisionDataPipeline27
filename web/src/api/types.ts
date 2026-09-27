@@ -213,6 +213,18 @@ export type Run = {
   completed_early?: boolean;
   has_best: boolean;
   has_onnx: boolean;
+  /** This run's classes, ordered by yolo id; null when unknown (no data.yaml yet and its export is
+   * gone). Absent on an older server. */
+  classes?: string[] | null;
+  /** The run this one continues or fine-tunes, null for an ordinary run. Absent on an older server. */
+  source_run?: string | null;
+  start_mode?: "continue" | "finetune" | null;
+  /** "Continue" only: how many epochs the source run had already done. Absent on an older server. */
+  continued_from_epoch?: number | null;
+  /** Eligible as a "continue" source (= `resumable`). Absent on an older server. */
+  continuable?: boolean;
+  /** Eligible as a "fine-tune" source (= `has_best`). Absent on an older server. */
+  finetunable?: boolean;
 };
 export type MetricRow = { epoch: number } & Record<string, number>;
 export type RunDetail = Run & { metrics: MetricRow[] };
@@ -234,3 +246,5 @@ export type PredictionPage = {
   items: PredictionItem[];
 };
 export type StartRunsRequest = { export_id: string; runs: { model: string; gpu: number }[]; params: TrainParams };
+export type StartMode = "continue" | "finetune";
+export type FromCheckpointRequest = { export_id: string; mode: StartMode; gpu: number; params?: TrainParams };

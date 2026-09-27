@@ -11,6 +11,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -20,7 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..labeling.errors import BadRequest, Conflict
-from .models import ExportInfo, TrainParams, check_model
+from .models import ExportInfo, TrainParams, check_model, run_classes
 from .results import read_metrics, summarize, tail
 from .runs import TERMINAL, RunStore, best_weights, last_weights, now_iso, read_json
 from .worker import CANCELLED_EXIT
@@ -330,6 +331,59 @@ class TrainScheduler:
                 ids.append(run["id"])
             self._cv.notify_all()
         return ids
+
+    def submit_from(
+        self, source_id: str, export: ExportInfo, mode: str, gpu: int, params: TrainParams | None = None
+    ) -> str:
+        """A new run that starts from `source_id`'s checkpoint on `export` (which must carry the
+        same classes, in the same order) instead of pretrained weights, queued like any `submit`
+        run; the source run is never modified. "continue" resumes the source's own optimizer,
+        LR schedule and training params on the new export -- only for a `resumable` source;
+        `params` is ignored for it (the source's own `params` are copied verbatim; honouring a
+        handful of trivial overrides such as batch/workers/patience was considered and skipped
+        for simplicity -- pass a `params` here and it is silently ignored). "finetune" starts a
+        fresh schedule (`params`, or `TrainParams()`) from the source's `best.pt` -- any source
+        that has one, finished or not."""
+        if mode not in ("continue", "finetune"):
+            raise BadRequest(f"unknown mode {mode!r}")
+        if gpu not in self._queues:
+            raise BadRequest(f"GPU {gpu} does not exist")
+        source = self.runs.read(source_id)
+        source_dir = self.runs.dir(source_id)
+        if mode == "continue":
+            if not self.resumable(source):
+                raise Conflict(f"run {source_id} cannot be continued (not stopped, or no last.pt)")
+        elif not best_weights(source_dir).is_file():
+            raise Conflict(f"run {source_id} cannot be fine-tuned (no best.pt)")
+        source_classes = run_classes(source_dir, source, self.data_root)
+        if source_classes is None:
+            raise Conflict(f"run {source_id}'s classes are unknown")
+        if tuple(export.classes) != source_classes:
+            raise Conflict(
+                f"export {export.id}'s classes ({', '.join(export.classes)}) do not match "
+                f"run {source_id}'s classes ({', '.join(source_classes)})"
+            )
+        run_params = TrainParams(**source["params"]) if mode == "continue" else (params or TrainParams())
+        with self._cv:
+            run = self.runs.create(export, source["model"], gpu, run_params, owner_pid=os.getpid())
+            run_dir = self.runs.dir(run["id"])
+            extra: dict = {"source_run": source_id, "start_mode": mode}
+            if mode == "continue":
+                (run_dir / "train" / "weights").mkdir(parents=True, exist_ok=True)
+                shutil.copy2(last_weights(source_dir), last_weights(run_dir))
+                source_results = source_dir / "train" / "results.csv"
+                if source_results.is_file():
+                    (run_dir / "train").mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(source_results, run_dir / "train" / "results.csv")
+                extra["continued_from_epoch"] = len(read_metrics(source_dir))
+            else:
+                init_path = run_dir / "init.pt"
+                shutil.copy2(best_weights(source_dir), init_path)
+                extra["init_weights"] = str(init_path.resolve())
+            self.runs.update(run["id"], **extra)
+            self._queues[gpu].append((run["id"], "train"))
+            self._cv.notify_all()
+        return run["id"]
 
     def cancel(self, run_id: str) -> None:
         with self._cv:

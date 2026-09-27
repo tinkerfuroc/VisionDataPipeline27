@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from ..export.naming import clean_name
@@ -124,6 +125,28 @@ def find_export(data_root: Path, export_id: str) -> ExportInfo:
         train_images=int(fmt["images"]["train"]), val_images=int(fmt["images"]["val"]),
         formats=formats, derived_from=manifest.get("derived_from"), name=manifest.get("name"),
     )
+
+
+def run_classes(run_dir: Path, run: dict, data_root: Path) -> tuple[str, ...] | None:
+    """A run's classes, ordered by yolo id: from its own run dir's `data.yaml` (`names`, written by
+    `write_data_yaml` once it trained -- a dict {id: name} or a list, either way), falling back to
+    its export (`find_export(run["export_id"])`) when there is no data.yaml yet (e.g. it is still
+    queued); None when neither is available (a half-written or deleted export)."""
+    data_yaml = Path(run_dir) / "data.yaml"
+    if data_yaml.is_file():
+        try:
+            data = yaml.safe_load(data_yaml.read_text())
+        except yaml.YAMLError:
+            data = None
+        names = data.get("names") if isinstance(data, dict) else None
+        if isinstance(names, dict):
+            return tuple(names[k] for k in sorted(names, key=int))
+        if isinstance(names, list):
+            return tuple(names)
+    try:
+        return find_export(data_root, run["export_id"]).classes
+    except (NotFound, BadRequest):
+        return None
 
 
 def list_exports(data_root: Path) -> list[ExportInfo]:

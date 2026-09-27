@@ -8,7 +8,7 @@ import time
 
 import vsp.cli
 import vsp.train.scheduler
-from train_fixtures import EXPORT_ID, FAKE_WORKER, make_export
+from train_fixtures import EXPORT_ID, FAKE_WORKER, make_export, wait_for
 from vsp.config import Settings
 from vsp.train.models import TrainParams, find_export
 from vsp.train.scheduler import Gpu, TrainScheduler
@@ -38,8 +38,8 @@ def _settings(tmp_path):
 
 
 def _args(**kw):
-    base = {"list": False, "export": EXPORT_ID, "model": None, "gpu": 1, "epochs": 2, "imgsz": 640,
-            "batch": 8, "patience": 30, "workers": 0, "seed": 0, "augment": "default"}
+    base = {"list": False, "export": EXPORT_ID, "model": None, "from_run": None, "mode": None, "gpu": 1,
+            "epochs": 2, "imgsz": 640, "batch": 8, "patience": 30, "workers": 0, "seed": 0, "augment": "default"}
     return argparse.Namespace(**{**base, **kw})
 
 
@@ -180,3 +180,74 @@ def test_bad_input(tmp_path, capsys):
     assert vsp.cli._train(s, _args(export=None), gpus=[Gpu(0, "A", 1)], worker_cmd=FAKE_WORKER) == 2
     assert vsp.cli._train(s, _args(imgsz=1000), gpus=[Gpu(0, "A", 1)], worker_cmd=FAKE_WORKER) == 2
     assert vsp.cli._train(s, _args(), gpus=[], worker_cmd=FAKE_WORKER) == 1
+
+
+def test_from_run_model_is_invalid(tmp_path, capsys):
+    s = _settings(tmp_path)
+    rc = vsp.cli._train(s, _args(from_run="some-id", mode="continue", model=["yolo26s-seg"]),
+                        gpus=[Gpu(0, "A", 1)], worker_cmd=FAKE_WORKER)
+    assert rc == 2 and "--model is invalid with --from-run" in capsys.readouterr().out
+
+
+def test_from_run_needs_mode(tmp_path, capsys):
+    s = _settings(tmp_path)
+    rc = vsp.cli._train(s, _args(from_run="some-id"), gpus=[Gpu(0, "A", 1)], worker_cmd=FAKE_WORKER)
+    assert rc == 2 and "--mode is required" in capsys.readouterr().out
+
+
+def test_from_run_continue_trains_one_run_from_the_source(tmp_path, capsys, monkeypatch):
+    """A "continue" run copies the source's own params verbatim -- here epochs=99, the fake
+    worker's long-running "cancellable" case (needed to get a resumable/cancelled source in the
+    first place) -- so, like `test_terminating_signal_cancels_the_run`, Ctrl-C (simulated the same
+    way) is what ends the foreground CLI's wait once the new run is up."""
+    s = _settings(tmp_path)
+    export = find_export(s.project.data_root, EXPORT_ID)
+    sched = TrainScheduler(s.project.data_root, [Gpu(1, "B", 1)], worker_cmd=FAKE_WORKER)
+    sched.start(recover=False)
+    (rid,) = sched.submit(export, [("yolo26s-seg", 1)], TrainParams(epochs=99))
+    wait_for(lambda: sched.runs.read(rid)["status"] == "running")
+    wait_for(lambda: (sched.runs.dir(rid) / "train" / "weights" / "last.pt").is_file())
+    sched.cancel(rid)
+    wait_for(lambda: sched.runs.read(rid)["status"] == "cancelled")
+    sched.shutdown(timeout=10)
+
+    real_sleep = time.sleep
+    raised = {"done": False}
+
+    def new_run_status() -> str | None:
+        others = [p for p in (s.project.data_root / "runs").glob("*/run.json") if p.parent.name != rid]
+        return json.loads(others[0].read_text())["status"] if others else None
+
+    def fake_sleep(seconds):
+        if not raised["done"] and new_run_status() == "running":
+            raised["done"] = True
+            raise KeyboardInterrupt
+        real_sleep(seconds)
+
+    monkeypatch.setattr(time, "sleep", fake_sleep)
+    rc = vsp.cli._train(s, _args(from_run=rid, mode="continue", gpu=1), gpus=[Gpu(1, "B", 1)],
+                        worker_cmd=FAKE_WORKER, poll=0.02)
+    out = capsys.readouterr().out
+    assert rc == 1 and raised["done"] is True
+    runs = [json.loads(p.read_text()) for p in (s.project.data_root / "runs").glob("*/run.json")]
+    new = next(r for r in runs if r["id"] != rid)
+    assert new["source_run"] == rid and new["start_mode"] == "continue" and new["status"] == "cancelled"
+    assert "yolo26s-seg" in out
+
+
+def test_from_run_finetune_trains_one_run_from_the_source(tmp_path, capsys):
+    s = _settings(tmp_path)
+    rc = vsp.cli._train(s, _args(model=["yolo26s-seg"], epochs=2), gpus=[Gpu(1, "B", 1)],
+                        worker_cmd=FAKE_WORKER, poll=0.05)
+    assert rc == 0
+    (run_dir,) = (s.project.data_root / "runs").iterdir()
+    rid = run_dir.name
+
+    rc = vsp.cli._train(s, _args(from_run=rid, mode="finetune", gpu=1, epochs=3), gpus=[Gpu(1, "B", 1)],
+                        worker_cmd=FAKE_WORKER, poll=0.05)
+    out = capsys.readouterr().out
+    assert rc == 0
+    runs = [json.loads(p.read_text()) for p in (s.project.data_root / "runs").glob("*/run.json")]
+    new = next(r for r in runs if r["id"] != rid)
+    assert new["source_run"] == rid and new["start_mode"] == "finetune" and new["params"]["epochs"] == 3
+    assert "yolo26s-seg" in out

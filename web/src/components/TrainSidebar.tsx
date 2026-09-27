@@ -1,8 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api/rest";
-import type { AugmentMode, AugParams, ExportInfo, GpuQueue, Run, StartRunsRequest, TrainParams, TrainStatus } from "../api/types";
+import type {
+  AugmentMode, AugParams, ExportInfo, FromCheckpointRequest, GpuQueue, Run, StartMode, StartRunsRequest, TrainParams,
+  TrainStatus,
+} from "../api/types";
 import { exportLabel } from "../lib/exportName";
-import { defaultGpu, gpuOptionLabel, startProblem, statusText } from "../lib/train";
+import {
+  checkpointSources, classesCompatible, continueModeLabel, defaultGpu, defaultMode, finetuneModeLabel,
+  gpuOptionLabel, modeDisabledReason, sourceRunLabel, startProblem, statusText,
+} from "../lib/train";
 import { AugmentPanel } from "./AugmentPanel";
 
 type ModelPick = { checked: boolean; gpu: number };
@@ -73,7 +79,7 @@ function markCompleteNote(best: Run["best"]): string {
  * it will act on. Its own component (rather than inline in `TrainSidebar`) so its state can key
  * off `run.id` and reset cleanly when the selection changes. */
 function StoppedRunSection({
-  status, runs, run, focus, onResume, onComplete,
+  status, runs, run, focus, onResume, onComplete, onTrainOnNewData,
 }: {
   status: TrainStatus;
   runs: Run[];
@@ -82,6 +88,7 @@ function StoppedRunSection({
   focus: number;
   onResume: (id: string, gpu: number) => Promise<void>;
   onComplete: (id: string, gpu: number) => Promise<void>;
+  onTrainOnNewData: (id: string) => void;
 }) {
   const [gpu, setGpu] = useState(defaultGpu(status) ?? status.gpus[0]?.index ?? 0);
   const [busy, setBusy] = useState(false);
@@ -134,6 +141,7 @@ function StoppedRunSection({
             Mark complete on cuda:{gpu}
           </button>
         )}
+        <button type="button" className="btn" onClick={() => onTrainOnNewData(run.id)}>Train on new data</button>
       </div>
       {run.completable && <p className="note">{markCompleteNote(run.best)}</p>}
     </section>
@@ -154,24 +162,37 @@ type Props = {
   onComplete: (id: string, gpu: number) => Promise<void>;
   /** bumped by the table's Resume/Mark complete button: scrolls the Stopped run section into view */
   stoppedFocus?: number;
+  /** New-runs form's "Start from": null = "Pretrained weights" (today's behaviour). */
+  sourceRunId: string | null;
+  onSourceRunChange: (id: string | null) => void;
+  onStartFromCheckpoint: (sourceId: string, body: FromCheckpointRequest) => Promise<void>;
+  /** the Stopped-run section's and the run detail header's "Train on new data" buttons: sets the
+   * New-runs form's "Start from" to that run and scrolls the form into view. */
+  onTrainOnNewData: (id: string) => void;
+  /** bumped by `onTrainOnNewData`: scrolls the New-runs section into view */
+  newRunsFocus?: number;
 };
 
 export function TrainSidebar({
   status, exports, runs, exportId, onExportChange, onExportsChanged, onStart, onCancel, selectedRun, onResume,
-  onComplete, stoppedFocus = 0,
+  onComplete, stoppedFocus = 0, sourceRunId, onSourceRunChange, onStartFromCheckpoint, onTrainOnNewData,
+  newRunsFocus = 0,
 }: Props) {
   const [picks, setPicks] = useState<Record<string, ModelPick>>({});
   const [batchGpu, setBatchGpu] = useState<number | null>(null);
   const [perModelGpu, setPerModelGpu] = useState(false);
   const [showAll, setShowAll] = useState(false);
   const [params, setParams] = useState<TrainParams | null>(null);
+  const [mode, setMode] = useState<StartMode>("continue");
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
   const [draftName, setDraftName] = useState("");
   const [renaming, setRenaming] = useState(false);
   const [renameError, setRenameError] = useState<string | null>(null);
+  const newRunsRef = useRef<HTMLElement>(null);
 
   const selectedExport = exports.find((e) => e.id === exportId) ?? null;
+  const sourceRun = runs.find((r) => r.id === sourceRunId) ?? null;
 
   useEffect(() => {
     if (status === null || Object.keys(picks).length > 0) return;
@@ -185,6 +206,17 @@ export function TrainSidebar({
   useEffect(() => {
     setDraftName(selectedExport?.name ?? "");
   }, [selectedExport?.id, selectedExport?.name]);
+
+  // A newly chosen "Start from" run picks its own default mode: Continue when allowed, else Fine-tune.
+  useEffect(() => {
+    if (sourceRun !== null) setMode(defaultMode(sourceRun));
+  }, [sourceRun?.id]);
+
+  // `onTrainOnNewData` (the Stopped-run section's and the run detail header's own buttons) brings
+  // this whole New-runs section into view, even if the sidebar was scrolled past it.
+  useEffect(() => {
+    newRunsRef.current?.scrollIntoView?.({ block: "nearest" });
+  }, [newRunsFocus]);
 
   if (status === null || params === null) return <aside className="note p-3">Loading…</aside>;
 
@@ -206,12 +238,30 @@ export function TrainSidebar({
   const problem = startProblem({ available: status.available, error: status.error, exportId, picked: chosen.length });
   const byId = new Map(runs.map((r) => [r.id, r]));
 
+  // Continue keeps the source's own params, so they are shown but disabled; Fine-tune (or the
+  // ordinary Pretrained-weights flow) edits `params` as normal.
+  const paramsLocked = sourceRun !== null && mode === "continue";
+  const displayParams = paramsLocked && sourceRun !== null ? sourceRun.params : params;
+  const exportMismatch = sourceRun !== null && selectedExport !== null && !classesCompatible(selectedExport, sourceRun);
+  const fromCheckpointProblem: string | null =
+    !status.available ? (status.error ?? "Training is not available on this server.")
+      : exportId === null ? "Choose an export to train on."
+        : exportMismatch ? "This export's classes do not match the source run's classes."
+          : null;
+  const effectiveProblem = sourceRun !== null ? fromCheckpointProblem : problem;
+
   const start = async () => {
-    if (problem !== null || starting || exportId === null) return;
+    if (effectiveProblem !== null || starting || exportId === null) return;
     setStarting(true);
     setStartError(null);
     try {
-      await onStart({ export_id: exportId, runs: chosen.map((m) => ({ model: m, gpu: gpuOf(m) })), params });
+      if (sourceRun !== null) {
+        await onStartFromCheckpoint(sourceRun.id, {
+          export_id: exportId, mode, gpu: batchGpu ?? 0, ...(mode === "finetune" ? { params } : {}),
+        });
+      } else {
+        await onStart({ export_id: exportId, runs: chosen.map((m) => ({ model: m, gpu: gpuOf(m) })), params });
+      }
     } catch (e) {
       setStartError(message(e));
     } finally {
@@ -237,20 +287,52 @@ export function TrainSidebar({
     <aside className="flex shrink-0 flex-col gap-5 border-t border-line bg-panel p-3 md:w-96 md:overflow-y-auto md:border-l md:border-t-0">
       {selectedRun !== null && (selectedRun.resumable || selectedRun.completable) && (
         <StoppedRunSection key={selectedRun.id} status={status} runs={runs} run={selectedRun} focus={stoppedFocus}
-          onResume={onResume} onComplete={onComplete} />
+          onResume={onResume} onComplete={onComplete} onTrainOnNewData={onTrainOnNewData} />
       )}
-      <section className="flex flex-col gap-2">
+      <section ref={newRunsRef} className="flex flex-col gap-2">
         <h2 className="heading">New runs</h2>
+        <label className="flex flex-col gap-1 text-sm text-dim">
+          Start from
+          <select aria-label="Start from" className="field" value={sourceRunId ?? ""}
+            onChange={(e) => onSourceRunChange(e.target.value === "" ? null : e.target.value)}>
+            <option value="">Pretrained weights</option>
+            {checkpointSources(runs).map((r) => (
+              <option key={r.id} value={r.id}>{sourceRunLabel(r, exports)}</option>
+            ))}
+          </select>
+        </label>
+        {sourceRun !== null && (
+          <fieldset className="flex flex-col gap-1.5">
+            <legend className="mb-1 text-sm text-dim">Mode</legend>
+            {(["continue", "finetune"] as const).map((m) => {
+              const reason = modeDisabledReason(sourceRun, m);
+              return (
+                <label key={m} className="flex flex-col gap-0.5 text-sm">
+                  <span className="flex items-start gap-2">
+                    <input type="radio" aria-label={m === "continue" ? "Continue" : "Fine-tune"} name="start-mode"
+                      checked={mode === m} disabled={reason !== null} onChange={() => setMode(m)} />
+                    <span>{m === "continue" ? continueModeLabel(sourceRun) : finetuneModeLabel(sourceRun)}</span>
+                  </span>
+                  {reason !== null && <span className="note pl-6">Disabled: {reason}.</span>}
+                </label>
+              );
+            })}
+          </fieldset>
+        )}
+        {sourceRun !== null && <p className="text-sm text-dim">Model: {sourceRun.model}</p>}
         <label className="flex flex-col gap-1 text-sm text-dim">
           Export
           <select aria-label="Export" className="field" value={exportId ?? ""} onChange={(e) => onExportChange(e.target.value)}>
             {exports.length === 0 && <option value="">No yolo_seg export yet</option>}
-            {exports.map((e) => (
-              <option key={e.id} value={e.id}>
-                {e.name !== null ? exportLabel(e) : e.project_name} · {e.id} ·{" "}
-                {e.train_images} train / {e.val_images} val
-              </option>
-            ))}
+            {exports.map((e) => {
+              const incompatible = sourceRun !== null && !classesCompatible(e, sourceRun);
+              return (
+                <option key={e.id} value={e.id} disabled={incompatible}>
+                  {e.name !== null ? exportLabel(e) : e.project_name} · {e.id} ·{" "}
+                  {e.train_images} train / {e.val_images} val{incompatible ? " — different classes" : ""}
+                </option>
+              );
+            })}
           </select>
         </label>
         {selectedExport !== null && (
@@ -278,80 +360,98 @@ export function TrainSidebar({
             ))}
           </select>
         </label>
-        <label className="flex items-center gap-2 text-sm text-dim">
-          <input type="checkbox" checked={perModelGpu} onChange={(e) => togglePerModelGpu(e.target.checked)} />
-          Different GPU per model
-        </label>
-        <fieldset className="flex flex-col gap-1.5">
-          <legend className="mb-1 text-sm text-dim">Models</legend>
-          {visible.map((m) => (
-            <div key={m} className="flex items-center justify-between gap-2 text-sm">
-              <label className="flex items-center gap-2">
-                <input type="checkbox" aria-label={m} checked={picks[m]?.checked ?? false}
-                  onChange={(e) => setPicks((p) => ({ ...p, [m]: { ...p[m], checked: e.target.checked } }))} />
-                {m}
-              </label>
-              {perModelGpu && (
-                <select aria-label={`GPU for ${m}`} className="field py-0.5" value={picks[m]?.gpu ?? batchGpu ?? 0}
-                  onChange={(e) => setPicks((p) => ({ ...p, [m]: { ...p[m], gpu: Number(e.target.value) } }))}>
-                  {status.gpus.map((g) => (
-                    <option key={g.index} value={g.index}>{gpuOptionLabel(g, status)}</option>
-                  ))}
-                </select>
-              )}
-            </div>
-          ))}
-          <button type="button" className="btn self-start" onClick={() => setShowAll((v) => !v)}>
-            {showAll ? "Fewer models" : "More models"}
-          </button>
-        </fieldset>
-        {onSam3 && (
+        {sourceRun === null && (
+          <label className="flex items-center gap-2 text-sm text-dim">
+            <input type="checkbox" checked={perModelGpu} onChange={(e) => togglePerModelGpu(e.target.checked)} />
+            Different GPU per model
+          </label>
+        )}
+        {sourceRun === null && (
+          <fieldset className="flex flex-col gap-1.5">
+            <legend className="mb-1 text-sm text-dim">Models</legend>
+            {visible.map((m) => (
+              <div key={m} className="flex items-center justify-between gap-2 text-sm">
+                <label className="flex items-center gap-2">
+                  <input type="checkbox" aria-label={m} checked={picks[m]?.checked ?? false}
+                    onChange={(e) => setPicks((p) => ({ ...p, [m]: { ...p[m], checked: e.target.checked } }))} />
+                  {m}
+                </label>
+                {perModelGpu && (
+                  <select aria-label={`GPU for ${m}`} className="field py-0.5" value={picks[m]?.gpu ?? batchGpu ?? 0}
+                    onChange={(e) => setPicks((p) => ({ ...p, [m]: { ...p[m], gpu: Number(e.target.value) } }))}>
+                    {status.gpus.map((g) => (
+                      <option key={g.index} value={g.index}>{gpuOptionLabel(g, status)}</option>
+                    ))}
+                  </select>
+                )}
+              </div>
+            ))}
+            <button type="button" className="btn self-start" onClick={() => setShowAll((v) => !v)}>
+              {showAll ? "Fewer models" : "More models"}
+            </button>
+          </fieldset>
+        )}
+        {sourceRun === null && onSam3 && (
           <p className="note text-ink">
             SAM3 runs on cuda:{status.sam3_gpu}. Training there shares its memory; labeling or training may run out of VRAM.
           </p>
         )}
-        {[...new Set(chosen.map((m) => gpuOf(m)))].map((gpu) => {
+        {sourceRun === null && [...new Set(chosen.map((m) => gpuOf(m)))].map((gpu) => {
           const note = gpuBusyNote(status, runs, gpu);
           return note !== null ? (
             <p key={gpu} className="note text-ink">{note}</p>
           ) : null;
         })}
+        {sourceRun !== null && status.sam3_gpu !== null && (batchGpu ?? 0) === status.sam3_gpu && (
+          <p className="note text-ink">
+            SAM3 runs on cuda:{status.sam3_gpu}. Training there shares its memory; labeling or training may run out of VRAM.
+          </p>
+        )}
+        {sourceRun !== null && gpuBusyNote(status, runs, batchGpu ?? 0) !== null && (
+          <p className="note text-ink">{gpuBusyNote(status, runs, batchGpu ?? 0)}</p>
+        )}
+        {paramsLocked && <p className="note">Continue keeps the run's own settings.</p>}
         {PARAM_FIELDS.map((f) => (
           <label key={f.key} className="flex items-center justify-between gap-2 text-sm text-dim">
             {f.label}
             <input aria-label={f.label} type="number" className="field w-24" min={f.min} max={f.max} step={f.step}
-              value={params[f.key]} onChange={(e) => setParams({ ...params, [f.key]: Number(e.target.value) || f.min })} />
+              disabled={paramsLocked}
+              value={displayParams[f.key]} onChange={(e) => setParams({ ...params, [f.key]: Number(e.target.value) || f.min })} />
           </label>
         ))}
         <label className="flex flex-col gap-1 text-sm text-dim">
           Augmentation
-          <select aria-label="Augmentation" className="field" value={params.augment ?? "default"}
+          <select aria-label="Augmentation" className="field" value={displayParams.augment ?? "default"} disabled={paramsLocked}
             onChange={(e) => onAugmentChange(e.target.value as AugmentMode)}>
             <option value="default">Default</option>
             <option value="strong">Strong</option>
             <option value="custom">Custom</option>
           </select>
         </label>
-        {params.augment === "custom" && params.aug && (
+        {displayParams.augment === "custom" && displayParams.aug && (
           <fieldset className="grid grid-cols-2 gap-x-2 gap-y-1.5">
             <legend className="sr-only">Custom augmentation</legend>
             {AUG_FIELDS.map((f) => (
               <label key={f.key} className="flex items-center justify-between gap-1 text-sm text-dim">
                 {f.key}
                 <input aria-label={f.key} type="number" className="field w-20" min={f.min} max={f.max} step={f.step}
-                  value={params.aug![f.key]} onChange={(e) => setAug({ [f.key]: Number(e.target.value) || f.min })} />
+                  disabled={paramsLocked}
+                  value={displayParams.aug![f.key]} onChange={(e) => setAug({ [f.key]: Number(e.target.value) || f.min })} />
               </label>
             ))}
             <label className="col-span-2 flex items-center gap-2 text-sm text-dim">
-              <input type="checkbox" checked={params.aug.photometric} onChange={(e) => setAug({ photometric: e.target.checked })} />
+              <input type="checkbox" checked={displayParams.aug.photometric} disabled={paramsLocked}
+                onChange={(e) => setAug({ photometric: e.target.checked })} />
               Blur, noise, JPEG, contrast
             </label>
           </fieldset>
         )}
-        {problem !== null && <p className="note text-ink">{problem}</p>}
+        {effectiveProblem !== null && <p className="note text-ink">{effectiveProblem}</p>}
         {startError !== null && <p role="alert" className="alert">{startError}</p>}
-        <button type="button" className="btn btn-on" disabled={problem !== null || starting} onClick={() => void start()}>
-          Start {chosen.length} run{chosen.length === 1 ? "" : "s"}
+        <button type="button" className="btn btn-on" disabled={effectiveProblem !== null || starting} onClick={() => void start()}>
+          {sourceRun !== null
+            ? (mode === "continue" ? "Continue on new data" : "Fine-tune on new data")
+            : `Start ${chosen.length} run${chosen.length === 1 ? "" : "s"}`}
         </button>
       </section>
 

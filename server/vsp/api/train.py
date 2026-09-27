@@ -22,6 +22,7 @@ from ..train.models import (
     find_export,
     list_exports,
     rename_export,
+    run_classes,
 )
 from ..train.results import read_metrics, tail
 from ..train.runs import best_weights, onnx_weights, read_json
@@ -62,14 +63,24 @@ def sam3_gpu(engine) -> int | None:
 def _view(state, run: dict, *, detail: bool = False) -> dict:
     run_dir = state.train.runs.dir(run["id"])
     rows = read_metrics(run_dir)
+    resumable = state.train.resumable(run)
+    has_best = best_weights(run_dir).is_file()
+    classes = run_classes(run_dir, run, state.settings.project.data_root)
     view = {k: v for k, v in run.items() if k not in _PRIVATE}
     view.update(
         epochs_done=len(rows),
         progress=read_json(run_dir / "progress.json") if run["status"] == "running" else None,
-        resumable=state.train.resumable(run),
+        resumable=resumable,
         completable=state.train.completable(run),
-        has_best=best_weights(run_dir).is_file(),
+        has_best=has_best,
         has_onnx=onnx_weights(run_dir).is_file(),
+        classes=list(classes) if classes is not None else None,
+        source_run=run.get("source_run"),
+        start_mode=run.get("start_mode"),
+        continued_from_epoch=run.get("continued_from_epoch"),
+        # "Train from a previous run" eligibility, mirroring TrainScheduler.submit_from's own checks.
+        continuable=resumable,
+        finetunable=has_best,
     )
     if detail:
         view["metrics"] = rows
@@ -151,6 +162,25 @@ def start_runs(body: StartBody, state: State) -> dict:
         raise TrainUnavailable(error)
     export = find_export(state.settings.project.data_root, body.export_id)
     return {"run_ids": state.train.submit(export, [(r.model, r.gpu) for r in body.runs], body.params)}
+
+
+class FromCheckpointBody(BaseModel):
+    export_id: str
+    mode: Literal["continue", "finetune"]
+    gpu: int
+    params: TrainParams | None = None
+
+
+@router.post("/api/train/runs/{run_id}/from-checkpoint", status_code=201)
+def start_from_checkpoint(run_id: str, body: FromCheckpointBody, state: State) -> dict:
+    """A new run that continues (mode "continue") or fine-tunes (mode "finetune") `run_id`'s
+    checkpoint on a different export (same classes required); the source run is untouched."""
+    error = ultralytics_error()
+    if error is not None:
+        raise TrainUnavailable(error)
+    export = find_export(state.settings.project.data_root, body.export_id)
+    new_id = state.train.submit_from(run_id, export, body.mode, body.gpu, body.params)
+    return {"run_id": new_id}
 
 
 @router.get("/api/train/runs")

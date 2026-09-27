@@ -261,6 +261,48 @@ Defaults: 100 epochs, early stop after 30 epochs without improvement, 960 px, ba
 Ultralytics' default augmentation. Metrics come from `results.csv`; the comparison table ranks runs by the best mask
 mAP50-95 epoch. ONNX export (`best.onnx`, static, square at the run's image size, 960 × 960 by default) runs on the run's GPU queue.
 
+### Train from a previous run on new data
+
+Any run can be trained further on a *different* export, as long as that export has exactly the same classes (same
+names, same order) as the run being started from. This always creates a new run — the source run is never modified
+— in one of two modes:
+
+- **Continue** — a true resume on the new export: from the source run's own `last.pt`, keeping its epoch counter,
+  optimizer state, LR schedule and training hyper-parameters, and training the remaining epochs on the newly chosen
+  export. Only a run that stopped before finishing (cancelled, interrupted or errored, with a `last.pt` on disk —
+  the same rule as "Resume") is eligible; a finished run's `last.pt` has been stripped by Ultralytics and cannot be
+  resumed.
+- **Fine-tune** — a new training that starts from the source run's `best.pt` weights instead of the pretrained
+  `<model>.pt`, with a fresh epoch schedule and whatever params you set (epochs, image size, batch, patience,
+  workers, seed, augmentation…), exactly like starting a new run. Any run with a `best.pt` is eligible, finished ones
+  included.
+
+From the Train page: pick the source run from the New-runs form's "Start from" select (only continuable or
+fine-tunable runs are listed, newest first) — or click "Train on new data" next to a stopped run, or (any run with
+a `best.pt`) in the run detail header, which does the same thing and scrolls the New-runs form into view. Choose Continue or
+Fine-tune (whichever the source run is not eligible for is shown disabled, with the reason); pick the export to
+train on next — one whose classes do not match is disabled in the list, with " — different classes" appended, and
+the Start button itself is disabled with a note if the current choice mismatches. For Continue, the params fields
+are shown read-only (the source run's own settings are kept, not what is on screen); for Fine-tune they are editable
+as normal. Pick a GPU and click "Continue on new data" / "Fine-tune on new data". The Runs table marks the new run
+with a small note ("continued from …" / "fine-tuned from …"), and the run detail header names the epoch training
+switched to the new data at.
+
+From the API: `POST /api/train/runs/{run_id}/from-checkpoint` with `{"export_id": "<id>", "mode": "continue" |
+"finetune", "gpu": N, "params": {...}}` (`params` is honoured only for `"finetune"`; a `"continue"` run always keeps
+the source's own params) → `{"run_id": "<new id>"}` (201). 404 for an unknown run or export, 409 when the source run
+is not eligible for the chosen mode or the export's classes do not match, 400 for an unknown GPU.
+
+From the CLI: `uv run vsp train --export <new_export_id> --from-run <run_id> --mode continue|finetune [--gpu N]
+[params…]` trains one run (the source's own model) in the foreground exactly like `vsp train` does for a new run;
+`--model` cannot be combined with `--from-run`. As with the API, `[params…]` (`--epochs`, `--imgsz`, …) only affects
+`--mode finetune` — a `continue` run always keeps the source's own params.
+
+**Manual QA:** train a run to completion, cancel a second run partway through (so it has a `last.pt`), then
+Continue the cancelled run and Fine-tune the finished one onto a different export with the same classes; confirm
+both queue as new runs, the source runs are untouched on the Train page, and Continue's metrics chart carries over
+the source run's earlier epochs.
+
 ### Augmentation
 
 **Presets:** `uv run vsp train --export <id> --augment strong` (or `default`, on the Train page select Default / Strong / Custom). The **Strong** preset raises geometric, photometric and copy-paste augmentation above Ultralytics' defaults: degrees 15, shear 5, perspective 0.0005, flip up 0.5, flip horizontal 0.5, scale 0.6, translate 0.2, HSV hue 0.02, saturation 0.7, value 0.5, mosaic 1.0, mixup 0.1, copy_paste 0.3, plus RandomBrightnessContrast, MotionBlur, GaussianBlur, GaussNoise, ImageCompression and CLAHE. The Custom preset on the GUI allows per-field adjustment.

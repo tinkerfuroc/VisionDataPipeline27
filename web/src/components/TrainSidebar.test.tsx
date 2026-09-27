@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { AugParams, Run, TrainStatus } from "../api/types";
+import type { AugParams, ExportInfo, Run, TrainStatus } from "../api/types";
 import { TrainSidebar } from "./TrainSidebar";
 
 afterEach(cleanup);
@@ -35,7 +35,8 @@ function renderSidebar(selectedRun: Run | null, onComplete: (id: string, gpu: nu
   return render(
     <TrainSidebar status={status} exports={[]} runs={selectedRun ? [selectedRun] : []} exportId={null}
       onExportChange={() => {}} onExportsChanged={() => {}} onStart={noop} onCancel={() => {}}
-      selectedRun={selectedRun} onResume={noop} onComplete={onComplete} />,
+      selectedRun={selectedRun} onResume={noop} onComplete={onComplete} sourceRunId={null}
+      onSourceRunChange={() => {}} onStartFromCheckpoint={noop} onTrainOnNewData={() => {}} />,
   );
 }
 
@@ -90,5 +91,125 @@ describe("TrainSidebar stopped-run section", () => {
     expect(screen.getByText(
       "Keeps the best epoch so far, runs the validation predictions on that GPU, then marks the run done.",
     )).toBeTruthy();
+  });
+
+  it("Train on new data calls onTrainOnNewData with the stopped run's id", () => {
+    const onTrainOnNewData = vi.fn();
+    render(
+      <TrainSidebar status={status} exports={[]} runs={[run({ resumable: true })]} exportId={null}
+        onExportChange={() => {}} onExportsChanged={() => {}} onStart={noop} onCancel={() => {}}
+        selectedRun={run({ resumable: true })} onResume={noop} onComplete={noop} sourceRunId={null}
+        onSourceRunChange={() => {}} onStartFromCheckpoint={noop} onTrainOnNewData={onTrainOnNewData} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Train on new data" }));
+    expect(onTrainOnNewData).toHaveBeenCalledWith(run().id);
+  });
+});
+
+const exportInfo = (over: Partial<ExportInfo> = {}): ExportInfo => ({
+  id: "e1", name: null, project_name: "Optics", created_at: "", classes: ["Module"], train_images: 10,
+  val_images: 2, formats: ["yolo_seg"], derived_from: null, ...over,
+});
+
+describe("TrainSidebar Start from a checkpoint", () => {
+  const continuableRun = run({
+    id: "20260924-120000-yolo11s-seg-src1", status: "cancelled", resumable: true, continuable: true,
+    epochs_done: 40, params: { ...run().params, epochs: 100 }, classes: ["Module"],
+  });
+  const doneRun = run({
+    id: "20260924-120000-yolo11s-seg-src2", status: "done", finetunable: true, has_best: true, epochs_done: 100,
+    best: { epoch: 80, mask_map50: 0.9, mask_map50_95: 0.7, box_map50: 0.9, box_map50_95: 0.8, train_seconds: 60 },
+  });
+
+  function renderFromCheckpoint(opts: {
+    runs: Run[];
+    sourceRunId: string | null;
+    exports?: ExportInfo[];
+    exportId?: string | null;
+    onSourceRunChange?: (id: string | null) => void;
+    onStartFromCheckpoint?: (id: string, body: unknown) => Promise<void>;
+  }) {
+    return render(
+      <TrainSidebar status={status} exports={opts.exports ?? [exportInfo()]} runs={opts.runs}
+        exportId={opts.exportId ?? "e1"} onExportChange={() => {}} onExportsChanged={() => {}} onStart={noop}
+        onCancel={() => {}} selectedRun={null} onResume={noop} onComplete={noop}
+        sourceRunId={opts.sourceRunId} onSourceRunChange={opts.onSourceRunChange ?? (() => {})}
+        onStartFromCheckpoint={(opts.onStartFromCheckpoint ?? noop) as never} onTrainOnNewData={() => {}} />,
+    );
+  }
+
+  it("the Start-from select lists only continuable/finetunable runs", () => {
+    const ineligible = run({ id: "20260924-120000-yolo11s-seg-nope", status: "queued" });
+    renderFromCheckpoint({ runs: [continuableRun, doneRun, ineligible], sourceRunId: null });
+    const select = screen.getByLabelText("Start from") as HTMLSelectElement;
+    const values = Array.from(select.options).map((o) => o.value);
+    expect(values).toEqual(["", continuableRun.id, doneRun.id]);
+  });
+
+  it("Continue is the default mode for a continuable run; a done run defaults to and is limited to Fine-tune", () => {
+    renderFromCheckpoint({ runs: [continuableRun], sourceRunId: continuableRun.id });
+    expect((screen.getByRole("radio", { name: "Continue" }) as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByRole("radio", { name: "Continue" }) as HTMLInputElement).disabled).toBe(false);
+    expect(screen.getByText(`Model: ${continuableRun.model}`)).toBeTruthy();
+    cleanup();
+
+    renderFromCheckpoint({ runs: [doneRun], sourceRunId: doneRun.id });
+    const continueRadio = screen.getByRole("radio", { name: "Continue" }) as HTMLInputElement;
+    expect(continueRadio.disabled).toBe(true); // Continue disabled for a done run
+    expect(screen.getByText(/only a stopped run/)).toBeTruthy();
+    expect((screen.getByRole("radio", { name: "Fine-tune" }) as HTMLInputElement).checked).toBe(true);
+  });
+
+  it("marks an incompatible export disabled in the Export select and disables Start with a note", () => {
+    const mismatched = exportInfo({ id: "e-mismatch", classes: ["Widget"] });
+    renderFromCheckpoint({
+      runs: [continuableRun], sourceRunId: continuableRun.id, exports: [exportInfo(), mismatched],
+      exportId: "e-mismatch",
+    });
+    const options = Array.from((screen.getByLabelText("Export") as HTMLSelectElement).options);
+    const bad = options.find((o) => o.value === "e-mismatch")!;
+    expect(bad.disabled).toBe(true);
+    expect(bad.text).toMatch(/ — different classes$/);
+    const good = options.find((o) => o.value === "e1")!;
+    expect(good.disabled).toBe(false);
+    expect(screen.getByText(/do not match the source run's classes/)).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Continue on new data" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("Continue shows the source run's own params, disabled, with a note; Fine-tune leaves them editable", () => {
+    renderFromCheckpoint({ runs: [continuableRun], sourceRunId: continuableRun.id });
+    expect(screen.getByText("Continue keeps the run's own settings.")).toBeTruthy();
+    const epochs = screen.getByLabelText("Epochs") as HTMLInputElement;
+    expect(epochs.disabled).toBe(true);
+    expect(epochs.value).toBe("100"); // the source run's own epochs, not the server defaults
+    cleanup();
+
+    renderFromCheckpoint({ runs: [continuableRun, doneRun], sourceRunId: continuableRun.id });
+    fireEvent.click(screen.getByRole("radio", { name: "Fine-tune" }));
+    expect(screen.queryByText("Continue keeps the run's own settings.")).toBeNull();
+    expect((screen.getByLabelText("Epochs") as HTMLInputElement).disabled).toBe(false);
+  });
+
+  it("Start button reads Continue/Fine-tune on new data and sends the request body", async () => {
+    const onStartFromCheckpoint = vi.fn().mockResolvedValue(undefined);
+    renderFromCheckpoint({ runs: [continuableRun], sourceRunId: continuableRun.id, onStartFromCheckpoint });
+    expect(screen.getByRole("button", { name: "Continue on new data" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Continue on new data" }));
+    await Promise.resolve();
+    expect(onStartFromCheckpoint).toHaveBeenCalledWith(continuableRun.id, { export_id: "e1", mode: "continue", gpu: 0 });
+    // Continue never sends `params` (the source's own are used, ignoring anything client-side).
+    expect(onStartFromCheckpoint.mock.calls[0][1]).not.toHaveProperty("params");
+  });
+
+  it("Fine-tune sends the edited params in the request body", async () => {
+    const onStartFromCheckpoint = vi.fn().mockResolvedValue(undefined);
+    renderFromCheckpoint({ runs: [doneRun], sourceRunId: doneRun.id, onStartFromCheckpoint });
+    fireEvent.change(screen.getByLabelText("Epochs"), { target: { value: "12" } });
+    fireEvent.click(screen.getByRole("button", { name: "Fine-tune on new data" }));
+    await Promise.resolve();
+    const [id, body] = onStartFromCheckpoint.mock.calls[0];
+    expect(id).toBe(doneRun.id);
+    expect(body.mode).toBe("finetune");
+    expect(body.params.epochs).toBe(12);
   });
 });

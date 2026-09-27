@@ -16,6 +16,7 @@ vi.mock("../api/rest", async (original) => {
       health: vi.fn(), trainStatus: vi.fn(), listExports: vi.fn(), listRuns: vi.fn(), getRun: vi.fn(), startRuns: vi.fn(),
       cancelRun: vi.fn(), resumeRun: vi.fn(), completeRun: vi.fn(), exportOnnx: vi.fn(), deleteRun: vi.fn(), predictions: vi.fn(),
       listBackgrounds: vi.fn(), fetchBackgrounds: vi.fn(), augmentExport: vi.fn(), exportSamples: vi.fn(), renameExport: vi.fn(),
+      trainFromCheckpoint: vi.fn(),
     },
   };
 });
@@ -81,6 +82,7 @@ beforeEach(() => {
   ] }) as RunDetail);
   m.startRuns.mockResolvedValue({ run_ids: ["r3"] });
   m.cancelRun.mockResolvedValue(r2);
+  m.trainFromCheckpoint.mockResolvedValue({ run_id: "r9" });
 });
 afterEach(cleanup);
 
@@ -383,5 +385,61 @@ describe("Train page", () => {
     m.listRuns.mockResolvedValue([r1, r2, early]);
     renderPage();
     expect(await screen.findByText("Done (stopped at epoch 65 of 100)")).toBeTruthy();
+  });
+
+  it("Train on new data (Stopped-run section) picks the run as Start-from, and Continue sends the request", async () => {
+    const stopped = run("r3", "yolo11s-seg", {
+      status: "cancelled", resumable: true, continuable: true, epochs_done: 40,
+      params: { ...status.defaults, epochs: 100 },
+    });
+    m.listRuns.mockResolvedValue([r1, r2, stopped]);
+    renderPage();
+
+    fireEvent.click((await screen.findByRole("checkbox", { name: "Compare yolo11s-seg" })).closest("tr")!);
+    const heading = await screen.findByText("Stopped yolo11s-seg run");
+    fireEvent.click(within(heading.closest("section")!).getByRole("button", { name: "Train on new data" }));
+
+    const select = (await screen.findByLabelText("Start from")) as HTMLSelectElement;
+    expect(select.value).toBe("r3");
+    expect(await screen.findByText(`Model: ${stopped.model}`)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Continue on new data" }));
+    await waitFor(() =>
+      expect(m.trainFromCheckpoint).toHaveBeenCalledWith("r3", { export_id: exp.id, mode: "continue", gpu: 0 }),
+    );
+  });
+
+  it("Train on new data (run detail header) appears only for a run with best.pt, and Fine-tune sends its params", async () => {
+    const done = run("r3", "yolo11s-seg", {
+      status: "done", has_best: true, finetunable: true, epochs_done: 100,
+      best: { epoch: 80, mask_map50: 0.8, mask_map50_95: 0.7, box_map50: 0.8, box_map50_95: 0.7, train_seconds: 10 },
+    });
+    m.listRuns.mockResolvedValue([r1, r2, done]);
+    renderPage();
+
+    // r2 (queued, no best.pt) has no "Train on new data" in its header.
+    fireEvent.click((await screen.findByRole("checkbox", { name: "Compare yolo26m-seg" })).closest("tr")!);
+    await screen.findByText(`yolo26m-seg on ${exp.project_name} · Queued`);
+    expect(screen.queryByRole("button", { name: "Train on new data" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Compare yolo11s-seg" }).closest("tr")!);
+    await screen.findByText(new RegExp(`^yolo11s-seg on ${exp.project_name}`));
+    fireEvent.click(screen.getByRole("button", { name: "Train on new data" }));
+
+    expect(((await screen.findByLabelText("Start from")) as HTMLSelectElement).value).toBe("r3");
+    fireEvent.click(screen.getByRole("radio", { name: "Fine-tune" })); // only mode allowed for a done run
+    fireEvent.change(screen.getByLabelText("Epochs"), { target: { value: "12" } });
+    fireEvent.click(screen.getByRole("button", { name: "Fine-tune on new data" }));
+    await waitFor(() => expect(m.trainFromCheckpoint).toHaveBeenCalled());
+    const [sourceId, body] = m.trainFromCheckpoint.mock.calls[0];
+    expect(sourceId).toBe("r3");
+    expect(body.mode).toBe("finetune");
+    expect(body.params?.epochs).toBe(12);
+  });
+
+  it("Runs table shows a note for a run continued or fine-tuned from another", async () => {
+    const continued = run("r3", "yolo11s-seg", { source_run: "r-old", start_mode: "continue", continued_from_epoch: 40 });
+    m.listRuns.mockResolvedValue([r1, r2, continued]);
+    renderPage();
+    expect(await screen.findByText(/continued from r-old/)).toBeTruthy();
   });
 });

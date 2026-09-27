@@ -1,7 +1,7 @@
 import type { ExportInfo, Run, RunBest } from "../api/types";
 import { weightsUrl } from "../api/rest";
 import { exportLabel } from "../lib/exportName";
-import { bestRunIds, formatDuration, statusText } from "../lib/train";
+import { bestRunIds, formatDuration, startModeNote, statusText } from "../lib/train";
 
 const METRICS: { key: keyof RunBest; label: string }[] = [
   { key: "mask_map50", label: "Mask mAP50" },
@@ -76,7 +76,12 @@ export function RunsTable({ runs, selectedId, compareIds, exports = [], onSelect
                   <input type="checkbox" aria-label={`Compare ${r.model}`} checked={comparing}
                     disabled={!comparing && compareIds.length >= MAX_COMPARE} onChange={() => onToggleCompare(r.id)} />
                 </td>
-                <td className="px-2 py-1.5 font-medium">{r.model}</td>
+                <td className="px-2 py-1.5 font-medium">
+                  <div className="flex flex-col">
+                    <span>{r.model}</span>
+                    {startModeNote(r) !== null && <span className="note font-cond text-dim">{startModeNote(r)}</span>}
+                  </div>
+                </td>
                 <td className="px-2 py-1.5 text-dim">
                   <div className="flex flex-col">
                     <span>{runExportLabel}</span>

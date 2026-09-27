@@ -312,6 +312,78 @@ def test_unavailable_without_ultralytics(client, monkeypatch):
     assert client.post("/api/train/runs", json=body).status_code == 503
 
 
+def test_run_view_carries_classes_and_start_mode_fields(client):
+    rid = start(client, epochs=2)
+    view = until(client, rid, "done")
+    assert view["classes"] == ["Module"]
+    assert view["source_run"] is None and view["start_mode"] is None and view["continued_from_epoch"] is None
+    assert view["continuable"] == view["resumable"] and view["finetunable"] == view["has_best"]
+    assert view["finetunable"] is True
+
+
+def test_from_checkpoint_continue_happy_path(client, tmp_path):
+    rid = start(client, epochs=99, gpu=1)
+    until(client, rid, "running")
+    wait_for(lambda: (tmp_path / "data" / "runs" / rid / "train" / "weights" / "last.pt").is_file())
+    client.post(f"/api/train/runs/{rid}/cancel")
+    until(client, rid, "cancelled")
+
+    make_export(tmp_path / "data", "20260201-000000-newexp")
+    r = client.post(f"/api/train/runs/{rid}/from-checkpoint",
+                    json={"export_id": "20260201-000000-newexp", "mode": "continue", "gpu": 0})
+    assert r.status_code == 201, r.text
+    new_id = r.json()["run_id"]
+    assert new_id != rid
+    new = client.get(f"/api/train/runs/{new_id}").json()
+    assert new["source_run"] == rid and new["start_mode"] == "continue"
+    assert new["export_id"] == "20260201-000000-newexp"
+    until(client, new_id, "running")
+    client.post(f"/api/train/runs/{new_id}/cancel")
+    until(client, new_id, "cancelled")
+
+
+def test_from_checkpoint_finetune_happy_path(client, tmp_path):
+    rid = start(client, epochs=2, gpu=1)
+    until(client, rid, "done")
+
+    make_export(tmp_path / "data", "20260201-000000-newexp")
+    r = client.post(f"/api/train/runs/{rid}/from-checkpoint", json={
+        "export_id": "20260201-000000-newexp", "mode": "finetune", "gpu": 0,
+        "params": {"epochs": 5, "imgsz": 640},
+    })
+    assert r.status_code == 201, r.text
+    new_id = r.json()["run_id"]
+    new = client.get(f"/api/train/runs/{new_id}").json()
+    assert new["source_run"] == rid and new["start_mode"] == "finetune"
+    assert new["params"]["epochs"] == 5
+    until(client, new_id, "done")
+
+
+def test_from_checkpoint_errors(client, tmp_path):
+    rid = start(client, epochs=2, gpu=1)
+    until(client, rid, "done")
+    make_export(tmp_path / "data", "20260201-000000-widget", classes=("Widget",))
+
+    # unknown run / export
+    assert client.post("/api/train/runs/nope/from-checkpoint",
+                       json={"export_id": EXPORT_ID, "mode": "finetune", "gpu": 0}).status_code == 404
+    assert client.post(f"/api/train/runs/{rid}/from-checkpoint",
+                       json={"export_id": "missing", "mode": "finetune", "gpu": 0}).status_code == 404
+    # class mismatch
+    mismatch = client.post(f"/api/train/runs/{rid}/from-checkpoint",
+                           json={"export_id": "20260201-000000-widget", "mode": "finetune", "gpu": 0})
+    assert mismatch.status_code == 409 and "Widget" in mismatch.text and "Module" in mismatch.text
+    # ineligible: a done run cannot be "continued"
+    assert client.post(f"/api/train/runs/{rid}/from-checkpoint",
+                       json={"export_id": EXPORT_ID, "mode": "continue", "gpu": 0}).status_code == 409
+    # bad gpu
+    assert client.post(f"/api/train/runs/{rid}/from-checkpoint",
+                       json={"export_id": EXPORT_ID, "mode": "finetune", "gpu": 7}).status_code == 400
+    # bad mode (422: not one of the Literal's two values)
+    assert client.post(f"/api/train/runs/{rid}/from-checkpoint",
+                       json={"export_id": EXPORT_ID, "mode": "nonsense", "gpu": 0}).status_code == 422
+
+
 def test_predictions_filters_and_counts(client):
     rid = start(client)
     until(client, rid, "done")

@@ -46,6 +46,20 @@ describe("RunsTable", () => {
     expect(within(rows[1]).getByText("e-aug3x-3385")).toBeTruthy();
   });
 
+  it("shows a note under the model for a run started from a checkpoint", () => {
+    const continued: Run = { ...base, id: "20260924-120000-yolo26s-seg-jjjj",
+      source_run: "20260920-072200-yolo26s-seg-a1b2", start_mode: "continue", continued_from_epoch: 70 };
+    const finetuned: Run = { ...base, id: "20260924-120000-yolo26s-seg-kkkk",
+      source_run: "20260920-072200-yolo26s-seg-a1b2", start_mode: "finetune" };
+    const on = { onSelect: vi.fn(), onToggleCompare: vi.fn(), onCancel: vi.fn(), onAskStopped: vi.fn(), onOnnx: vi.fn(), onDelete: vi.fn() };
+    render(<RunsTable runs={[continued, finetuned, base]} selectedId={null} compareIds={[]} {...on} />);
+    expect(screen.getByText("continued from 20260920-0722…")).toBeTruthy();
+    expect(screen.getByText("fine-tuned from 20260920-0722…")).toBeTruthy();
+    // An ordinary run (`base`, no source_run) has no such note.
+    expect(screen.getAllByText("yolo26s-seg")).toHaveLength(3);
+    expect(screen.queryAllByText(/from 20260920/)).toHaveLength(2);
+  });
+
   it("shows the export's name from `exports`, falling back to the project name when unknown or unnamed", () => {
     const named: Run = { ...base, id: "20260924-120000-yolo26s-seg-gggg", export_id: "cups-v2" };
     const unnamed: Run = { ...base, id: "20260924-120000-yolo26s-seg-hhhh", export_id: "e-plain" };

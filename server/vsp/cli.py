@@ -106,6 +106,13 @@ def _train(settings: Settings, args, *, gpus=None, worker_cmd=None, poll: float 
     if not args.export:
         print("error: --export is required (see `vsp train --list`)")
         return 2
+    if args.from_run is not None:
+        if args.model:
+            print("error: --model is invalid with --from-run")
+            return 2
+        if args.mode is None:
+            print("error: --mode is required with --from-run (continue or finetune)")
+            return 2
     try:
         params = TrainParams(epochs=args.epochs, imgsz=args.imgsz, batch=args.batch, patience=args.patience,
                              workers=args.workers, seed=args.seed, augment=args.augment)
@@ -133,8 +140,12 @@ def _train(settings: Settings, args, *, gpus=None, worker_cmd=None, poll: float 
         reason = "fastest idle GPU" if gpu not in busy else "fastest GPU, all busy"
         gpu_desc = f"cuda:{gpu} ({name}, {reason})"
     try:
-        ids = sched.submit(export, [(m, gpu) for m in (args.model or DEFAULT_MODELS)], params)
-    except BadRequest as e:
+        if args.from_run is not None:
+            ids = [sched.submit_from(args.from_run, export, args.mode, gpu,
+                                     params if args.mode == "finetune" else None)]
+        else:
+            ids = sched.submit(export, [(m, gpu) for m in (args.model or DEFAULT_MODELS)], params)
+    except (NotFound, BadRequest, Conflict) as e:
         print(f"error: {e}")
         return 2
     print(f"training {len(ids)} model(s) on {gpu_desc} from export {export.id} ({export.project_name}); "
@@ -249,6 +260,12 @@ def main(argv: list[str] | None = None) -> int:
     p_train.add_argument("--export", default=None, help="export id (a folder name under data/exports/)")
     p_train.add_argument("--model", action="append", default=None,
                          help="model to train, repeatable (default: yolo26s/m-seg and yolo11s/m-seg)")
+    p_train.add_argument("--from-run", default=None,
+                         help="run id to continue or fine-tune from on --export (needs --mode); "
+                              "invalid with --model")
+    p_train.add_argument("--mode", choices=["continue", "finetune"], default=None,
+                         help="with --from-run: continue its own schedule and params, "
+                              "or fine-tune a fresh schedule from its best.pt")
     p_train.add_argument("--gpu", type=int, default=None,
                          help="CUDA index (default: the fastest idle GPU; SAM3's GPU is eligible)")
     p_train.add_argument("--epochs", type=int, default=100)

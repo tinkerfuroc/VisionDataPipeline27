@@ -1,7 +1,7 @@
 import { useCallback, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api/rest";
-import type { RunDetail, StartRunsRequest } from "../api/types";
+import type { FromCheckpointRequest, RunDetail, StartRunsRequest } from "../api/types";
 import { AppHeader } from "../components/AppHeader";
 import { CompareChart, MetricCharts } from "../components/MetricCharts";
 import { CompositeSamples } from "../components/CompositeSamples";
@@ -10,7 +10,7 @@ import { RunsTable } from "../components/RunsTable";
 import { TrainSidebar } from "../components/TrainSidebar";
 import { usePoll } from "../hooks/usePoll";
 import { exportLabel } from "../lib/exportName";
-import { statusText } from "../lib/train";
+import { startModeHeaderNote, statusText } from "../lib/train";
 
 const POLL_MS = 2000;
 const MAX_COMPARE = 4;
@@ -31,6 +31,10 @@ export function Train() {
   // even for the selected run
   const [stoppedAsk, setStoppedAsk] = useState(0);
   const [exportId, setExportId] = useState<string | null>(null);
+  // The New-runs form's "Start from"; set by the Stopped-run section's or the run detail header's
+  // "Train on new data" button, which also bumps `newRunsFocus` to scroll that form into view.
+  const [sourceRunId, setSourceRunId] = useState<string | null>(null);
+  const [newRunsFocus, setNewRunsFocus] = useState(0);
   // Slot index (0-3) a compared run is drawn in never changes while the run stays compared: a newly added run
   // takes the lowest free slot, and removing a run (toggle or delete) frees its slot for the next addition.
   const [compareSlots, setCompareSlots] = useState<(string | null)[]>(Array(MAX_COMPARE).fill(null));
@@ -96,6 +100,16 @@ export function Train() {
     runs.refresh();
     status.refresh();
   };
+  const onStartFromCheckpoint = async (sourceId: string, body: FromCheckpointRequest) => {
+    const { run_id } = await api.trainFromCheckpoint(sourceId, body);
+    setPickedId(run_id);
+    runs.refresh();
+    status.refresh();
+  };
+  const onTrainOnNewData = (id: string) => {
+    setSourceRunId(id);
+    setNewRunsFocus((n) => n + 1);
+  };
   const releaseSlot = (id: string) => setCompareSlots((slots) => slots.map((s) => (s === id ? null : s)));
   const onDelete = (id: string) => {
     if (!window.confirm("Delete this run and its weights?")) return;
@@ -152,8 +166,16 @@ export function Train() {
 
           {selected !== null && (
             <section className="flex flex-col gap-2">
-              <h2 className="heading">
-                {selected.model} on {selectedRunLabel} · {statusText(selected)}
+              <h2 className="heading flex flex-wrap items-center gap-2">
+                <span>
+                  {selected.model} on {selectedRunLabel} · {statusText(selected)}
+                  {startModeHeaderNote(selected) !== null && ` · ${startModeHeaderNote(selected)}`}
+                </span>
+                {selected.has_best && (
+                  <button type="button" className="btn" onClick={() => onTrainOnNewData(selected.id)}>
+                    Train on new data
+                  </button>
+                )}
               </h2>
               {selected.error !== null && (
                 <pre className="alert max-h-40 overflow-auto whitespace-pre-wrap font-cond text-xs">{selected.error}</pre>
@@ -176,7 +198,8 @@ export function Train() {
         <TrainSidebar status={status.data} exports={exportsList} runs={list} exportId={selectedExportId}
           onExportChange={setExportId} onExportsChanged={exports.refresh} onStart={onStart}
           onCancel={(id) => act(() => api.cancelRun(id))} selectedRun={selected} onResume={onResume}
-          onComplete={onComplete} stoppedFocus={stoppedAsk} />
+          onComplete={onComplete} stoppedFocus={stoppedAsk} sourceRunId={sourceRunId} onSourceRunChange={setSourceRunId}
+          onStartFromCheckpoint={onStartFromCheckpoint} onTrainOnNewData={onTrainOnNewData} newRunsFocus={newRunsFocus} />
       </div>
     </div>
   );
