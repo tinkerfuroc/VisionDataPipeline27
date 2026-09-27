@@ -245,93 +245,209 @@ describe("Clips page", () => {
     expect(screen.queryByText(/network error/)).toBeNull();
   });
 
-  const choose = (name: string) =>
-    fireEvent.change(screen.getByLabelText("Footage file"), { target: { files: [new File(["abc"], name)] } });
+  const choose = (...names: string[]) =>
+    fireEvent.change(screen.getByLabelText("Footage file"), {
+      target: { files: names.map((name) => new File(["abc"], name)) },
+    });
+  const drop = (...names: string[]) =>
+    fireEvent.drop(screen.getByLabelText("Footage file").closest("section")!, {
+      dataTransfer: { files: names.map((name) => new File(["abc"], name)) },
+    });
   const uploadHandle = (jobId = "j10") => ({ promise: Promise.resolve({ job_id: jobId }), abort: vi.fn() });
-
-  it("uploads the chosen video, shows progress, then follows the import job", async () => {
+  const deferredUpload = () => {
     let progress!: (sent: number, total: number) => void;
-    let done!: (result: { job_id: string }) => void;
+    let resolve!: (result: { job_id: string }) => void;
+    let reject!: (e: unknown) => void;
+    const handle = {
+      promise: new Promise<{ job_id: string }>((res, rej) => {
+        resolve = res;
+        reject = rej;
+      }),
+      abort: vi.fn(),
+    };
+    return { handle, capture: (onProgress?: (sent: number, total: number) => void) => (progress = onProgress!), get progress() { return progress; }, resolve, reject };
+  };
+
+  it("starts uploading the moment a video is chosen, with no button click, using the current stride and fps", async () => {
+    const first = deferredUpload();
     m.uploadClip.mockImplementation((_pid, _file, _opts, onProgress) => {
-      progress = onProgress!;
-      // deferred: progress is only observable while the upload is still running
-      return {
-        promise: new Promise<{ job_id: string }>((resolve) => {
-          done = resolve;
-        }),
-        abort: vi.fn(),
-      };
+      first.capture(onProgress);
+      return first.handle;
     });
     renderPage();
     await screen.findByText("bench.mp4");
+    fireEvent.change(screen.getByLabelText("Upload stride"), { target: { value: "2" } });
     choose("bench.mp4");
-    fireEvent.click(screen.getByRole("button", { name: "Upload and import" }));
     await waitFor(() =>
-      expect(m.uploadClip).toHaveBeenCalledWith(project.id, expect.any(File), { stride: 1, fps: 30 }, expect.any(Function)),
+      expect(m.uploadClip).toHaveBeenCalledWith(project.id, expect.any(File), { stride: 2, fps: 30 }, expect.any(Function)),
     );
-    act(() => progress(50, 100));
+    expect(screen.queryByRole("button", { name: "Upload and import" })).toBeNull();
+    act(() => first.progress(50, 100));
     expect(screen.getByText("50% of 100 B")).toBeTruthy();
-    await act(async () => done({ job_id: "j10" }));
+    await act(async () => first.resolve({ job_id: "j10" }));
     await waitFor(() => expect(FakeSocket.last?.url).toMatch(/j10$/));
     expect((screen.getByLabelText("Footage file") as HTMLInputElement).value).toBe("");
   });
 
-  it("only offers frames per second for a zip and sends it", async () => {
+  it("resets the file input after each selection, so choosing the same file again fires onChange", async () => {
     m.uploadClip.mockReturnValue(uploadHandle("j11"));
     renderPage();
     await screen.findByText("bench.mp4");
-    expect(screen.queryByLabelText("Zip frames per second")).toBeNull();
-    choose("run.zip");
+    const input = screen.getByLabelText("Footage file") as HTMLInputElement;
+    fireEvent.change(input, { target: { files: [new File(["abc"], "bench.mp4")] } });
+    expect(input.value).toBe("");
+  });
+
+  it("always offers frames per second, labelled as zip-only, and sends both settings", async () => {
+    m.uploadClip.mockReturnValue(uploadHandle("j11"));
+    renderPage();
+    await screen.findByText("bench.mp4");
+    expect(screen.getByText("Frames per second (zip only)")).toBeTruthy();
     fireEvent.change(screen.getByLabelText("Zip frames per second"), { target: { value: "12" } });
     fireEvent.change(screen.getByLabelText("Upload stride"), { target: { value: "3" } });
-    fireEvent.click(screen.getByRole("button", { name: "Upload and import" }));
+    choose("run.zip");
     await waitFor(() =>
       expect(m.uploadClip).toHaveBeenCalledWith(project.id, expect.any(File), { stride: 3, fps: 12 }, expect.any(Function)),
     );
   });
 
-  it("cancels an upload in flight without reporting an error", async () => {
-    const abort = vi.fn();
-    let reject!: (e: unknown) => void;
-    m.uploadClip.mockReturnValue({
-      promise: new Promise<{ job_id: string }>((_resolve, rj) => {
-        reject = rj;
-      }),
-      abort,
+  it("uploads two chosen files one at a time, in order, both becoming import rows", async () => {
+    const first = deferredUpload();
+    const second = deferredUpload();
+    m.uploadClip
+      .mockImplementationOnce((_pid, _file, _opts, onProgress) => {
+        first.capture(onProgress);
+        return first.handle;
+      })
+      .mockImplementationOnce((_pid, _file, _opts, onProgress) => {
+        second.capture(onProgress);
+        return second.handle;
+      });
+    renderPage();
+    await screen.findByText("bench.mp4");
+    choose("one.mp4", "two.mp4");
+    await waitFor(() => expect(m.uploadClip).toHaveBeenCalledTimes(1));
+    expect(m.uploadClip).toHaveBeenCalledWith(project.id, expect.objectContaining({ name: "one.mp4" }), { stride: 1, fps: 30 }, expect.any(Function));
+    expect(screen.getByText(/two\.mp4/)).toBeTruthy(); // waiting
+
+    await act(async () => first.resolve({ job_id: "job-one" }));
+    await waitFor(() => expect(m.uploadClip).toHaveBeenCalledTimes(2));
+    expect(m.uploadClip).toHaveBeenCalledWith(project.id, expect.objectContaining({ name: "two.mp4" }), { stride: 1, fps: 30 }, expect.any(Function));
+
+    await act(async () => second.resolve({ job_id: "job-two" }));
+    await waitFor(() => expect(FakeSocket.last?.url).toMatch(/job-two$/));
+  });
+
+  it("moves on to the next file when the first upload fails, without stopping the queue", async () => {
+    const first = deferredUpload();
+    const second = deferredUpload();
+    m.uploadClip
+      .mockImplementationOnce((_pid, _file, _opts, onProgress) => {
+        first.capture(onProgress);
+        return first.handle;
+      })
+      .mockImplementationOnce((_pid, _file, _opts, onProgress) => {
+        second.capture(onProgress);
+        return second.handle;
+      });
+    renderPage();
+    await screen.findByText("bench.mp4");
+    choose("one.mp4", "two.mp4");
+    await waitFor(() => expect(m.uploadClip).toHaveBeenCalledTimes(1));
+
+    await act(async () => first.reject(new ApiError(413, "the upload is 100 bytes; the limit is 10")));
+    expect(await screen.findByText("the upload is 100 bytes; the limit is 10")).toBeTruthy();
+    await waitFor(() => expect(m.uploadClip).toHaveBeenCalledTimes(2));
+
+    await act(async () => second.resolve({ job_id: "job-two" }));
+    await waitFor(() => expect(FakeSocket.last?.url).toMatch(/job-two$/));
+
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    expect(screen.queryByText("the upload is 100 bytes; the limit is 10")).toBeNull();
+  });
+
+  it("skips an invalid file among valid ones, with a note, and still queues the valid ones", async () => {
+    m.uploadClip.mockReturnValue(uploadHandle("j12"));
+    renderPage();
+    await screen.findByText("bench.mp4");
+    choose("notes.txt", "good.mp4");
+    expect(await screen.findByText("notes.txt: That file is not a video or a .zip of images.")).toBeTruthy();
+    await waitFor(() =>
+      expect(m.uploadClip).toHaveBeenCalledWith(project.id, expect.objectContaining({ name: "good.mp4" }), { stride: 1, fps: 30 }, expect.any(Function)),
+    );
+  });
+
+  it("queues every file dropped at once", async () => {
+    const first = deferredUpload();
+    m.uploadClip.mockImplementation((_pid, _file, _opts, onProgress) => {
+      first.capture(onProgress);
+      return first.handle;
     });
     renderPage();
     await screen.findByText("bench.mp4");
-    choose("bench.mp4");
-    fireEvent.click(screen.getByRole("button", { name: "Upload and import" }));
+    drop("a.mp4", "b.mp4", "c.mp4");
+    await waitFor(() => expect(m.uploadClip).toHaveBeenCalledTimes(1));
+    expect(screen.getByText(/b\.mp4/)).toBeTruthy();
+    expect(screen.getByText(/c\.mp4/)).toBeTruthy();
+  });
+
+  it("cancels the current upload without reporting an error, and moves on to the next queued file", async () => {
+    const first = deferredUpload();
+    m.uploadClip.mockImplementationOnce((_pid, _file, _opts, onProgress) => {
+      first.capture(onProgress);
+      return first.handle;
+    });
+    const second = uploadHandle("j13");
+    m.uploadClip.mockImplementationOnce(() => second);
+    renderPage();
+    await screen.findByText("bench.mp4");
+    choose("one.mp4", "two.mp4");
+    await waitFor(() => expect(m.uploadClip).toHaveBeenCalledTimes(1));
     fireEvent.click(await screen.findByRole("button", { name: "Cancel upload" }));
-    expect(abort).toHaveBeenCalledTimes(1);
-    await act(async () => reject(new UploadCancelled()));
+    expect(first.handle.abort).toHaveBeenCalledTimes(1);
+    await act(async () => first.reject(new UploadCancelled()));
     expect(screen.queryByRole("alert")).toBeNull();
-    expect(screen.getByRole("button", { name: "Upload and import" })).toBeTruthy();
+    expect(screen.queryByText(/one\.mp4/)).toBeNull();
+    await waitFor(() => expect(m.uploadClip).toHaveBeenCalledTimes(2));
+  });
+
+  it("cancels all queued and running uploads at once", async () => {
+    const first = deferredUpload();
+    m.uploadClip.mockImplementationOnce((_pid, _file, _opts, onProgress) => {
+      first.capture(onProgress);
+      return first.handle;
+    });
+    renderPage();
+    await screen.findByText("bench.mp4");
+    choose("one.mp4", "two.mp4", "three.mp4");
+    await waitFor(() => expect(m.uploadClip).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel all" }));
+    expect(first.handle.abort).toHaveBeenCalledTimes(1);
+    await act(async () => first.reject(new UploadCancelled()));
+    expect(screen.queryByText(/two\.mp4/)).toBeNull();
+    expect(screen.queryByText(/three\.mp4/)).toBeNull();
+    expect(m.uploadClip).toHaveBeenCalledTimes(1); // the queue never advances to the cleared files
+  });
+
+  it("removes one waiting file from the queue without touching the others", async () => {
+    const first = deferredUpload();
+    m.uploadClip.mockImplementation((_pid, _file, _opts, onProgress) => {
+      first.capture(onProgress);
+      return first.handle;
+    });
+    renderPage();
+    await screen.findByText("bench.mp4");
+    choose("one.mp4", "two.mp4");
+    await waitFor(() => expect(m.uploadClip).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByRole("button", { name: "Remove two.mp4 from the queue" }));
+    expect(screen.queryByText(/two\.mp4/)).toBeNull();
   });
 
   it("refuses a file that is neither a video nor a zip", async () => {
     renderPage();
     await screen.findByText("bench.mp4");
     choose("notes.txt");
-    expect(await screen.findByText("That file is not a video or a .zip of images.")).toBeTruthy();
-    expect((screen.getByRole("button", { name: "Upload and import" }) as HTMLButtonElement).disabled).toBe(true);
-  });
-
-  it("shows why the server refused an upload", async () => {
-    let reject!: (e: unknown) => void;
-    m.uploadClip.mockReturnValue({
-      // deferred, not Promise.reject: an eagerly rejected promise is unhandled until the click attaches to it
-      promise: new Promise<{ job_id: string }>((_resolve, rj) => {
-        reject = rj;
-      }),
-      abort: vi.fn(),
-    });
-    renderPage();
-    await screen.findByText("bench.mp4");
-    choose("bench.mp4");
-    fireEvent.click(screen.getByRole("button", { name: "Upload and import" }));
-    await act(async () => reject(new ApiError(413, "the upload is 100 bytes; the limit is 10")));
-    expect(await screen.findByText("the upload is 100 bytes; the limit is 10")).toBeTruthy();
+    expect(await screen.findByText("notes.txt: That file is not a video or a .zip of images.")).toBeTruthy();
+    expect(m.uploadClip).not.toHaveBeenCalled();
   });
 });

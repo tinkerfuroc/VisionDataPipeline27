@@ -6,7 +6,20 @@ import { AppHeader } from "../components/AppHeader";
 import { ImportJobRow } from "../components/ImportJobRow";
 import { HealthContext } from "../hooks/useHealth";
 import { percentLabeled } from "../lib/timeline";
-import { formatBytes, importKind, uploadPercent, uploadProblem } from "../lib/upload";
+import { formatBytes, uploadPercent } from "../lib/upload";
+import {
+  cancelAll as cancelAllQueued,
+  cancelCurrent,
+  dismissFailed as dismissFailedQueued,
+  emptyUploadQueue,
+  failCurrent,
+  finishCurrent,
+  queueFiles,
+  removeWaiting,
+  startNext,
+  updateProgress,
+  type UploadQueueState,
+} from "../lib/uploadQueue";
 
 const PROJECT_KEY = "vsp.project";
 
@@ -23,14 +36,23 @@ export function Clips() {
 
   const [projectName, setProjectName] = useState("");
   const [className, setClassName] = useState("");
-  const [file, setFile] = useState<File | null>(null);
   const [fileInputKey, setFileInputKey] = useState(0);
   const [stride, setStride] = useState(1);
   const [fps, setFps] = useState(30);
   const [dragging, setDragging] = useState(false);
-  const [upload, setUpload] = useState<{ sent: number; total: number } | null>(null);
-  const uploadRef = useRef<UploadHandle | null>(null);
-  const uploadIssue = uploadProblem({ name: file?.name ?? null, size: file?.size ?? 0, stride, fps, maxBytes });
+  const [skipped, setSkipped] = useState<{ name: string; reason: string }[]>([]);
+  // The queue is mutated in a ref (so a burst of choose/finish/fail calls composes synchronously, without waiting
+  // on React's render cycle to see the previous update) and mirrored into state to trigger a render.
+  const queueRef = useRef<UploadQueueState>(emptyUploadQueue);
+  const [queue, setQueueView] = useState<UploadQueueState>(emptyUploadQueue);
+  const setQueue = useCallback((update: (q: UploadQueueState) => UploadQueueState) => {
+    queueRef.current = update(queueRef.current);
+    setQueueView(queueRef.current);
+  }, []);
+  const nextUploadId = useRef(0);
+  // Identity guard (F2-style): a running upload's own id, so a stale XHR callback (an abort or a late response
+  // for a file the queue has already moved on from) never touches the queue's current state.
+  const uploadRef = useRef<{ id: number; handle: UploadHandle } | null>(null);
   const [dirPath, setDirPath] = useState("");
   const [dirFps, setDirFps] = useState(30);
   const [dirStride, setDirStride] = useState(1);
@@ -129,46 +151,71 @@ export function Clips() {
   };
 
   // Not `guarded`: an upload lasts minutes, and the in-flight lock would disable the rest of the page for its
-  // whole duration. One upload at a time is enough, so `uploadRef` is the guard instead of `pending`.
-  const pickFile = (next: File | null) => {
-    setFile(next); // a new choice replaces the old one
-    setUpload(null);
-  };
-
-  const startUpload = () => {
-    if (file === null || project === null || uploadRef.current !== null || uploadIssue !== null) return;
-    setError(null);
-    const handle = api.uploadClip(project.id, file, { stride, fps }, (sent, total) => {
-      if (uploadRef.current === handle) setUpload({ sent, total });
+  // whole duration. One upload at a time is enough, so `uploadRef`'s id is the guard instead of `pending`.
+  // Started imperatively (not from an effect keyed on `queue`) so a burst of calls — queueing more files while
+  // one finishes — never races against React's render/effect scheduling.
+  const startNextUpload = () => {
+    const started = startNext(queueRef.current);
+    if (started === null) return;
+    setQueue(() => started.state);
+    const item = started.item;
+    const handle = api.uploadClip(item.projectId, item.file, { stride: item.stride, fps: item.fps }, (sent, total) => {
+      if (uploadRef.current?.id === item.id) setQueue((q) => updateProgress(q, item.id, sent, total));
     });
-    uploadRef.current = handle;
-    setUpload({ sent: 0, total: file.size });
+    uploadRef.current = { id: item.id, handle };
     handle.promise.then(
       ({ job_id }) => {
-        if (uploadRef.current !== handle) return;
+        if (uploadRef.current?.id !== item.id) return;
         uploadRef.current = null;
-        setUpload(null);
-        setImports((list) => [...list, { id: job_id, label: file.name }]);
-        setFile(null);
-        setFileInputKey((k) => k + 1);
+        setQueue((q) => finishCurrent(q, item.id));
+        setImports((list) => [...list, { id: job_id, label: item.file.name }]);
+        startNextUpload();
       },
       (e: unknown) => {
-        if (uploadRef.current !== handle) return;
+        if (uploadRef.current?.id !== item.id) return;
         uploadRef.current = null;
-        setUpload(null);
-        if (e instanceof UploadCancelled) return; // the user asked for it
-        fail(e);
+        if (e instanceof UploadCancelled) {
+          setQueue((q) => cancelCurrent(q, item.id)); // the user asked for it: it just disappears
+        } else {
+          setQueue((q) => failCurrent(q, item.id, e instanceof Error ? e.message : String(e)));
+        }
+        startNextUpload();
       },
     );
   };
 
-  const cancelUpload = () => {
-    const handle = uploadRef.current;
-    if (handle === null) return;
-    uploadRef.current = null; // the abort's rejection is ignored by the identity guard above
-    handle.abort();
-    setUpload(null);
+  const pickFiles = (files: File[]) => {
+    if (project === null || files.length === 0) return;
+    const projectId = project.id;
+    let rejected: { name: string; reason: string }[] = [];
+    // `setQueue` mutates `queueRef` synchronously, so `rejected` is populated before it is read below.
+    setQueue((q) => {
+      const result = queueFiles(q, files, { projectId, stride, fps, maxBytes }, () => nextUploadId.current++);
+      rejected = result.skipped;
+      return result.state;
+    });
+    setSkipped(rejected);
+    startNextUpload();
   };
+
+  const cancelUpload = () => {
+    const running = uploadRef.current;
+    if (running === null) return;
+    uploadRef.current = null; // the abort's rejection is ignored by the identity guard above
+    running.handle.abort();
+    setQueue((q) => cancelCurrent(q, running.id));
+    startNextUpload();
+  };
+
+  const cancelAllUploads = () => {
+    const running = uploadRef.current;
+    uploadRef.current = null;
+    running?.handle.abort();
+    setQueue((q) => cancelAllQueued(q));
+  };
+
+  const removeQueuedUpload = (id: number) => setQueue((q) => removeWaiting(q, id));
+  const dismissFailedUpload = (id: number) => setQueue((q) => dismissFailedQueued(q, id));
 
   const importFrames = guarded(async () => {
     const path = dirPath.trim();
@@ -318,25 +365,10 @@ export function Clips() {
               onDrop={(e) => {
                 e.preventDefault();
                 setDragging(false);
-                pickFile(e.dataTransfer.files?.[0] ?? null);
+                pickFiles(Array.from(e.dataTransfer.files ?? []));
               }}
             >
               <h2 className="heading">Upload footage</h2>
-              <input
-                key={fileInputKey}
-                aria-label="Footage file"
-                type="file"
-                accept="video/*,.zip,application/zip"
-                className="text-sm text-dim file:btn file:mr-2 file:border-0"
-                onChange={(e) => pickFile(e.target.files?.[0] ?? null)}
-              />
-              {file === null ? (
-                <p className="note">Drop a video or a zip of images here, or choose one above.</p>
-              ) : (
-                <p className="note text-ink">
-                  {importKind(file.name) === "zip" ? "Image folder" : "Video"}, {formatBytes(file.size)}
-                </p>
-              )}
               <label className="flex items-center justify-between gap-2 text-sm text-dim">
                 Keep every Nth frame
                 <input
@@ -348,40 +380,96 @@ export function Clips() {
                   onChange={(e) => setStride(Math.max(1, Number(e.target.value) || 1))}
                 />
               </label>
-              {file !== null && importKind(file.name) === "zip" && (
-                <label className="flex items-center justify-between gap-2 text-sm text-dim">
-                  Frames per second
-                  <input
-                    aria-label="Zip frames per second"
-                    type="number"
-                    min={1}
-                    step="any"
-                    className="field w-16"
-                    value={fps}
-                    onChange={(e) => setFps(Math.max(1, Number(e.target.value) || 30))}
-                  />
-                </label>
+              <label className="flex items-center justify-between gap-2 text-sm text-dim">
+                Frames per second (zip only)
+                <input
+                  aria-label="Zip frames per second"
+                  type="number"
+                  min={1}
+                  step="any"
+                  className="field w-16"
+                  value={fps}
+                  onChange={(e) => setFps(Math.max(1, Number(e.target.value) || 30))}
+                />
+              </label>
+              <input
+                key={fileInputKey}
+                aria-label="Footage file"
+                type="file"
+                multiple
+                accept="video/*,.zip,application/zip"
+                className="text-sm text-dim file:btn file:mr-2 file:border-0"
+                onChange={(e) => {
+                  pickFiles(Array.from(e.target.files ?? []));
+                  setFileInputKey((k) => k + 1); // reset so choosing the same file(s) again still fires onChange
+                }}
+              />
+              {queue.current === null && queue.waiting.length === 0 && (
+                <p className="note">Drop one or more videos or zips of images here, or choose them above.</p>
               )}
-              {file !== null && uploadIssue !== null && <p className="note text-ink">{uploadIssue}</p>}
-              {upload === null ? (
-                <button
-                  type="button"
-                  className="btn btn-on"
-                  disabled={file === null || pending || uploadIssue !== null}
-                  onClick={startUpload}
-                >
-                  Upload and import
-                </button>
-              ) : (
-                <>
-                  <progress value={upload.sent} max={upload.total || undefined} />
+              {skipped.length > 0 && (
+                <ul className="flex flex-col gap-0.5">
+                  {skipped.map((s, i) => (
+                    <li key={i} className="note text-ink">
+                      {s.name}: {s.reason}
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {queue.current !== null && (
+                <div className="flex flex-col gap-1">
+                  <p className="note text-ink">{queue.current.file.name}</p>
+                  <progress value={queue.current.sent} max={queue.current.total || undefined} />
                   <p className="note">
-                    {uploadPercent(upload.sent, upload.total) ?? 0}% of {formatBytes(upload.total)}
+                    {uploadPercent(queue.current.sent, queue.current.total) ?? 0}% of {formatBytes(queue.current.total)}
                   </p>
-                  <button type="button" className="btn" onClick={cancelUpload}>
-                    Cancel upload
-                  </button>
-                </>
+                </div>
+              )}
+              {queue.waiting.length > 0 && (
+                <ul className="flex flex-col gap-1">
+                  {queue.waiting.map((item) => (
+                    <li key={item.id} className="flex items-center justify-between gap-2 text-sm">
+                      <span className="truncate">
+                        {item.file.name} · {formatBytes(item.file.size)}
+                      </span>
+                      <button
+                        type="button"
+                        aria-label={`Remove ${item.file.name} from the queue`}
+                        className="btn shrink-0 px-1.5"
+                        onClick={() => removeQueuedUpload(item.id)}
+                      >
+                        ×
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {queue.failed.length > 0 && (
+                <ul className="flex flex-col gap-1">
+                  {queue.failed.map((item) => (
+                    <li key={item.id} className="flex flex-col gap-0.5 rounded border border-line p-1.5">
+                      <span className="truncate text-sm">{item.file.name}</span>
+                      <p className="note text-ink">{item.message}</p>
+                      <button type="button" className="btn self-start" onClick={() => dismissFailedUpload(item.id)}>
+                        Dismiss
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {(queue.current !== null || queue.waiting.length > 0) && (
+                <div className="flex gap-1">
+                  {queue.current !== null && (
+                    <button type="button" className="btn" onClick={cancelUpload}>
+                      Cancel upload
+                    </button>
+                  )}
+                  {(queue.current !== null ? 1 : 0) + queue.waiting.length > 1 && (
+                    <button type="button" className="btn" onClick={cancelAllUploads}>
+                      Cancel all
+                    </button>
+                  )}
+                </div>
               )}
             </section>
 

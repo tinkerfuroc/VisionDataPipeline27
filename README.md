@@ -64,19 +64,29 @@ project is a 404, a malformed colour a 422.
 
 ### Uploading footage
 
-The Clips page uploads a video file or a `.zip` of images and imports it in one step. The browser sends the
-file as the raw request body (not multipart) to
+The Clips page uploads a video file or a `.zip` of images and imports it in one step. The browser sends each
+file as the raw request body (not multipart), one request per file, to
 `POST /api/projects/{p}/clips/upload?name=<file>&stride=<n>&fps=<n>` → `202 {job_id}`. `stride` applies to
 both kinds; `fps` only to a zip, because a video's frame rate comes from its container. A name is accepted if
 it ends in one of the video extensions in `vsp.api.clips.VIDEO_SUFFIXES` or in `.zip`; a zip may hold
 `.jpg/.jpeg/.png` entries in nested folders (natural order; `__MACOSX` and dotfiles are skipped). The upload
 is streamed once into `data/uploads/` and deleted when the import job ends, and a server killed mid-upload
 sweeps that directory at its next start. A body over `ingest.max_upload_bytes` (8 GiB by default) is refused
-with 413; the GUI refuses the file before the transfer begins, using the cap from `/api/health`.
+with 413; the GUI refuses a file before its transfer begins, using the cap from `/api/health`.
 
-The transfer is a single request, so it needs the page to stay open: reloading or closing the tab cancels it
-and leaves nothing behind. The GUI shows percentage progress and a Cancel button. Resumable uploads are not
-implemented yet. Peak disk use during an import is the upload plus the JPEG frames and thumbnails it writes.
+The file picker and the drop zone both take several videos and/or zips at once, and "Keep every Nth frame" and
+"Frames per second (zip only)" sit above the picker because uploading starts as soon as files are chosen or
+dropped — there is no separate upload button. Each file is validated and snapshots those two settings at the
+moment it is chosen, so changing them afterwards only affects files chosen later; an invalid file (wrong type,
+a bad setting, or over the size cap) is skipped with a note naming it and why, while the rest of the same
+selection still queue. Queued files upload one at a time, in the order chosen, through a small queue shown in
+the sidebar: the running file with its progress, the waiting files by name (each removable with its own ×
+button), and any failed file with its error and a Dismiss button. A failure never stops the queue — it moves on
+to the next file. "Cancel upload" cancels the running file and moves on; "Cancel all" (once more than one file
+is queued or running) aborts the running file and clears the rest. Each transfer is a single request, so it
+needs the page to stay open: reloading or closing the tab cancels it and leaves nothing behind. Resumable
+uploads are not implemented yet. Peak disk use during an import is the upload plus the JPEG frames and
+thumbnails it writes.
 
 ### Several objects per clip (server API)
 
@@ -276,10 +286,16 @@ middle-drag pan · right click = negative point. `Enter`, `Esc` and `Z` act on t
     `export.json`, then load the result in the tool you train with: `yolo_seg/data.yaml` or `yolo_det/data.yaml` in
     Ultralytics, `coco/annotations/instances_train.json` with pycocotools, and look at a few `masks/masks/` PNGs
     (pixel value = `mask_value` from the manifest's class map).
-14. Upload footage from the Clips page over the SSH forward, once as a video and once as a zip of frames: the
-    percentage must move, Cancel mid-transfer must stop it without an error message, and the finished import must
-    appear as a clip whose name, frame count and fps are right. Reload the page during an upload and confirm the
-    transfer stops, no partial clip appears, and `data/uploads/` is empty.
+14. Upload footage from the Clips page over the SSH forward. Set stride/fps, then choose (or drop) several files
+    at once, mixing a video, a zip and an invalid file (e.g. a `.txt`): uploading must start immediately with no
+    button click, the invalid file must be skipped with a note naming it, and the rest must upload one at a time
+    in the order chosen, each finished one becoming a clip whose name, frame count and fps are right. Watch the
+    percentage move for the running file and the waiting files listed by name; remove a waiting file with its ×
+    button and confirm it never uploads. Let one file fail (e.g. by editing `ingest.max_upload_bytes` down) and
+    confirm it shows its error with a Dismiss button while the rest still upload. Press "Cancel upload" mid-transfer:
+    it must stop without an error message and the queue must move on to the next file. With several files still
+    queued, press "Cancel all": the running transfer and every waiting file must clear. Reload the page during an
+    upload and confirm the transfer stops, no partial clip appears, and `data/uploads/` is empty.
 15. Upload a file larger than `ingest.max_upload_bytes`: the GUI must refuse it before the transfer starts, and
     `curl -X POST --data-binary @big.mp4 .../clips/upload?name=big.mp4` must answer 413.
 16. Brush: pick the Brush tool on a masked frame, paint a missing corner (left-drag) and erase a spill (right-drag);
