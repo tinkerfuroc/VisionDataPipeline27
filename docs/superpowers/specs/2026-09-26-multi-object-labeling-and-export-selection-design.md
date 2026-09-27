@@ -133,9 +133,14 @@ defaults to `"all"`; "all" includes objects hidden in the GUI).
 
 - **Objects panel** (replaces "Object", right sidebar): one row per object — class swatch, `#id class`, masked-frame
   count, an eye toggle (hide from the canvas; display only, per page session). Clicking a row makes it active. Below
-  the list: the active object's class select (applies at once via PATCH), "+ New object" with a class select (the
-  new object only exists once its first mask is accepted or painted; until then the active row reads "New object
-  (class)"), Delete object (confirm dialog naming its frame count). The Add-class form stays.
+  the list: a class select that **always starts a new object** of the chosen class (`setNewClass`), whether or not
+  an object is active and even when that class already has one — reworked from the earlier design, at the user's
+  request, after picking a class from it was found to silently relabel (and so re-mask) the active object instead;
+  "+ New object" (`N`) reads the same row ("New object (class)"), the new object only existing once its first mask
+  is accepted or painted. Relabelling an existing object is now a separate, explicit control shown only while one is
+  active — "Change class of #id" with its own class select (defaulting to the object's own class) and a **Change**
+  button, disabled until a different class is chosen, that alone calls the relabel PATCH. Delete object (confirm
+  dialog naming its frame count). The Add-class form stays.
 - **Keys**: `O` / `Shift+O` next / previous object, `N` new object (unbound today; `useKeyboard` binds only Enter,
   Esc, arrows, Space, Del, `[`, `]`, `-`, `=`, `+`, `z`, `k`, `g`, `m`). `K`, `G` and the "has a mask here" checks
   (`hasMask`, prefetch, propagate-blocked reason) use the **active object's lane**, not the aggregate `states`.
@@ -159,18 +164,34 @@ defaults to `"all"`; "all" includes objects hidden in the GUI).
 - Deleting the active object makes the next object (or "New object" when none is left) active. An object with no
   masks left stays listed until deleted.
 
-## 9. Timeline (one lane per object)
+## 9. Timeline (one lane per class)
 
-- One lane per object in object-id order; inactive lanes are 16 px (16 px, not 10: lane names stay at the page's
-  normal text size), the active lane 30 px (today's band), 2 px gaps. Each lane uses today's encoding for its object (filled in the class colour = masked, hollow = no mask, amber
-  diamond = keyframe); deleted frames are hatched across every lane. Hidden objects' lanes are drawn at 40 % opacity.
-- A fixed 72 px left gutter names each lane `#id class`; clicking a lane or its label selects that object, and
-  clicking inside a lane also seeks (as today).
-- The playhead spans all lanes. Height grows with the object count up to 6 lanes, then the lane area scrolls
-  vertically and keeps the active lane in view.
-- The hover tooltip names the frame and each object's state on it.
-- Shift-drag marks a range as today; what "Clear masks" then clears follows the Cleanup panel's choice.
-- A clip with no objects shows a single empty lane labelled "No objects yet".
+> **Superseded** (at the user's request, after per-object lanes shipped): the timeline now shows **one lane per
+> project class**, not per object. Reported symptom: with classes Module and GreenTab and only a Module object
+> labelled, the timeline showed one lane and picking GreenTab from the Objects panel's class select relabelled
+> (and re-masked) the Module object instead of starting a GreenTab one. Both are fixed below — a class lane exists
+> whether or not the clip has an object of it, and picking a class always starts a new object (§8).
+
+- One lane per project class (`detail.classes`), in class-id order, **including a class with no object in this
+  clip** (an empty lane: every frame "no mask", deleted frames still hatched). A class with more than one object
+  gets a single lane that is the `aggregateAt` of all of them (masked if any has a mask, keyframe if any has one,
+  deleted stays deleted — the same rule the clip-wide `states` already use over objects), labelled with a "×n"
+  suffix once n > 1. Inactive lanes are 16 px (16 px, not 10: lane names stay at the page's normal text size), the
+  active lane 30 px (today's band), 2 px gaps. Each lane uses today's encoding (filled in the class colour = masked,
+  hollow = no mask, amber diamond = keyframe); deleted frames are hatched across every lane. A class lane is hidden
+  (40 % opacity) once it has objects and every one of them is hidden.
+- A fixed 72 px left gutter names each lane by class name (with the "×n" suffix); clicking a lane or its label
+  selects that class — a class already active does nothing, a class with an object selects its lowest-id object,
+  a class with none starts a new object of it (`setNewClass`, never a relabel) — and clicking inside a lane also
+  seeks (as today).
+- The playhead spans all lanes. Height grows with the class count up to 6 lanes, then the lane area scrolls
+  vertically and keeps the active lane (the active object's class, or the new object's chosen class) in view.
+- The hover tooltip names the frame and each class's state on it.
+- Shift-drag marks a range as today; what "Clear masks" then clears follows the Cleanup panel's choice (which still
+  acts on **objects**, active or all).
+- `K`, `G` and "has a mask here" keep following the **active object's own lane** (§8), not its class lane's
+  aggregate — an object beside another of the same class must not appear to have a keyframe or mask it lacks.
+- A project with no classes shows a single empty lane labelled "No classes yet".
 
 ## 10. Export: class selection
 

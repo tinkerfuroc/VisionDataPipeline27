@@ -144,12 +144,27 @@ describe("maskParts", () => {
 });
 
 describe("lanesFor", () => {
-  it("gives one lane per object in id order, named, coloured and marked hidden", () => {
+  it("gives one lane per project class, in class-id order, including a class with no object", () => {
     const d = detail();
-    d.clip.objects.reverse();
-    expect(lanesFor(d, new Set([2]))).toEqual([
-      { id: 1, label: "#1 cup", color: "#ff0000", states: S("keed"), hidden: false },
-      { id: 2, label: "#2 bowl", color: "#00ff00", states: S("emed"), hidden: true },
+    d.classes.push({ id: 2, name: "plate", color: "#0000ff" }); // no objects: an empty lane, deleted frame still hatched
+    expect(lanesFor(d, new Set())).toEqual([
+      { id: 0, label: "cup", color: "#ff0000", states: S("keed"), hidden: false },
+      { id: 1, label: "bowl", color: "#00ff00", states: S("emed"), hidden: false },
+      { id: 2, label: "plate", color: "#0000ff", states: S("eeed"), hidden: false },
     ]);
+  });
+  it("aggregates two objects of the same class and appends the count to the label", () => {
+    const d = detail();
+    d.clip.objects.push(obj(3, 0)); // a second cup, masked on frame 1 where #1 (cup) is empty
+    d.object_states["3"] = S("emed");
+    const cup = lanesFor(d, new Set()).find((l) => l.id === 0);
+    expect(cup).toEqual({ id: 0, label: "cup ×2", color: "#ff0000", states: S("kmed"), hidden: false });
+  });
+  it("is hidden only once every object of the class is hidden", () => {
+    const d = detail();
+    d.clip.objects.push(obj(3, 0));
+    d.object_states["3"] = S("emed");
+    expect(lanesFor(d, new Set([1])).find((l) => l.id === 0)?.hidden).toBe(false); // #3 still shown
+    expect(lanesFor(d, new Set([1, 3])).find((l) => l.id === 0)?.hidden).toBe(true);
   });
 });

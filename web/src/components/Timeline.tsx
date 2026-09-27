@@ -6,10 +6,11 @@ import { frameAtX, runs } from "../lib/timeline";
 type Props = {
   /** the whole clip per frame: sets the frame count, and is drawn as the single lane of a clip without objects */
   states: FrameState[];
-  /** one lane per object, in object-id order (`lanesFor`) */
+  /** one lane per project class, in class-id order (`lanesFor`) */
   lanes: Lane[];
-  /** the active object: its lane is drawn 30 px tall; null on a "New object" row (every lane short) */
-  activeId: number | null;
+  /** the active object's class, or the class chosen for a "New object" row: its lane is drawn 30 px tall; null
+   * before a class is chosen (or a project with no classes), when every lane is short */
+  activeClassId: number | null;
   frame: number;
   /** thumbnail shown while hovering; omit to show the frame number only */
   thumb?: { url: (frame: number) => string; aspect: number };
@@ -18,7 +19,7 @@ type Props = {
   onSeek: (frame: number) => void;
   /** Shift-drag marks a range instead of seeking; omit to disable marking */
   onRange?: (range: [number, number]) => void;
-  /** a click on a lane, or on its name in the gutter, selects that object; omit while the selection is locked */
+  /** a click on a lane, or on its name in the gutter, selects that class; omit while the selection is locked */
   onSelect?: (id: number) => void;
 };
 
@@ -35,10 +36,10 @@ const PANEL = "#36383C";
 const KEY = "#F59E0B";
 const STEPS = [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000];
 const WORDS: Record<FrameState, string> = { keyframe: "keyframe", masked: "masked", empty: "no mask", deleted: "deleted" };
-const NO_OBJECTS = "No objects yet";
+const NO_CLASSES = "No classes yet";
 
 /**
- * One object's frames in a band `h` px tall at `y`. State is told apart by shape and texture as well as colour: a
+ * One class's frames in a band `h` px tall at `y`. State is told apart by shape and texture as well as colour: a
  * filled run is masked, a hollow run has no mask, a hatched run is deleted, and a diamond marks a keyframe.
  */
 function drawLane(ctx: CanvasRenderingContext2D, states: readonly FrameState[], y: number, h: number, color: string, px: number) {
@@ -96,8 +97,8 @@ function drawLane(ctx: CanvasRenderingContext2D, states: readonly FrameState[], 
   });
 }
 
-/** One lane per object (spec §9): the active lane tall, the names in a gutter on the left, the playhead across all. */
-export function Timeline({ states, lanes, activeId, frame, thumb, range = null, onSeek, onRange, onSelect }: Props) {
+/** One lane per class (spec §9): the active lane tall, the names in a gutter on the left, the playhead across all. */
+export function Timeline({ states, lanes, activeClassId, frame, thumb, range = null, onSeek, onRange, onSelect }: Props) {
   const wrap = useRef<HTMLDivElement>(null);
   const canvas = useRef<HTMLCanvasElement>(null);
   const [width, setWidth] = useState(0);
@@ -108,14 +109,14 @@ export function Timeline({ states, lanes, activeId, frame, thumb, range = null, 
 
   const idsKey = lanes.map((l) => l.id).join(",");
   const layout = useMemo(
-    () => layoutLanes(lanes.length === 0 ? [null] : lanes.map((l) => l.id), activeId),
+    () => layoutLanes(lanes.length === 0 ? [null] : lanes.map((l) => l.id), activeClassId),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- idsKey stands for the lane ids, all layoutLanes reads
-    [idsKey, activeId],
+    [idsKey, activeClassId],
   );
   const height = TOP + layout.view + RULER;
 
   // keep the active lane in view whenever it (or the set of lanes) changes; the wheel scrolls freely in between
-  useEffect(() => setScroll((s) => scrollToShow(s, layout, activeId)), [layout, activeId]);
+  useEffect(() => setScroll((s) => scrollToShow(s, layout, activeClassId)), [layout, activeClassId]);
 
   useEffect(() => {
     const el = wrap.current;
@@ -267,7 +268,7 @@ export function Timeline({ states, lanes, activeId, frame, thumb, range = null, 
           }
           const inLanes = p.y >= TOP && p.y < TOP + layout.view;
           const box = inLanes ? laneAt(layout.boxes, p.y - TOP + scroll) : null;
-          if (box !== null && box.id !== null && box.id !== activeId) onSelect?.(box.id);
+          if (box !== null && box.id !== null && box.id !== activeClassId) onSelect?.(box.id);
           onSeek(p.frame);
         }}
         onMouseMove={(e) => {
@@ -286,11 +287,11 @@ export function Timeline({ states, lanes, activeId, frame, thumb, range = null, 
           if (lane === undefined) {
             return (
               <span key="none" className="absolute left-0 flex w-full items-center truncate pr-1 font-cond text-xs text-dim" style={style}>
-                {NO_OBJECTS}
+                {NO_CLASSES}
               </span>
             );
           }
-          const active = lane.id === activeId;
+          const active = lane.id === activeClassId;
           return (
             // not in the tab order: O / Shift+O and the Objects panel select objects from the keyboard
             // every name at text-xs (never shrunk); the active one told apart by colour and aria-pressed

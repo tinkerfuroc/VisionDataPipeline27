@@ -647,7 +647,7 @@ describe("Label page (objects)", () => {
     expect(screen.getByText("frame 10 / 39")).toBeTruthy(); // #2 is masked on 6..9
   });
 
-  it("relabels the active object at once", async () => {
+  it("relabels the active object via the explicit Change control", async () => {
     vi.mocked(api.getClip).mockResolvedValue(two);
     const relabelled: ClipDetail = {
       ...two, clip: { ...two.clip, objects: [{ ...two.clip.objects[0], class_id: 1 }, two.clip.objects[1]] },
@@ -655,9 +655,18 @@ describe("Label page (objects)", () => {
     vi.mocked(api.relabelObject).mockResolvedValue(relabelled);
     renderLabel();
     await screen.findByText("bench.mp4");
-    fireEvent.change(screen.getByLabelText("Class"), { target: { value: "1" } });
+    fireEvent.change(screen.getByLabelText("New class of #1"), { target: { value: "1" } });
+    fireEvent.click(screen.getByRole("button", { name: "Change" }));
     await waitFor(() => expect(api.relabelObject).toHaveBeenCalledWith("c1", 1, 1));
     expect(await panel().findByRole("button", { name: /^#1 cup/ })).toBeTruthy();
+  });
+  it("picking a class in the Objects panel starts a new object of it instead of relabelling", async () => {
+    vi.mocked(api.getClip).mockResolvedValue(two);
+    renderLabel();
+    await screen.findByText("bench.mp4");
+    fireEvent.change(screen.getByLabelText("Class"), { target: { value: "1" } });
+    expect(panel().getByText("New object (cup)", { selector: "div" }).getAttribute("aria-current")).toBe("true");
+    expect(api.relabelObject).not.toHaveBeenCalled();
   });
 
   it("deletes the active object after a confirmation naming its frame count, then selects the next one", async () => {
@@ -678,12 +687,32 @@ describe("Label page (objects)", () => {
     expect((await panel().findByRole("button", { name: /^#2 cup/ })).getAttribute("aria-pressed")).toBe("true");
   });
 
-  it("shows one timeline lane per object; a lane's name selects its object", async () => {
+  it("shows one timeline lane per class; a lane's name selects that class's (lowest-id) object", async () => {
     vi.mocked(api.getClip).mockResolvedValue(two);
     renderLabel();
     await screen.findByText("bench.mp4");
-    fireEvent.click(screen.getByRole("button", { name: "#2 cup" })); // the name in the timeline's gutter
+    fireEvent.click(screen.getByRole("button", { name: "cup" })); // the class name in the timeline's gutter
     expect(row(/^#2 cup/).getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("the reported bug: a class with no object still gets a lane, and picking or clicking it starts a new object rather than relabelling", async () => {
+    // one Module object (class 0) and a project class GreenTab (class 1) with none in this clip
+    const oneModuleTwoClasses: ClipDetail = {
+      ...detail,
+      classes: [{ id: 0, name: "Module", color: "#e6194b" }, { id: 1, name: "GreenTab", color: "#3cb44b" }],
+    };
+    vi.mocked(api.getClip).mockResolvedValue(oneModuleTwoClasses);
+    renderLabel();
+    await screen.findByText("bench.mp4");
+    expect(screen.getByRole("button", { name: "Module" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "GreenTab" })).toBeTruthy(); // shown despite having no object
+    fireEvent.change(screen.getByLabelText("Class"), { target: { value: "1" } });
+    expect(panel().getByText("New object (GreenTab)", { selector: "div" }).getAttribute("aria-current")).toBe("true");
+    expect(api.relabelObject).not.toHaveBeenCalled();
+    fireEvent.click(row(/^#1 Module/)); // back to the existing object
+    fireEvent.click(screen.getByRole("button", { name: "GreenTab" })); // the empty class's timeline lane
+    expect(panel().getByText("New object (GreenTab)", { selector: "div" }).getAttribute("aria-current")).toBe("true");
+    expect(api.relabelObject).not.toHaveBeenCalled();
   });
 
   it("propagates the selected object alone when chosen", async () => {

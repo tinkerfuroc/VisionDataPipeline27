@@ -21,8 +21,8 @@ const detail: ClipDetail = {
 type Props = ComponentProps<typeof ObjectsPanel>;
 const props = (over: Partial<Props> = {}): Props => ({
   detail, selection: { kind: "object", id: 1 }, hidden: new Set<number>(), lockReason: null, deleteBlockedReason: null,
-  error: null, onSelect: vi.fn(), onToggleHidden: vi.fn(), onClass: vi.fn(), onNew: vi.fn(), onDelete: vi.fn(),
-  onAddClass: vi.fn(async () => {}), ...over,
+  error: null, onSelect: vi.fn(), onToggleHidden: vi.fn(), onClass: vi.fn(), onRelabel: vi.fn(), onNew: vi.fn(),
+  onDelete: vi.fn(), onAddClass: vi.fn(async () => {}), ...over,
 });
 const rows = () => within(screen.getByRole("list", { name: "Objects" }));
 
@@ -40,17 +40,36 @@ describe("ObjectsPanel", () => {
     fireEvent.click(rows().getByRole("button", { name: "Show #2 bowl" }));
     expect(p.onToggleHidden).toHaveBeenCalledWith(2);
   });
-  it("changes the active object's class, or the class of the new object", () => {
+  it("picking a class always starts a new object of it, whether or not one is active; it never relabels", () => {
     const p = props();
     const { rerender } = render(<ObjectsPanel {...p} />);
-    expect(screen.getByText("Class of #1")).toBeTruthy();
+    expect(screen.getByText("Label a class")).toBeTruthy();
     fireEvent.change(screen.getByLabelText("Class"), { target: { value: "1" } });
     expect(p.onClass).toHaveBeenCalledWith(1);
+    expect(p.onRelabel).not.toHaveBeenCalled();
     rerender(<ObjectsPanel {...p} selection={{ kind: "new", classId: 1 }} />);
     expect(rows().getByText("New object (bowl)", { selector: "div" }).getAttribute("aria-current")).toBe("true");
     expect(screen.getByText("Class of the new object")).toBeTruthy();
     expect((screen.getByRole("button", { name: /^\+ New object/ }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole("button", { name: "Delete object" }) as HTMLButtonElement).disabled).toBe(true);
+    // no active object: the explicit relabel row does not show
+    expect(screen.queryByLabelText("New class of #1")).toBeNull();
+  });
+  it("relabels the active object only through the explicit Change control, disabled until a different class is chosen", () => {
+    const p = props(); // selection: object #1, class 0 (cup)
+    render(<ObjectsPanel {...p} />);
+    expect(screen.getByText("Change class of #1")).toBeTruthy();
+    const select = screen.getByLabelText("New class of #1") as HTMLSelectElement;
+    expect(select.value).toBe("0"); // defaults to the active object's own class
+    const change = screen.getByRole("button", { name: "Change" }) as HTMLButtonElement;
+    expect(change.disabled).toBe(true);
+    fireEvent.change(select, { target: { value: "0" } }); // the object's own class: still disabled
+    expect(change.disabled).toBe(true);
+    fireEvent.change(select, { target: { value: "1" } });
+    expect(change.disabled).toBe(false);
+    fireEvent.click(change);
+    expect(p.onRelabel).toHaveBeenCalledWith(1);
+    expect(p.onClass).not.toHaveBeenCalled();
   });
   it("starts a new object and deletes the active one on request", () => {
     const p = props();
@@ -75,6 +94,8 @@ describe("ObjectsPanel", () => {
     expect((screen.getByRole("button", { name: /^\+ New object/ }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole("button", { name: "Delete #1 cup" }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByLabelText("Class") as HTMLSelectElement).disabled).toBe(true);
+    expect((screen.getByLabelText("New class of #1") as HTMLSelectElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Change" }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByText("A propagation is running. Stop it to delete an object.")).toBeTruthy();
   });
   it("tells an empty clip how to start, and adds a class", async () => {

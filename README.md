@@ -133,19 +133,26 @@ With the server running, `uv run python scripts/seed_demo.py` creates a project 
 A clip can hold any number of objects, each with its own class (two cups and a bowl are three objects). The
 **Objects** panel in the right sidebar lists them as `#id class` with the number of frames each has a mask on; the
 highlighted row is the **active object**, which every prompt, accept, brush save, "Selected" propagation and
-"Active object" clear acts on. Click a row (or its lane name in the timeline, or press `O` / `Shift+O`) to change it.
-The eye hides an object from the frame (display only, for this page session). The class select relabels the active
-object at once — also during a propagation. **+ New object** (`N`) starts a row "New object (class)": the object is
-created by its first accepted or painted mask. A text prompt that finds several candidates on a New object row offers
-**Accept all as new objects**, one object per candidate. **Delete object** asks first, naming how many frames lose
-their mask; it is refused while a propagation or an export runs.
+"Active object" clear acts on. Click a row (or press `O` / `Shift+O`) to change it. The eye hides an object from the
+frame (display only, for this page session). Picking a class from the select **always starts a new object** of it
+("New object (class)"), whether or not one is already active — it never relabels, even if that class already has an
+object. To relabel the active object instead, use the separate "Change class of #id" row: choose a class there and
+press **Change** (disabled until you pick a class other than its own); this applies at once, also during a
+propagation. **+ New object** (`N`) starts the same "New object (class)" row: the object is created by its first
+accepted or painted mask. A text prompt that finds several candidates on a New object row offers **Accept all as new
+objects**, one object per candidate. **Delete object** asks first, naming how many frames lose their mask; it is
+refused while a propagation or an export runs.
 
-The frame shows every visible object in its class colour; only the active object gets the outline. The timeline
-has one lane per object (the active lane tall), a name gutter on the left, and the playhead across all lanes; past six
-lanes the lanes scroll with the mouse wheel. Hovering a frame lists every object's state on it. The Propagate panel
-runs **All objects** (every object with a mask on the current frame; the others are named as skipped) or **Selected**
-only; lost objects are named one by one. Cleanup's "Clear masks" acts on the **Active object** (default) or **All
-objects**. `K`, `G` and "has a mask here" follow the active object's lane.
+The frame shows every visible object in its class colour; only the active object gets the outline. The timeline has
+one lane per project class (the active object's class tall), including a class with no object in this clip (an
+empty lane, its name with no count suffix); a class with more than one object gets one lane summarising all of them,
+named "Class ×n". A name gutter sits on the left, and the playhead spans all lanes; past six lanes the lanes scroll
+with the mouse wheel. Clicking a lane (or its name) selects that class: its lowest-id object if it has one, else it
+starts a new object of it, same as the class select — clicking the class already active does nothing. Hovering a
+frame lists every class's state on it. The Propagate panel runs **All objects** (every object with a mask on the
+current frame; the others are named as skipped) or **Selected** only; lost objects are named one by one. Cleanup's
+"Clear masks" acts on the **Active object** (default) or **All objects**. `K`, `G` and "has a mask here" follow the
+active object's own lane, not its class's.
 
 ### Exporting
 
@@ -298,15 +305,21 @@ middle-drag pan · right click = negative point. `Enter`, `Esc` and `Z` act on t
     export with COCO: `augment.cutouts` is `per_object`; of one without COCO: the panel notes the fallback and
     it is `per_class_region`.
 21. Several objects: on one clip label a cup (#1), press `N`, choose another class and label it (#2). The Objects
-    panel lists both with frame counts; the timeline shows two lanes, the active one tall; clicking a lane or its name
-    selects that object, and `O` / `Shift+O` cycle. Hide #1 with its eye: it leaves the frame and its lane dims.
-    Only the active object carries the outline; brushing #2 keeps #1 visible underneath.
-22. Propagate "All objects" from a frame where both have masks: both lanes fill in one run. Then "Selected: #2" from
-    another of its keyframes: only lane 2 changes. Let one object leave the frame: the panel names it as lost while
-    the other continues; start from a frame where only #1 has a mask with "All objects": #2 is named as skipped.
+    panel lists both with frame counts; the timeline shows one lane per project class (a class with a third, unused
+    class shows an empty lane too), the active object's class tall; clicking a lane or its name selects that class's
+    object, and `O` / `Shift+O` cycle. Hide #1 with its eye: it leaves the frame and its lane dims once every object
+    of its class is hidden. Only the active object carries the outline; brushing #2 keeps #1 visible underneath. With
+    #1 active, pick #2's class from the Class select: it starts a new object of that class (a third object) rather
+    than relabelling #1 — use "Change class of #1" and **Change** instead to actually relabel it.
+22. Propagate "All objects" from a frame where both have masks: both classes' lanes fill in one run. Then
+    "Selected: #2" from another of its keyframes: only #2's class lane changes. Let one object leave the frame: the
+    panel names it as lost while the other continues; start from a frame where only #1 has a mask with "All
+    objects": #2 is named as skipped.
 23. Shift-drag a stretch and clear it with "Active object", then again with "All objects"; check the note counts the
-    right masks each time. Relabel #2 during a propagation (allowed); try to delete #1 during a propagation and during
-    an export (refused), then delete it (the dialog names its frame count) and check #2 becomes active.
+    right masks each time. Relabel #2 during a propagation with "Change class of #2" and **Change** (allowed); try to
+    delete #1 during a propagation and during an export (refused), then delete it (the dialog names its frame count)
+    and check #2 becomes active.
 24. Text-prompt "cup" on a New object row with several cups in view: "Accept all as new objects" creates one object
-    per candidate. With seven or more objects the timeline stops growing at six lanes, scrolls with the wheel, and
-    `O` onto an off-screen object scrolls its lane into view.
+    per candidate, all in the New object row's class — the timeline keeps showing a single lane for it, labelled
+    "cup ×n". Add classes until the project has seven, labelling one object in each: the timeline stops growing at
+    six lanes and scrolls with the wheel, and `O` onto an off-screen object's class scrolls its lane into view.

@@ -358,17 +358,33 @@ export function Label() {
     },
     [detail, update, objects.selection, setNewClass],
   );
-  const changeClass = useCallback(
+  const relabelActive = useCallback(
     (classId: number) => {
-      if (activeId === null) {
-        setNewClass(classId);
-        return;
-      }
+      if (activeId === null) return;
       setObjectsError(null);
       // relabelling touches no mask, so the server allows it during a propagation
       api.relabelObject(clipId, activeId, classId).then((next) => apply(next, false), (e: unknown) => setObjectsError(message(e)));
     },
-    [activeId, clipId, apply, setNewClass],
+    [activeId, clipId, apply],
+  );
+  // the Objects panel's "Class" select: always starts a new object of the chosen class, even one that already has
+  // objects (relabelling is `relabelActive`'s separate, explicit control), except a no-op on the already-active class
+  const pickClass = useCallback(
+    (classId: number) => {
+      if (classId !== objects.classId) setNewClass(classId);
+    },
+    [objects.classId, setNewClass],
+  );
+  // a Timeline lane click: the class is already active → nothing; it has an object → select the lowest-id one;
+  // otherwise start a new object of it
+  const selectClass = useCallback(
+    (classId: number) => {
+      if (detail === null || classId === objects.classId) return;
+      const inClass = sortedObjects(detail).find((o) => o.class_id === classId);
+      if (inClass !== undefined) select(inClass.id);
+      else setNewClass(classId);
+    },
+    [detail, objects.classId, select, setNewClass],
   );
   const saveClassColor = useCallback(
     (color: string) => {
@@ -512,7 +528,8 @@ export function Label() {
             error={objectsError}
             onSelect={select}
             onToggleHidden={toggleHidden}
-            onClass={changeClass}
+            onClass={pickClass}
+            onRelabel={relabelActive}
             onNew={startNew}
             onDelete={deleteObject}
             onAddClass={addClass}
@@ -580,13 +597,13 @@ export function Label() {
         <Timeline
           states={detail.states}
           lanes={lanes}
-          activeId={activeId}
+          activeClassId={objects.classId}
           frame={frame}
           thumb={{ url: (i) => thumbUrl(clipId, i), aspect: width / height }}
           range={range}
           onSeek={lockReason === null ? seek : () => {}}
           onRange={setRange}
-          onSelect={lockReason === null ? select : undefined}
+          onSelect={lockReason === null ? selectClass : undefined}
         />
       </footer>
     </div>

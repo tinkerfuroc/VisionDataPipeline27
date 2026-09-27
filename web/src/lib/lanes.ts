@@ -9,9 +9,11 @@ export const MAX_LANES = 6;
 /** the lane viewport's height cap: six lanes with the active one among them; beyond that the lanes scroll */
 export const MAX_VIEW = ACTIVE_H + (MAX_LANES - 1) * (LANE_H + LANE_GAP);
 
-/** One object's lane: its name ("#2 cup"), class colour, per-frame states, and whether it is hidden on the canvas. */
+/** One class's lane: its name ("cup", or "cup ×2" with more than one object), its colour, the aggregate of its
+ * objects' per-frame states, and whether it is hidden (it has objects and every one of them is hidden). */
 export type Lane = { id: number; label: string; color: string; states: FrameState[]; hidden: boolean };
-/** A lane's place in the stack, from the top of the lane area, before scrolling. `id` null = the empty clip's lane. */
+/** A lane's place in the stack, from the top of the lane area, before scrolling. `id` null = the placeholder lane
+ * for a project with no classes. */
 export type LaneBox = { id: number | null; top: number; height: number };
 export type LaneLayout = { boxes: LaneBox[]; content: number; view: number };
 

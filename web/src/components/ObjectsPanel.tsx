@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import type { ClipDetail } from "../api/types";
 import type { Selection } from "../lib/activeObject";
 import { classColor, className, labeledCount, laneOf, objectLabel, sortedObjects } from "../lib/objects";
@@ -14,8 +14,11 @@ type Props = {
   error: string | null;
   onSelect: (id: number) => void;
   onToggleHidden: (id: number) => void;
-  /** relabel the active object at once, or set the new object's class */
+  /** picking a class always starts a new object of it (ignored when it is already the active object's class);
+   * relabelling an existing object is the separate, explicit "Change" control below */
   onClass: (classId: number) => void;
+  /** relabels the active object at once (the "Change" button); never called while there is no active object */
+  onRelabel: (classId: number) => void;
   onNew: () => void;
   onDelete: () => void;
   onAddClass: (name: string) => Promise<void>;
@@ -39,6 +42,10 @@ export function ObjectsPanel(p: Props) {
   const objects = sortedObjects(detail);
   const active = selection.kind === "object" ? (objects.find((o) => o.id === selection.id) ?? null) : null;
   const classId = active?.class_id ?? (selection.kind === "new" ? selection.classId : null);
+  // the explicit relabel select's own choice, reset to the active object's own class whenever the active object changes
+  const [relabelTo, setRelabelTo] = useState<number | null>(null);
+  useEffect(() => setRelabelTo(active?.class_id ?? null), [active?.id]);
+  const relabelValue = relabelTo ?? active?.class_id ?? null;
 
   const add = (e: FormEvent) => {
     e.preventDefault();
@@ -83,7 +90,7 @@ export function ObjectsPanel(p: Props) {
         )}
       </ul>
       <label className="flex items-center gap-2 text-xs">
-        <span className="w-28 shrink-0">{active !== null ? `Class of #${active.id}` : "Class of the new object"}</span>
+        <span className="w-28 shrink-0">{active !== null ? "Label a class" : "Class of the new object"}</span>
         <select aria-label="Class" className="field flex-1" disabled={locked} value={classId ?? ""} onChange={(e) => p.onClass(Number(e.target.value))}>
           {classId === null && <option value="">Choose a class</option>}
           {detail.classes.map((c) => (
@@ -91,6 +98,21 @@ export function ObjectsPanel(p: Props) {
           ))}
         </select>
       </label>
+      {active !== null && (
+        <label className="flex items-center gap-2 text-xs">
+          <span className="w-28 shrink-0">{`Change class of #${active.id}`}</span>
+          <select aria-label={`New class of #${active.id}`} className="field flex-1" disabled={locked}
+            value={relabelValue ?? ""} onChange={(e) => setRelabelTo(Number(e.target.value))}>
+            {detail.classes.map((c) => (
+              <option key={c.id} value={c.id}>{c.name}</option>
+            ))}
+          </select>
+          <button type="button" className="btn" disabled={locked || relabelValue === active.class_id}
+            onClick={() => p.onRelabel(relabelValue as number)}>
+            Change
+          </button>
+        </label>
+      )}
       <div className="flex gap-1">
         <button type="button" className="btn flex-1" aria-keyshortcuts="N" disabled={locked || selection.kind === "new"} onClick={p.onNew}>
           + New object <kbd aria-hidden>N</kbd>
