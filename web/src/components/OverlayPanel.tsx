@@ -36,6 +36,10 @@ export function OverlayPanel({ style, classColor, activeClassName, classColorErr
     // classColor is not a dependency: it is only read as this effect's starting value on a genuine class switch
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeClassName]);
+  // a colour saved elsewhere (the Clips page, another tab) arrives with a reload; follow it unless a save is pending
+  useEffect(() => {
+    if (timer.current === null) setPreview(classColor);
+  }, [classColor]);
   useEffect(() => () => {
     if (timer.current !== null) window.clearTimeout(timer.current);
   }, []);

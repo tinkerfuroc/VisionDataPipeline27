@@ -26,6 +26,14 @@ describe("OverlayPanel", () => {
     expect(onStyle).toHaveBeenLastCalledWith({ color: null, thickness: 5 });
   });
 
+  it("follows a class colour saved elsewhere once it arrives", () => {
+    const { rerender } = render(
+      <OverlayPanel {...base} style={{ color: null, thickness: 5 }} onStyle={vi.fn()} onClassColor={vi.fn()} />,
+    );
+    rerender(<OverlayPanel {...base} classColor="#123456" style={{ color: null, thickness: 5 }} onStyle={vi.fn()} onClassColor={vi.fn()} />);
+    expect((screen.getByLabelText("Class colour") as HTMLInputElement).value).toBe("#123456");
+  });
+
   it("sets the thickness down to zero, which reads as off", () => {
     const onStyle = vi.fn();
     const { rerender } = render(
