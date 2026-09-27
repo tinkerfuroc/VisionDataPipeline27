@@ -60,7 +60,7 @@ export function statusText(run: Run): string {
       return `Epoch ${p.epoch}/${p.epochs}`;
     }
     case "done":
-      return "Done";
+      return run.completed_early ? `Done (stopped at epoch ${run.epochs_done} of ${run.params.epochs})` : "Done";
     case "error":
       return "Failed";
     case "cancelled":

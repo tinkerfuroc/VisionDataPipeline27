@@ -22,7 +22,7 @@ from pathlib import Path
 from ..labeling.errors import BadRequest, Conflict
 from .models import ExportInfo, TrainParams, check_model
 from .results import read_metrics, summarize, tail
-from .runs import TERMINAL, RunStore, last_weights, now_iso, read_json
+from .runs import TERMINAL, RunStore, best_weights, last_weights, now_iso, read_json
 from .worker import CANCELLED_EXIT
 
 log = logging.getLogger(__name__)
@@ -356,15 +356,26 @@ class TrainScheduler:
         weights = last_weights(self.runs.dir(run["id"]))
         return run["status"] in ("cancelled", "interrupted", "error") and weights.is_file()
 
-    def resume(self, run_id: str, gpu: int | None = None) -> None:
-        """`gpu` moves the run there (validated like `submit`'s: an unknown GPU is a BadRequest,
-        the caller's own bad input); omitted, it resumes on the run's own GPU as before (an
-        unknown GPU there is a Conflict: the run's own recorded state has gone stale, not the
-        caller's fault, e.g. the server restarted with fewer GPUs)."""
+    def completable(self, run: dict) -> bool:
+        """A cancelled or interrupted run (not `error`: something went wrong, so its `best.pt`
+        is not trusted) that already has a `best.pt` -- i.e. it got past at least one validation
+        epoch -- can be marked complete with its best epoch so far instead of resumed."""
+        weights = best_weights(self.runs.dir(run["id"]))
+        return run["status"] in ("cancelled", "interrupted") and weights.is_file()
+
+    def _requeue_stopped(
+        self, run_id: str, gpu: int | None, *, eligible, ineligible_message: str, extra_fields: dict
+    ) -> None:
+        """Common to `resume` and `complete`: `gpu` moves the run there (validated like
+        `submit`'s: an unknown GPU is a BadRequest, the caller's own bad input); omitted, it
+        stays on the run's own GPU as before (an unknown GPU there is a Conflict: the run's own
+        recorded state has gone stale, not the caller's fault, e.g. the server restarted with
+        fewer GPUs). Both queue the run as a normal "train" item -- it shows in the GPU queues,
+        can be cancelled, and survives a restart like any queued run."""
         with self._cv:
             run = self.runs.read(run_id)
-            if not self.resumable(run):
-                raise Conflict(f"run {run_id} cannot be resumed")
+            if not eligible(run):
+                raise Conflict(ineligible_message.format(run_id))
             if gpu is not None:
                 if gpu not in self._queues:
                     raise BadRequest(f"GPU {gpu} does not exist")
@@ -374,14 +385,30 @@ class TrainScheduler:
                 if target not in self._queues:
                     raise Conflict(f"GPU {target} is not available")
             fields: dict = {
-                "status": "queued", "resume": True, "error": None, "finished_at": None,
-                "owner_pid": os.getpid(),
+                "status": "queued", "error": None, "finished_at": None, "owner_pid": os.getpid(),
+                **extra_fields,
             }
             if gpu is not None:
                 fields["gpu"] = gpu
             self.runs.update(run_id, **fields)
             self._queues[target].append((run_id, "train"))
             self._cv.notify_all()
+
+    def resume(self, run_id: str, gpu: int | None = None) -> None:
+        self._requeue_stopped(
+            run_id, gpu, eligible=self.resumable, ineligible_message="run {} cannot be resumed",
+            extra_fields={"resume": True, "finish": False},
+        )
+
+    def complete(self, run_id: str, gpu: int | None = None) -> None:
+        """Finishes a stopped run with its best epoch so far instead of training further: the
+        worker skips straight to stripping `best.pt`'s optimizer state and running validation
+        predictions (see `worker.train`'s `finish` branch)."""
+        self._requeue_stopped(
+            run_id, gpu, eligible=self.completable,
+            ineligible_message="run {} cannot be marked complete",
+            extra_fields={"finish": True, "resume": False},
+        )
 
     def export_onnx(self, run_id: str) -> None:
         with self._cv:
@@ -530,9 +557,14 @@ class TrainScheduler:
     def _finish_train(self, run_id: str, code: int, cancelled: bool) -> None:
         run_dir = self.runs.dir(run_id)
         result = read_json(run_dir / "result.json", {}) or {}
-        fields: dict = {"pid": None, "resume": False, "finished_at": now_iso()}
+        finish_job = self.runs.read(run_id).get("finish", False)
+        # `finish` must never stick: a queued item always trains next time unless something
+        # (`complete()`) sets it again, so a later plain Resume does not skip training.
+        fields: dict = {"pid": None, "resume": False, "finish": False, "finished_at": now_iso()}
         if code == 0:
             fields.update(status="done", best=result.get("best") or summarize(read_metrics(run_dir)))
+            if finish_job:
+                fields["completed_early"] = True
         elif self._stopping and not cancelled:
             fields["status"] = "interrupted"
         elif cancelled or code == CANCELLED_EXIT:

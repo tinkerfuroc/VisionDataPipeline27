@@ -185,7 +185,14 @@ def train(run_dir: Path) -> int:
         from ultralytics import YOLO
 
         _quiet_ultralytics()
-        if run.get("resume") and best_weights(run_dir).is_file() and _resume_already_finished(run_dir):
+        if run.get("finish"):
+            # "Mark complete": finish the run with its best epoch so far instead of training
+            # further. Ultralytics does this same stripping at the end of a normal run; it
+            # rewrites best.pt in place. last.pt is untouched.
+            from ultralytics.utils.torch_utils import strip_optimizer
+
+            strip_optimizer(str(best_weights(run_dir)))
+        elif run.get("resume") and best_weights(run_dir).is_file() and _resume_already_finished(run_dir):
             pass  # training already ran to completion (cancelled/interrupted mid-prediction); just predict
         elif run.get("resume"):
             model = YOLO(str(last_weights(run_dir)))

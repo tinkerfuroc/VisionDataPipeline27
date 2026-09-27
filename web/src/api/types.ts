@@ -208,6 +208,9 @@ export type Run = {
   epochs_done: number;
   progress: RunProgress | null;
   resumable: boolean;
+  completable: boolean;
+  /** True only for a run finished via "Mark complete" (its best epoch so far, not a full run). */
+  completed_early?: boolean;
   has_best: boolean;
   has_onnx: boolean;
 };

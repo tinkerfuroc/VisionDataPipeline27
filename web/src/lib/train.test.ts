@@ -10,7 +10,8 @@ const gpu = (over: Partial<GpuQueue> = {}): GpuQueue => ({
 const run = (id: string, over: Partial<Run> = {}): Run => ({
   id, created_at: "", started_at: null, finished_at: null, export_id: "e", project_name: "P", model: "yolo26s-seg", gpu: 1,
   params: { epochs: 100, imgsz: 960, batch: 8, patience: 30, workers: 8, seed: 0 }, status: "done", error: null, resume: false,
-  onnx: null, best: null, epochs_done: 0, progress: null, resumable: false, has_best: false, has_onnx: false, ...over,
+  onnx: null, best: null, epochs_done: 0, progress: null, resumable: false, completable: false, has_best: false,
+  has_onnx: false, ...over,
 });
 const best = (v: number) => ({ epoch: 1, mask_map50: v, mask_map50_95: v, box_map50: v, box_map50_95: v, train_seconds: 60 });
 
@@ -56,6 +57,9 @@ describe("train helpers", () => {
       .toBe("Predicting val images");
     expect(statusText(run("a", { status: "running" }))).toBe("Starting");
     expect(statusText(run("a", { status: "error" }))).toBe("Failed");
+    expect(statusText(run("a", { status: "done" }))).toBe("Done");
+    expect(statusText(run("a", { status: "done", completed_early: true, epochs_done: 65, params: { ...run("a").params, epochs: 200 } })))
+      .toBe("Done (stopped at epoch 65 of 200)");
   });
   it("startProblem", () => {
     expect(startProblem({ available: false, error: "no ultralytics", exportId: "e", picked: 1 })).toBe("no ultralytics");

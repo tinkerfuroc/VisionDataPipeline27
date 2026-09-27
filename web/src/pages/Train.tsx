@@ -27,8 +27,9 @@ export function Train() {
   const exports = usePoll(() => api.listExports(), 15000, []);
   const runs = usePoll(() => api.listRuns(), POLL_MS, []);
   const [pickedId, setPickedId] = useState<string | null>(null);
-  // bumped by the table's Resume button, so the sidebar brings its Resume section into view even for the selected run
-  const [resumeAsk, setResumeAsk] = useState(0);
+  // bumped by the table's Resume/Mark complete button, so the sidebar brings its Stopped run section into view
+  // even for the selected run
+  const [stoppedAsk, setStoppedAsk] = useState(0);
   const [exportId, setExportId] = useState<string | null>(null);
   // Slot index (0-3) a compared run is drawn in never changes while the run stays compared: a newly added run
   // takes the lowest free slot, and removing a run (toggle or delete) frees its slot for the next addition.
@@ -84,9 +85,14 @@ export function Train() {
     runs.refresh();
     status.refresh();
   };
-  // Left to reject on failure (the sidebar's Resume section shows the error itself, like Start does).
+  // Left to reject on failure (the sidebar's Stopped run section shows the error itself, like Start does).
   const onResume = async (id: string, gpu: number) => {
     await api.resumeRun(id, gpu);
+    runs.refresh();
+    status.refresh();
+  };
+  const onComplete = async (id: string, gpu: number) => {
+    await api.completeRun(id, gpu);
     runs.refresh();
     status.refresh();
   };
@@ -132,7 +138,7 @@ export function Train() {
             <h2 className="heading">Runs</h2>
             <RunsTable runs={list} selectedId={selectedId} compareIds={compareIds} exports={exportsList} onSelect={setPickedId}
               onToggleCompare={toggleCompare} onCancel={(id) => act(() => api.cancelRun(id))}
-              onAskResume={(id) => { setPickedId(id); setResumeAsk((n) => n + 1); }}
+              onAskStopped={(id) => { setPickedId(id); setStoppedAsk((n) => n + 1); }}
               onOnnx={(id) => act(() => api.exportOnnx(id))} onDelete={onDelete} />
           </section>
 
@@ -169,7 +175,8 @@ export function Train() {
         </div>
         <TrainSidebar status={status.data} exports={exportsList} runs={list} exportId={selectedExportId}
           onExportChange={setExportId} onExportsChanged={exports.refresh} onStart={onStart}
-          onCancel={(id) => act(() => api.cancelRun(id))} selectedRun={selected} onResume={onResume} resumeFocus={resumeAsk} />
+          onCancel={(id) => act(() => api.cancelRun(id))} selectedRun={selected} onResume={onResume}
+          onComplete={onComplete} stoppedFocus={stoppedAsk} />
       </div>
     </div>
   );

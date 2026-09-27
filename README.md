@@ -232,12 +232,25 @@ VRAM from NVML, and the default marked), plus a "Different GPU per model" checkb
 seeded from that choice. `vsp train` without `--gpu` picks the same way and prints which GPU it chose and why;
 `--gpu` overrides it, as before. Cancel stops a run after SIGTERM (SIGKILL after 30 s) and keeps `last.pt`. Resume
 continues a cancelled, interrupted or errored run from its last finished epoch, on a GPU you choose (default the
-fastest idle one): click "Resume" in the Runs table (or select the run) to open its "Resume run" section in the
+fastest idle one): click "Resume" in the Runs table (or select the run) to open its "Stopped run" section in the
 right sidebar, pick a GPU there (same best-first list and labels as New-runs, with the SAM3 and busy notes) and
 click "Resume on cuda:N". The worker itself needs no GPU-specific change to move a resumed run: it always trains as
 device 0 under a fresh `CUDA_VISIBLE_DEVICES` set to the newly chosen GPU, and Ultralytics' checkpoint-saved device
 ("0") is relative to that, not to any physical GPU. A run that was training when the server stopped is shown as
-"interrupted" and can be resumed; queued runs are queued again. `vsp train` runs in the foreground and owns its runs; Ctrl-C,
+"interrupted" and can be resumed; queued runs are queued again.
+
+"Mark complete" finishes a cancelled or interrupted run with its best epoch so far instead of training further: it
+needs `best.pt` on disk already (a run cancelled or interrupted before its first improving epoch has none, and is
+not eligible; neither is one that ended in `error`, since its `best.pt`, if any, is not trusted). Click "Mark
+complete" in the Runs table (or select the run) to open the same "Stopped run" section, pick a GPU there and click
+"Mark complete on cuda:N". It queues on that GPU like any run, so it shows in the GPU queues and can be cancelled;
+the worker then skips training entirely, strips `best.pt`'s optimizer state (`last.pt` is untouched -- the same
+finalising step Ultralytics itself does at the end of a normal run) and runs the validation-predictions gallery on
+that GPU, before marking the run `done` (`completed_early: true` in `run.json`, and ONNX export becomes available)
+with that best epoch's metrics. `POST /api/train/runs/{run_id}/complete` (optional `{"gpu": N}` body) does the same
+from the API; a 409 means the run is not eligible.
+
+`vsp train` runs in the foreground and owns its runs; Ctrl-C,
 SIGTERM and SIGHUP (a closed terminal, `kill`) all cancel them the same way. Do not start it on a GPU the server is
 also training on. Do not set `CUDA_VISIBLE_DEVICES` for the server process itself — GPU indexes (from `vsp doctor`,
 the Train page and `vsp train --gpu`) are passed to each worker as-is, so setting it on the server would remap or

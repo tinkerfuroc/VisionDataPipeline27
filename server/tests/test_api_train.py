@@ -239,6 +239,43 @@ def test_resume_on_a_chosen_gpu(client, tmp_path):
     until(client, rid, "cancelled")
 
 
+def test_complete_on_a_chosen_gpu(client, tmp_path):
+    def weights_dir():
+        return tmp_path / "data" / "runs" / rid / "train" / "weights"
+
+    def last_pt():
+        return (weights_dir() / "last.pt").is_file()
+
+    rid = start(client, epochs=99, gpu=1)
+    until(client, rid, "running")
+    wait_for(last_pt)
+    client.post(f"/api/train/runs/{rid}/cancel")
+    cancelled = until(client, rid, "cancelled")
+    assert cancelled["resumable"] is True and cancelled["completable"] is False  # no best.pt yet
+
+    # As if the run had already gotten past its first validation epoch before being cancelled.
+    (weights_dir() / "best.pt").write_bytes(b"best")
+    assert client.get(f"/api/train/runs/{rid}").json()["completable"] is True
+
+    assert client.post(f"/api/train/runs/{rid}/complete", json={"gpu": 7}).status_code == 400
+    run = client.get(f"/api/train/runs/{rid}").json()
+    assert run["status"] == "cancelled" and run["gpu"] == 1  # unchanged by the rejected request
+
+    completed = client.post(f"/api/train/runs/{rid}/complete", json={"gpu": 0})
+    assert completed.status_code == 200, completed.text
+    assert completed.json()["gpu"] == 0
+    done = until(client, rid, "done")
+    assert done["completed_early"] is True and done["has_best"] is True and done["resumable"] is False
+
+    assert client.post(f"/api/train/runs/{rid}/complete").status_code == 409  # already done
+
+
+def test_complete_conflicts(client):
+    rid = start(client, epochs=99, gpu=1)
+    until(client, rid, "running")
+    assert client.post(f"/api/train/runs/{rid}/complete").status_code == 409  # still running
+
+
 def test_augment_presets(client):
     r = client.post("/api/train/runs", json={
         "export_id": EXPORT_ID, "runs": [{"model": "yolo26s-seg", "gpu": 1}],

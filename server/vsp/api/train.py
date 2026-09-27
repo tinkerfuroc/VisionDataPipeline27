@@ -67,6 +67,7 @@ def _view(state, run: dict, *, detail: bool = False) -> dict:
         epochs_done=len(rows),
         progress=read_json(run_dir / "progress.json") if run["status"] == "running" else None,
         resumable=state.train.resumable(run),
+        completable=state.train.completable(run),
         has_best=best_weights(run_dir).is_file(),
         has_onnx=onnx_weights(run_dir).is_file(),
     )
@@ -175,6 +176,16 @@ class ResumeBody(BaseModel):
 @router.post("/api/train/runs/{run_id}/resume")
 def resume_run(run_id: str, state: State, body: ResumeBody | None = None) -> dict:
     state.train.resume(run_id, body.gpu if body else None)
+    return _view(state, state.train.runs.read(run_id))
+
+
+class CompleteBody(BaseModel):
+    gpu: int | None = None
+
+
+@router.post("/api/train/runs/{run_id}/complete")
+def complete_run(run_id: str, state: State, body: CompleteBody | None = None) -> dict:
+    state.train.complete(run_id, body.gpu if body else None)
     return _view(state, state.train.runs.read(run_id))
 
 

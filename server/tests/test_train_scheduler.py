@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 
 import pytest
+from fake_train_worker import HEADER, row
 from train_fixtures import FAKE_WORKER, make_export, wait_for
 from vsp.labeling.errors import BadRequest, Conflict
 from vsp.train.models import TrainParams, find_export
@@ -234,6 +235,7 @@ def test_one_run_per_gpu_and_gpus_in_parallel(env):
     done = sched.runs.read(c)
     assert done["best"]["epoch"] == 3 and done["best"]["mask_map50_95"] == pytest.approx(0.25)
     assert done["finished_at"] and done["pid"] is None
+    assert "completed_early" not in done  # a genuinely finished run never gets this field
     log = (sched.runs.dir(c) / "worker.log").read_text()
     assert "gpu=1" in log and f"cwd={sched.weights_dir}" in log and "autoinstall=False" in log
 
@@ -387,6 +389,108 @@ def test_resume_not_resumable_is_a_conflict_even_with_a_gpu_given(env):
     (rid,) = sched.submit(export, [("yolo26s-seg", 1)], TrainParams(epochs=1))
     with pytest.raises(Conflict):
         sched.resume(rid, gpu=0)  # still queued, not resumable: rejected before the GPU is even checked
+
+
+def test_completable_rules(env):
+    sched, export = env
+    (rid,) = sched.submit(export, [("yolo26s-seg", 0)], TrainParams(epochs=2))
+    weights = sched.runs.dir(rid) / "train" / "weights"
+    weights.mkdir(parents=True)
+    for stopped in ("cancelled", "interrupted"):
+        sched.runs.update(rid, status=stopped)
+        assert sched.completable(sched.runs.read(rid)) is False  # no best.pt yet
+    (weights / "best.pt").write_bytes(b"best")
+    for stopped in ("cancelled", "interrupted"):
+        sched.runs.update(rid, status=stopped)
+        assert sched.completable(sched.runs.read(rid)) is True
+    for other in ("error", "done", "running", "queued"):
+        sched.runs.update(rid, status=other)
+        assert sched.completable(sched.runs.read(rid)) is False  # error: best.pt is not trusted
+
+
+def test_complete_not_completable_and_bad_gpu(env):
+    sched, export = env
+    sched.start()
+    (rid,) = sched.submit(export, [("yolo26s-seg", 1)], TrainParams(epochs=99))
+    with pytest.raises(Conflict):
+        sched.complete(rid)  # still queued/running, not completable
+    until(sched, rid, "running")
+    wait_for(lambda: (sched.runs.dir(rid) / "train" / "weights" / "last.pt").is_file())
+    sched.cancel(rid)
+    until(sched, rid, "cancelled")
+    with pytest.raises(Conflict):
+        sched.complete(rid)  # cancelled, but no best.pt (epochs=99 never reaches it)
+    (sched.runs.dir(rid) / "train" / "weights" / "best.pt").write_bytes(b"best")
+    with pytest.raises(BadRequest):
+        sched.complete(rid, gpu=7)
+    run = sched.runs.read(rid)
+    assert run["status"] == "cancelled" and run["gpu"] == 1  # unchanged
+
+
+def test_complete_moves_gpu_and_finishes_with_completed_early(env):
+    sched, export = env
+    (rid,) = sched.submit(export, [("yolo26s-seg", 1)], TrainParams(epochs=2))
+    run_dir = sched.runs.dir(rid)
+    weights = run_dir / "train" / "weights"
+    weights.mkdir(parents=True, exist_ok=True)
+    (weights / "best.pt").write_bytes(b"best")
+    # As if the run had already trained (and validated) two epochs before it was cancelled.
+    (run_dir / "train" / "results.csv").write_text(HEADER + "\n" + row(1) + "\n" + row(2) + "\n")
+    sched.runs.update(rid, status="cancelled")  # not started yet: safe to rewrite its status/files
+    sched.start()
+    sched.complete(rid, gpu=0)
+    assert sched.runs.read(rid)["gpu"] == 0  # moved immediately, before the worker even launches
+    run = sched.runs.read(rid)
+    assert run["status"] == "queued" and run["finish"] is True and run["resume"] is False
+    until(sched, rid, "done")
+    done = sched.runs.read(rid)
+    assert done["completed_early"] is True and done["finish"] is False
+    assert done["best"] is not None
+    assert "gpu=0" in (sched.runs.dir(rid) / "worker.log").read_text()
+
+
+def test_finish_job_exit0_marks_done_completed_early_with_best(env):
+    """Unit-level: `_finish_train` itself, independent of the fake worker's own behaviour."""
+    sched, export = env
+    (rid,) = sched.submit(export, [("yolo26s-seg", 0)], TrainParams(epochs=2))
+    run_dir = sched.runs.dir(rid)
+    sched.runs.update(rid, status="running", finish=True)
+    (run_dir / "result.json").write_text(json.dumps({"best": {"epoch": 4, "mask_map50_95": 0.6}}))
+    sched._finish_train(rid, 0, False)
+    done = sched.runs.read(rid)
+    assert done["status"] == "done" and done["completed_early"] is True
+    assert done["finish"] is False and done["resume"] is False
+    assert done["best"] == {"epoch": 4, "mask_map50_95": 0.6}
+
+
+def test_cancel_during_finish_then_resume_does_not_skip_training(env):
+    """A cancel mid-"finish" job behaves like any other cancel, and a later Resume must not find
+    `finish` still set (worker.train() would then wrongly skip training again)."""
+    sched, export = env
+    sched.start()
+    (rid,) = sched.submit(export, [("yolo26s-seg", 1)], TrainParams(epochs=99))
+    until(sched, rid, "running")
+    wait_for(lambda: (sched.runs.dir(rid) / "train" / "weights" / "last.pt").is_file())
+    sched.cancel(rid)
+    until(sched, rid, "cancelled")
+    (sched.runs.dir(rid) / "train" / "weights" / "best.pt").write_bytes(b"best")  # as if training had improved
+    (sched.runs.dir(rid) / "hang_until_sigterm").touch()  # so this "finish" job is cancellable too
+    assert sched.completable(sched.runs.read(rid))
+
+    sched.complete(rid)
+    until(sched, rid, "running")
+    assert sched.runs.read(rid)["finish"] is True
+    sched.cancel(rid)
+    until(sched, rid, "cancelled")
+    assert sched.runs.read(rid)["finish"] is False
+
+    sched.resume(rid)
+    until(sched, rid, "running")
+    run = sched.runs.read(rid)
+    assert run["finish"] is False and run["resume"] is True
+    wait_for(lambda: "resume=True" in (sched.runs.dir(rid) / "worker.log").read_text())
+    sched.cancel(rid)
+    until(sched, rid, "cancelled")
 
 
 def test_onnx_export(env):

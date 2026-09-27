@@ -14,7 +14,7 @@ vi.mock("../api/rest", async (original) => {
     ...real,
     api: {
       health: vi.fn(), trainStatus: vi.fn(), listExports: vi.fn(), listRuns: vi.fn(), getRun: vi.fn(), startRuns: vi.fn(),
-      cancelRun: vi.fn(), resumeRun: vi.fn(), exportOnnx: vi.fn(), deleteRun: vi.fn(), predictions: vi.fn(),
+      cancelRun: vi.fn(), resumeRun: vi.fn(), completeRun: vi.fn(), exportOnnx: vi.fn(), deleteRun: vi.fn(), predictions: vi.fn(),
       listBackgrounds: vi.fn(), fetchBackgrounds: vi.fn(), augmentExport: vi.fn(), exportSamples: vi.fn(), renameExport: vi.fn(),
     },
   };
@@ -60,7 +60,7 @@ const pool: BackgroundPool = { name: "dtd", label: "DTD textures", images: 5640,
 const run = (id: string, model: string, over: Partial<Run> = {}): Run => ({
   id, created_at: "", started_at: null, finished_at: null, export_id: exp.id, project_name: "OpticsConverter1", model, gpu: 1,
   params: status.defaults, status: "queued", error: null, resume: false, onnx: null, best: null, epochs_done: 0, progress: null,
-  resumable: false, has_best: false, has_onnx: false, ...over,
+  resumable: false, completable: false, has_best: false, has_onnx: false, ...over,
 });
 const r1 = run("r1", "yolo26s-seg", { status: "running", epochs_done: 2, progress: { phase: "train", epoch: 3, epochs: 100, batch: 5, batches: 100 } });
 const r2 = run("r2", "yolo26m-seg");
@@ -312,14 +312,15 @@ describe("Train page", () => {
     m.resumeRun.mockResolvedValue({ ...stopped, status: "queued" });
     renderPage();
 
-    // r1 (running, not resumable) is selected by default: no Resume section yet.
+    // r1 (running, not resumable/completable) is selected by default: no Stopped run section yet.
     await screen.findByRole("checkbox", { name: "Compare yolo11s-seg" });
-    expect(screen.queryByText("Resume yolo11s-seg run")).toBeNull();
+    expect(screen.queryByText("Stopped yolo11s-seg run")).toBeNull();
 
     fireEvent.click(screen.getByRole("checkbox", { name: "Compare yolo11s-seg" }).closest("tr")!);
-    const heading = await screen.findByText("Resume yolo11s-seg run");
+    const heading = await screen.findByText("Stopped yolo11s-seg run");
     const section = heading.closest("section")!;
     expect(within(section).getByText("Stopped at epoch 40 of 100 on cuda:1 (RTX 2080 Ti).")).toBeTruthy();
+    expect(within(section).queryByRole("button", { name: /^Mark complete on cuda:/ })).toBeNull();
 
     const select = within(section).getByLabelText("Resume GPU") as HTMLSelectElement;
     expect(select.value).toBe("0"); // default_gpu (the fastest idle GPU), not the run's former cuda:1
@@ -337,9 +338,50 @@ describe("Train page", () => {
     renderPage();
 
     fireEvent.click((await screen.findByRole("checkbox", { name: "Compare yolo11s-seg" })).closest("tr")!);
-    const heading = await screen.findByText("Resume yolo11s-seg run");
+    const heading = await screen.findByText("Stopped yolo11s-seg run");
     const section = heading.closest("section")!;
     fireEvent.click(within(section).getByRole("button", { name: /Resume on cuda:/ }));
     expect(await within(section).findByText("GPU 1 is not available")).toBeTruthy();
+  });
+
+  it("Mark complete: the sidebar section shows the note and button for a completable-only run, and completes it on the chosen GPU", async () => {
+    const stopped = run("r3", "yolo11s-seg", { status: "cancelled", completable: true, epochs_done: 40, gpu: 1 });
+    m.listRuns.mockResolvedValue([r1, r2, stopped]);
+    m.completeRun.mockResolvedValue({ ...stopped, status: "queued" });
+    renderPage();
+
+    fireEvent.click((await screen.findByRole("checkbox", { name: "Compare yolo11s-seg" })).closest("tr")!);
+    const heading = await screen.findByText("Stopped yolo11s-seg run");
+    const section = heading.closest("section")!;
+    expect(within(section).queryByRole("button", { name: /^Resume on cuda:/ })).toBeNull();
+    expect(within(section).getByText(
+      "Keeps the best epoch so far, runs the validation predictions on that GPU, then marks the run done.",
+    )).toBeTruthy();
+
+    const select = within(section).getByLabelText("Resume GPU") as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: "1" } });
+    fireEvent.click(within(section).getByRole("button", { name: "Mark complete on cuda:1" }));
+    await waitFor(() => expect(m.completeRun).toHaveBeenCalledWith("r3", 1));
+  });
+
+  it("shows both Resume and Mark complete when a run is eligible for both, and marks Done (stopped …) once complete", async () => {
+    const stopped = run("r3", "yolo11s-seg", {
+      status: "cancelled", resumable: true, completable: true, epochs_done: 40, gpu: 1,
+    });
+    m.listRuns.mockResolvedValue([r1, r2, stopped]);
+    renderPage();
+
+    fireEvent.click((await screen.findByRole("checkbox", { name: "Compare yolo11s-seg" })).closest("tr")!);
+    const heading = await screen.findByText("Stopped yolo11s-seg run");
+    const section = heading.closest("section")!;
+    expect(within(section).getByRole("button", { name: /^Resume on cuda:/ })).toBeTruthy();
+    expect(within(section).getByRole("button", { name: /^Mark complete on cuda:/ })).toBeTruthy();
+  });
+
+  it("Runs table's status text marks a completed_early done run with its stopped-at epoch", async () => {
+    const early = run("r3", "yolo11s-seg", { status: "done", completed_early: true, epochs_done: 65 });
+    m.listRuns.mockResolvedValue([r1, r2, early]);
+    renderPage();
+    expect(await screen.findByText("Done (stopped at epoch 65 of 100)")).toBeTruthy();
   });
 });

@@ -58,44 +58,55 @@ function stoppedAt(run: Run, status: TrainStatus): string {
   return `Stopped at epoch ${run.epochs_done} of ${run.params.epochs} on cuda:${run.gpu}${name}.`;
 }
 
-/** The right sidebar's "Resume run" section for a selected, resumable run: its own GPU choice
- * (defaulting to the fastest idle one), the same SAM3/busy notes as the New-runs form, and a
- * button naming exactly which GPU it will resume on. Its own component (rather than inline in
- * `TrainSidebar`) so its state can key off `run.id` and reset cleanly when the selection changes. */
-function ResumeSection({
-  status, runs, run, focus, onResume,
+/** The Mark-complete button's note: the best epoch so far (and its mask mAP50-95, when known --
+ * a stopped run's own `best` is null until it is actually marked complete, but this still shows
+ * it if a future caller ever supplies one) before the fixed description of what the action does. */
+function markCompleteNote(best: Run["best"]): string {
+  if (best === null) return "Keeps the best epoch so far, runs the validation predictions on that GPU, then marks the run done.";
+  const mask = best.mask_map50_95 !== null ? `, mask mAP50-95 ${best.mask_map50_95.toFixed(3)}` : "";
+  return `Keeps the best epoch so far (epoch ${best.epoch}${mask}), runs the validation predictions on that GPU, then marks the run done.`;
+}
+
+/** The right sidebar's "Stopped run" section for a selected run that is resumable, completable,
+ * or both: its own GPU choice (defaulting to the fastest idle one), the same SAM3/busy notes as
+ * the New-runs form, and one button per action it is eligible for, each naming exactly which GPU
+ * it will act on. Its own component (rather than inline in `TrainSidebar`) so its state can key
+ * off `run.id` and reset cleanly when the selection changes. */
+function StoppedRunSection({
+  status, runs, run, focus, onResume, onComplete,
 }: {
   status: TrainStatus;
   runs: Run[];
   run: Run;
-  /** changes whenever the table's Resume button is pressed */
+  /** changes whenever the table's Resume/Mark complete button is pressed */
   focus: number;
   onResume: (id: string, gpu: number) => Promise<void>;
+  onComplete: (id: string, gpu: number) => Promise<void>;
 }) {
   const [gpu, setGpu] = useState(defaultGpu(status) ?? status.gpus[0]?.index ?? 0);
-  const [resuming, setResuming] = useState(false);
+  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const onSam3 = status.sam3_gpu !== null && gpu === status.sam3_gpu;
   const note = gpuBusyNote(status, runs, gpu);
-  // the table's Resume button opens this section; bring it into view even if the sidebar was scrolled down
+  // the table's Resume/Mark complete button opens this section; bring it into view even if the sidebar was scrolled down
   const ref = useRef<HTMLElement>(null);
   useEffect(() => ref.current?.scrollIntoView?.({ block: "nearest" }), [focus]);
 
-  const resume = async () => {
-    setResuming(true);
+  const act = (action: (id: string, gpu: number) => Promise<void>) => async () => {
+    setBusy(true);
     setError(null);
     try {
-      await onResume(run.id, gpu);
+      await action(run.id, gpu);
     } catch (e) {
       setError(message(e));
     } finally {
-      setResuming(false);
+      setBusy(false);
     }
   };
 
   return (
     <section ref={ref} className="flex flex-col gap-2">
-      <h2 className="heading">Resume {run.model} run</h2>
+      <h2 className="heading">Stopped {run.model} run</h2>
       <p className="note">{stoppedAt(run, status)}</p>
       <label className="flex flex-col gap-1 text-sm text-dim">
         GPU
@@ -112,9 +123,19 @@ function ResumeSection({
       )}
       {note !== null && <p className="note text-ink">{note}</p>}
       {error !== null && <p role="alert" className="alert">{error}</p>}
-      <button type="button" className="btn btn-on" disabled={resuming} onClick={() => void resume()}>
-        Resume on cuda:{gpu}
-      </button>
+      <div className="flex flex-wrap gap-2">
+        {run.resumable && (
+          <button type="button" className="btn btn-on" disabled={busy} onClick={() => void act(onResume)()}>
+            Resume on cuda:{gpu}
+          </button>
+        )}
+        {run.completable && (
+          <button type="button" className="btn btn-on" disabled={busy} onClick={() => void act(onComplete)()}>
+            Mark complete on cuda:{gpu}
+          </button>
+        )}
+      </div>
+      {run.completable && <p className="note">{markCompleteNote(run.best)}</p>}
     </section>
   );
 }
@@ -130,12 +151,14 @@ type Props = {
   onCancel: (id: string) => void;
   selectedRun: Run | null;
   onResume: (id: string, gpu: number) => Promise<void>;
-  /** bumped by the table's Resume button: scrolls the Resume section into view */
-  resumeFocus?: number;
+  onComplete: (id: string, gpu: number) => Promise<void>;
+  /** bumped by the table's Resume/Mark complete button: scrolls the Stopped run section into view */
+  stoppedFocus?: number;
 };
 
 export function TrainSidebar({
-  status, exports, runs, exportId, onExportChange, onExportsChanged, onStart, onCancel, selectedRun, onResume, resumeFocus = 0,
+  status, exports, runs, exportId, onExportChange, onExportsChanged, onStart, onCancel, selectedRun, onResume,
+  onComplete, stoppedFocus = 0,
 }: Props) {
   const [picks, setPicks] = useState<Record<string, ModelPick>>({});
   const [batchGpu, setBatchGpu] = useState<number | null>(null);
@@ -212,8 +235,9 @@ export function TrainSidebar({
 
   return (
     <aside className="flex shrink-0 flex-col gap-5 border-t border-line bg-panel p-3 md:w-96 md:overflow-y-auto md:border-l md:border-t-0">
-      {selectedRun !== null && selectedRun.resumable && (
-        <ResumeSection key={selectedRun.id} status={status} runs={runs} run={selectedRun} focus={resumeFocus} onResume={onResume} />
+      {selectedRun !== null && (selectedRun.resumable || selectedRun.completable) && (
+        <StoppedRunSection key={selectedRun.id} status={status} runs={runs} run={selectedRun} focus={stoppedFocus}
+          onResume={onResume} onComplete={onComplete} />
       )}
       <section className="flex flex-col gap-2">
         <h2 className="heading">New runs</h2>

@@ -6,6 +6,12 @@ Behaviour is chosen by run.json's params.epochs:
   14     print a line and exit 3 without result.json (a crash)
   99     write one row and last.pt, then wait for SIGTERM and exit 2 (a cancellable long run)
 `--onnx` writes train/weights/best.onnx and exits 0.
+
+When run.json's `finish` is true (a "Mark complete" job), `epochs` is ignored -- the real worker
+never trains in this case, so this stand-in just reports success straight away: predictions.json
+and result.json {"best": None}, exit 0, without touching whatever best.pt/results.csv the run
+already had on disk. Unless a `hang_until_sigterm` file sits next to run.json, in which case it
+waits for SIGTERM and exits 2 instead (a cancellable "finish", for testing cancel-during-finish).
 """
 
 from __future__ import annotations
@@ -32,6 +38,14 @@ def row(e: int) -> str:
     )
 
 
+def write_predictions(run_dir: Path, run: dict) -> None:
+    val = Path(run["export_dir"]) / "yolo_seg" / "images" / "val"
+    first = min(p.name for p in val.iterdir())
+    instance = {"class_id": 0, "score": 0.9, "polygons": [[0.2, 0.2, 0.8, 0.2, 0.8, 0.8]]}
+    (run_dir / "predictions.json").write_text(json.dumps(
+        {"conf": 0.25, "images": [{"name": first, "width": 96, "height": 64, "instances": [instance]}]}))
+
+
 def main() -> int:
     run_dir = Path(sys.argv[1])
     run = json.loads((run_dir / "run.json").read_text())
@@ -42,7 +56,16 @@ def main() -> int:
         return 0
     epochs = run["params"]["epochs"]
     print(f"fake worker gpu={os.environ.get('CUDA_VISIBLE_DEVICES')} cwd={os.getcwd()} "
-          f"autoinstall={os.environ.get('YOLO_AUTOINSTALL')} resume={run['resume']}", flush=True)
+          f"autoinstall={os.environ.get('YOLO_AUTOINSTALL')} resume={run['resume']} "
+          f"finish={run.get('finish', False)}", flush=True)
+    if run.get("finish"):
+        if (run_dir / "hang_until_sigterm").exists():  # so a cancel-during-finish can be tested
+            signal.signal(signal.SIGTERM, lambda *_: sys.exit(2))
+            while True:
+                time.sleep(0.05)
+        write_predictions(run_dir, run)
+        (run_dir / "result.json").write_text(json.dumps({"best": None}))
+        return 0
     (run_dir / "progress.json").write_text(
         json.dumps({"phase": "train", "epoch": 1, "epochs": epochs, "batch": 3, "batches": 10}))
     if epochs == 13:
@@ -60,11 +83,7 @@ def main() -> int:
         while True:
             time.sleep(0.05)
     (weights / "best.pt").write_bytes(b"best")
-    val = Path(run["export_dir"]) / "yolo_seg" / "images" / "val"
-    first = min(p.name for p in val.iterdir())
-    instance = {"class_id": 0, "score": 0.9, "polygons": [[0.2, 0.2, 0.8, 0.2, 0.8, 0.8]]}
-    (run_dir / "predictions.json").write_text(json.dumps(
-        {"conf": 0.25, "images": [{"name": first, "width": 96, "height": 64, "instances": [instance]}]}))
+    write_predictions(run_dir, run)
     (run_dir / "result.json").write_text(json.dumps({"best": None}))
     return 0
 

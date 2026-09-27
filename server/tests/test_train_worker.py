@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import json
 import os
+import sys
+import types
 from types import SimpleNamespace
 
 import numpy as np
 import yaml
 from train_fixtures import make_export
+from vsp.train import worker
 from vsp.train.worker import (
     ProgressWriter,
     instances_from_result,
@@ -75,3 +78,68 @@ def test_photometric_transforms():
     assert [type(t) for t in ts] == [A.RandomBrightnessContrast, A.MotionBlur, A.GaussianBlur,
                                      A.GaussNoise, A.ImageCompression, A.CLAHE]
     assert [t.p for t in ts] == [0.5, 0.2, 0.1, 0.2, 0.3, 0.1]
+
+
+def _install_fake_ultralytics(monkeypatch, *, strip_optimizer):
+    """A minimal `ultralytics` stand-in, just enough for `worker.train`'s imports to succeed
+    without a real install: `YOLO` is never called on the "finish" path, and `settings` only
+    needs `.get`/`.update` for `_quiet_ultralytics`."""
+    fake = types.ModuleType("ultralytics")
+    fake.__path__ = []
+    fake.YOLO = object()  # not callable: calling it would fail loudly, proving it was not used
+    fake.settings = SimpleNamespace(get=lambda *a: False, update=lambda *a: None)
+    fake_utils = types.ModuleType("ultralytics.utils")
+    fake_utils.__path__ = []
+    fake_torch_utils = types.ModuleType("ultralytics.utils.torch_utils")
+    fake_torch_utils.strip_optimizer = strip_optimizer
+    monkeypatch.setitem(sys.modules, "ultralytics", fake)
+    monkeypatch.setitem(sys.modules, "ultralytics.utils", fake_utils)
+    monkeypatch.setitem(sys.modules, "ultralytics.utils.torch_utils", fake_torch_utils)
+
+
+def test_train_finish_branch_skips_training_strips_best_and_predicts(tmp_path, monkeypatch):
+    """worker.train()'s "Mark complete" path (run.json's `finish`): never touches Ultralytics'
+    model.train, strips best.pt's optimizer state, runs predictions, and reports success -- just
+    like a normal run's own final result.json, minus the training."""
+    run_dir = tmp_path / "run"
+    weights = run_dir / "train" / "weights"
+    weights.mkdir(parents=True)
+    (weights / "best.pt").write_bytes(b"best-with-optimizer")
+    (weights / "last.pt").write_bytes(b"last")
+    (run_dir / "run.json").write_text(json.dumps({"finish": True, "resume": False}))
+
+    stripped = []
+    _install_fake_ultralytics(monkeypatch, strip_optimizer=lambda path: stripped.append(path))
+    predicted = []
+    monkeypatch.setattr(worker, "_predict", lambda rd, r, p: predicted.append((rd, r)))
+
+    code = worker.train(run_dir)
+
+    assert code == 0
+    assert stripped == [str(weights / "best.pt")]
+    assert predicted == [(run_dir, {"finish": True, "resume": False})]
+    assert (weights / "last.pt").read_bytes() == b"last"  # untouched
+    result = json.loads((run_dir / "result.json").read_text())
+    assert "best" in result  # {"best": summarize(read_metrics(run_dir))}, same as a normal run
+
+
+def test_train_finish_branch_cancel_reports_cancelled(tmp_path, monkeypatch):
+    """A cancel (SIGTERM, here simulated by the predict step raising KeyboardInterrupt) during a
+    "finish" job is reported exactly like cancelling any other run."""
+    run_dir = tmp_path / "run"
+    weights = run_dir / "train" / "weights"
+    weights.mkdir(parents=True)
+    (weights / "best.pt").write_bytes(b"best")
+    (run_dir / "run.json").write_text(json.dumps({"finish": True, "resume": False}))
+
+    _install_fake_ultralytics(monkeypatch, strip_optimizer=lambda path: None)
+
+    def _cancel(rd, r, p):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(worker, "_predict", _cancel)
+
+    code = worker.train(run_dir)
+
+    assert code == worker.CANCELLED_EXIT
+    assert json.loads((run_dir / "result.json").read_text()) == {"cancelled": True}
