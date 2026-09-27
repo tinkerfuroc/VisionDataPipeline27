@@ -82,6 +82,12 @@ export function Train() {
     runs.refresh();
     status.refresh();
   };
+  // Left to reject on failure (the sidebar's Resume section shows the error itself, like Start does).
+  const onResume = async (id: string, gpu: number) => {
+    await api.resumeRun(id, gpu);
+    runs.refresh();
+    status.refresh();
+  };
   const releaseSlot = (id: string) => setCompareSlots((slots) => slots.map((s) => (s === id ? null : s)));
   const onDelete = (id: string) => {
     if (!window.confirm("Delete this run and its weights?")) return;
@@ -124,7 +130,7 @@ export function Train() {
             <h2 className="heading">Runs</h2>
             <RunsTable runs={list} selectedId={selectedId} compareIds={compareIds} exports={exportsList} onSelect={setPickedId}
               onToggleCompare={toggleCompare} onCancel={(id) => act(() => api.cancelRun(id))}
-              onResume={(id) => act(() => api.resumeRun(id))} onOnnx={(id) => act(() => api.exportOnnx(id))} onDelete={onDelete} />
+              onOnnx={(id) => act(() => api.exportOnnx(id))} onDelete={onDelete} />
           </section>
 
           {compareIds.length >= 2 && (
@@ -160,7 +166,7 @@ export function Train() {
         </div>
         <TrainSidebar status={status.data} exports={exportsList} runs={list} exportId={selectedExportId}
           onExportChange={setExportId} onExportsChanged={exports.refresh} onStart={onStart}
-          onCancel={(id) => act(() => api.cancelRun(id))} />
+          onCancel={(id) => act(() => api.cancelRun(id))} selectedRun={selected} onResume={onResume} />
       </div>
     </div>
   );

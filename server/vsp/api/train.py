@@ -168,9 +168,13 @@ def cancel_run(run_id: str, state: State) -> dict:
     return _view(state, state.train.runs.read(run_id))
 
 
+class ResumeBody(BaseModel):
+    gpu: int | None = None
+
+
 @router.post("/api/train/runs/{run_id}/resume")
-def resume_run(run_id: str, state: State) -> dict:
-    state.train.resume(run_id)
+def resume_run(run_id: str, state: State, body: ResumeBody | None = None) -> dict:
+    state.train.resume(run_id, body.gpu if body else None)
     return _view(state, state.train.runs.read(run_id))
 
 

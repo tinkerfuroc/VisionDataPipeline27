@@ -212,6 +212,33 @@ def test_cancel_resume_and_conflicts(client, tmp_path):
     until(client, rid, "cancelled")
 
 
+def test_resume_on_a_chosen_gpu(client, tmp_path):
+    def last_pt():
+        return (tmp_path / "data" / "runs" / rid / "train" / "weights" / "last.pt").is_file()
+
+    rid = start(client, epochs=99, gpu=1)
+    until(client, rid, "running")
+    wait_for(last_pt)
+    client.post(f"/api/train/runs/{rid}/cancel")
+    until(client, rid, "cancelled")
+
+    resumed = client.post(f"/api/train/runs/{rid}/resume", json={"gpu": 0})
+    assert resumed.status_code == 200, resumed.text
+    assert resumed.json()["gpu"] == 0
+    running = until(client, rid, "running")
+    assert running["gpu"] == 0
+    gpu0 = next(g for g in client.get("/api/train/status").json()["gpus"] if g["index"] == 0)
+    assert gpu0["running"] == rid
+    client.post(f"/api/train/runs/{rid}/cancel")
+    until(client, rid, "cancelled")
+
+    assert client.post(f"/api/train/runs/{rid}/resume", json={"gpu": 5}).status_code == 400
+    assert client.post(f"/api/train/runs/{rid}/resume", json={}).json()["gpu"] == 0  # keeps its current GPU
+    until(client, rid, "running")
+    client.post(f"/api/train/runs/{rid}/cancel")
+    until(client, rid, "cancelled")
+
+
 def test_augment_presets(client):
     r = client.post("/api/train/runs", json={
         "export_id": EXPORT_ID, "runs": [{"model": "yolo26s-seg", "gpu": 1}],

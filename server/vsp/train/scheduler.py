@@ -356,17 +356,31 @@ class TrainScheduler:
         weights = last_weights(self.runs.dir(run["id"]))
         return run["status"] in ("cancelled", "interrupted", "error") and weights.is_file()
 
-    def resume(self, run_id: str) -> None:
+    def resume(self, run_id: str, gpu: int | None = None) -> None:
+        """`gpu` moves the run there (validated like `submit`'s: an unknown GPU is a BadRequest,
+        the caller's own bad input); omitted, it resumes on the run's own GPU as before (an
+        unknown GPU there is a Conflict: the run's own recorded state has gone stale, not the
+        caller's fault, e.g. the server restarted with fewer GPUs)."""
         with self._cv:
             run = self.runs.read(run_id)
             if not self.resumable(run):
                 raise Conflict(f"run {run_id} cannot be resumed")
-            if run["gpu"] not in self._queues:
-                raise Conflict(f"GPU {run['gpu']} is not available")
-            self.runs.update(
-                run_id, status="queued", resume=True, error=None, finished_at=None, owner_pid=os.getpid()
-            )
-            self._queues[run["gpu"]].append((run_id, "train"))
+            if gpu is not None:
+                if gpu not in self._queues:
+                    raise BadRequest(f"GPU {gpu} does not exist")
+                target = gpu
+            else:
+                target = run["gpu"]
+                if target not in self._queues:
+                    raise Conflict(f"GPU {target} is not available")
+            fields: dict = {
+                "status": "queued", "resume": True, "error": None, "finished_at": None,
+                "owner_pid": os.getpid(),
+            }
+            if gpu is not None:
+                fields["gpu"] = gpu
+            self.runs.update(run_id, **fields)
+            self._queues[target].append((run_id, "train"))
             self._cv.notify_all()
 
     def export_onnx(self, run_id: str) -> None:

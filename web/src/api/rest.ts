@@ -224,7 +224,8 @@ export const api = {
   getRun: (id: string) => request<RunDetail>(`/api/train/runs/${id}`),
   startRuns: (body: StartRunsRequest) => request<{ run_ids: string[] }>("/api/train/runs", post(body)),
   cancelRun: (id: string) => request<Run>(`/api/train/runs/${id}/cancel`, post()),
-  resumeRun: (id: string) => request<Run>(`/api/train/runs/${id}/resume`, post()),
+  resumeRun: (id: string, gpu?: number) =>
+    request<Run>(`/api/train/runs/${id}/resume`, post(gpu === undefined ? undefined : { gpu })),
   exportOnnx: (id: string) => request<Run>(`/api/train/runs/${id}/onnx`, post()),
   deleteRun: (id: string) => request<void>(`/api/train/runs/${id}`, { method: "DELETE" }),
   predictions: (id: string, offset: number, limit: number, filter: PredictionFilter = "all") =>

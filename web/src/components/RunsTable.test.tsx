@@ -19,7 +19,7 @@ describe("RunsTable", () => {
       best: { ...base.best!, mask_map50_95: 0.75 } };
     const q: Run = { ...base, id: "20260924-120000-yolo11s-seg-cccc", model: "yolo11s-seg", status: "queued", best: null,
       has_best: false, epochs_done: 0 };
-    const on = { onSelect: vi.fn(), onToggleCompare: vi.fn(), onCancel: vi.fn(), onResume: vi.fn(), onOnnx: vi.fn(), onDelete: vi.fn() };
+    const on = { onSelect: vi.fn(), onToggleCompare: vi.fn(), onCancel: vi.fn(), onOnnx: vi.fn(), onDelete: vi.fn() };
     render(<RunsTable runs={[base, b, q]} selectedId={null} compareIds={[]} {...on} />);
     const rowB = screen.getByText("yolo26m-seg").closest("tr")!;
     expect(within(rowB).getByText("0.750").tagName).toBe("STRONG");
@@ -38,7 +38,7 @@ describe("RunsTable", () => {
   it("shows the export id under the project name, so a run on an augmented export is distinguishable", () => {
     const original: Run = { ...base, id: "20260924-120000-yolo26s-seg-eeee" };
     const augmented: Run = { ...base, id: "20260924-120000-yolo26s-seg-ffff", export_id: "e-aug3x-3385" };
-    const on = { onSelect: vi.fn(), onToggleCompare: vi.fn(), onCancel: vi.fn(), onResume: vi.fn(), onOnnx: vi.fn(), onDelete: vi.fn() };
+    const on = { onSelect: vi.fn(), onToggleCompare: vi.fn(), onCancel: vi.fn(), onOnnx: vi.fn(), onDelete: vi.fn() };
     render(<RunsTable runs={[original, augmented]} selectedId={null} compareIds={[]} {...on} />);
     const rows = screen.getAllByText("Optics").map((el) => el.closest("tr")!);
     expect(within(rows[0]).getByText("e")).toBeTruthy();
@@ -53,7 +53,7 @@ describe("RunsTable", () => {
       { id: "cups-v2", name: "Cups v2", project_name: "Optics", created_at: "", classes: [], train_images: 0, val_images: 0, formats: [], derived_from: null },
       { id: "e-plain", name: null, project_name: "Optics", created_at: "", classes: [], train_images: 0, val_images: 0, formats: [], derived_from: null },
     ];
-    const on = { onSelect: vi.fn(), onToggleCompare: vi.fn(), onCancel: vi.fn(), onResume: vi.fn(), onOnnx: vi.fn(), onDelete: vi.fn() };
+    const on = { onSelect: vi.fn(), onToggleCompare: vi.fn(), onCancel: vi.fn(), onOnnx: vi.fn(), onDelete: vi.fn() };
     render(<RunsTable runs={[named, unnamed, unknown]} selectedId={null} compareIds={[]} exports={exports} {...on} />);
 
     const namedRow = screen.getByText("Cups v2").closest("tr")!;
@@ -65,10 +65,18 @@ describe("RunsTable", () => {
     expect(within(fallbackRows[1]).getByText("e-gone")).toBeTruthy();
   });
 
+  it("Resume selects the run instead of resuming it directly", () => {
+    const stopped: Run = { ...base, id: "20260924-120000-yolo26s-seg-jjjj", status: "cancelled", resumable: true };
+    const on = { onSelect: vi.fn(), onToggleCompare: vi.fn(), onCancel: vi.fn(), onOnnx: vi.fn(), onDelete: vi.fn() };
+    render(<RunsTable runs={[stopped]} selectedId={null} compareIds={[]} {...on} />);
+    fireEvent.click(screen.getByRole("button", { name: "Resume" }));
+    expect(on.onSelect).toHaveBeenCalledWith(stopped.id);
+  });
+
   it("shows the Aug column from params.augment, defaulting to default", () => {
     const strong: Run = { ...base, id: "20260924-120000-yolo26m-seg-dddd", model: "yolo26m-seg",
       params: { ...base.params, augment: "strong" } };
-    const on = { onSelect: vi.fn(), onToggleCompare: vi.fn(), onCancel: vi.fn(), onResume: vi.fn(), onOnnx: vi.fn(), onDelete: vi.fn() };
+    const on = { onSelect: vi.fn(), onToggleCompare: vi.fn(), onCancel: vi.fn(), onOnnx: vi.fn(), onDelete: vi.fn() };
     render(<RunsTable runs={[base, strong]} selectedId={null} compareIds={[]} {...on} />);
     const rowDefault = screen.getByText("yolo26s-seg").closest("tr")!;
     const rowStrong = screen.getByText("yolo26m-seg").closest("tr")!;

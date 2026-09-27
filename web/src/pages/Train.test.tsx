@@ -305,4 +305,41 @@ describe("Train page", () => {
     await waitFor(() => expect(m.renameExport).toHaveBeenCalledWith(named.id, "Better"));
     await waitFor(() => expect(m.listExports).toHaveBeenCalledTimes(2));
   });
+
+  it("Resume: the sidebar section appears only for a resumable selected run, defaults to the fastest idle GPU, warns about SAM3, and resumes on the chosen GPU", async () => {
+    const stopped = run("r3", "yolo11s-seg", { status: "cancelled", resumable: true, epochs_done: 40, gpu: 1 });
+    m.listRuns.mockResolvedValue([r1, r2, stopped]);
+    m.resumeRun.mockResolvedValue({ ...stopped, status: "queued" });
+    renderPage();
+
+    // r1 (running, not resumable) is selected by default: no Resume section yet.
+    await screen.findByRole("checkbox", { name: "Compare yolo11s-seg" });
+    expect(screen.queryByText("Resume yolo11s-seg run")).toBeNull();
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Compare yolo11s-seg" }).closest("tr")!);
+    const heading = await screen.findByText("Resume yolo11s-seg run");
+    const section = heading.closest("section")!;
+    expect(within(section).getByText("Stopped at epoch 40 of 100 on cuda:1 (RTX 2080 Ti).")).toBeTruthy();
+
+    const select = within(section).getByLabelText("Resume GPU") as HTMLSelectElement;
+    expect(select.value).toBe("0"); // default_gpu (the fastest idle GPU), not the run's former cuda:1
+    expect(within(section).getByText(/SAM3 runs on cuda:0/)).toBeTruthy();
+
+    fireEvent.change(select, { target: { value: "1" } });
+    fireEvent.click(within(section).getByRole("button", { name: "Resume on cuda:1" }));
+    await waitFor(() => expect(m.resumeRun).toHaveBeenCalledWith("r3", 1));
+  });
+
+  it("shows a resume error in the sidebar, like the start error", async () => {
+    const stopped = run("r3", "yolo11s-seg", { status: "cancelled", resumable: true, epochs_done: 40, gpu: 1 });
+    m.listRuns.mockResolvedValue([r1, r2, stopped]);
+    m.resumeRun.mockRejectedValue(new Error("GPU 1 is not available"));
+    renderPage();
+
+    fireEvent.click((await screen.findByRole("checkbox", { name: "Compare yolo11s-seg" })).closest("tr")!);
+    const heading = await screen.findByText("Resume yolo11s-seg run");
+    const section = heading.closest("section")!;
+    fireEvent.click(within(section).getByRole("button", { name: /Resume on cuda:/ }));
+    expect(await within(section).findByText("GPU 1 is not available")).toBeTruthy();
+  });
 });

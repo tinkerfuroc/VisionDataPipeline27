@@ -51,6 +51,69 @@ function gpuBusyNote(status: TrainStatus, runs: Run[], gpu: number): string | nu
   return null;
 }
 
+/** "Stopped at epoch N of M on cuda:X (<name>)" — the GPU name is skipped if that GPU is no longer listed. */
+function stoppedAt(run: Run, status: TrainStatus): string {
+  const g = status.gpus.find((gg) => gg.index === run.gpu);
+  const name = g !== undefined ? ` (${g.name.replace(/^NVIDIA GeForce /, "")})` : "";
+  return `Stopped at epoch ${run.epochs_done} of ${run.params.epochs} on cuda:${run.gpu}${name}.`;
+}
+
+/** The right sidebar's "Resume run" section for a selected, resumable run: its own GPU choice
+ * (defaulting to the fastest idle one), the same SAM3/busy notes as the New-runs form, and a
+ * button naming exactly which GPU it will resume on. Its own component (rather than inline in
+ * `TrainSidebar`) so its state can key off `run.id` and reset cleanly when the selection changes. */
+function ResumeSection({
+  status, runs, run, onResume,
+}: {
+  status: TrainStatus;
+  runs: Run[];
+  run: Run;
+  onResume: (id: string, gpu: number) => Promise<void>;
+}) {
+  const [gpu, setGpu] = useState(defaultGpu(status) ?? status.gpus[0]?.index ?? 0);
+  const [resuming, setResuming] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const onSam3 = status.sam3_gpu !== null && gpu === status.sam3_gpu;
+  const note = gpuBusyNote(status, runs, gpu);
+
+  const resume = async () => {
+    setResuming(true);
+    setError(null);
+    try {
+      await onResume(run.id, gpu);
+    } catch (e) {
+      setError(message(e));
+    } finally {
+      setResuming(false);
+    }
+  };
+
+  return (
+    <section className="flex flex-col gap-2">
+      <h2 className="heading">Resume {run.model} run</h2>
+      <p className="note">{stoppedAt(run, status)}</p>
+      <label className="flex flex-col gap-1 text-sm text-dim">
+        GPU
+        <select aria-label="Resume GPU" className="field" value={gpu} onChange={(e) => setGpu(Number(e.target.value))}>
+          {status.gpus.map((g) => (
+            <option key={g.index} value={g.index}>{gpuOptionLabel(g, status)}</option>
+          ))}
+        </select>
+      </label>
+      {onSam3 && (
+        <p className="note text-ink">
+          SAM3 runs on cuda:{status.sam3_gpu}. Training there shares its memory; labeling or training may run out of VRAM.
+        </p>
+      )}
+      {note !== null && <p className="note text-ink">{note}</p>}
+      {error !== null && <p role="alert" className="alert">{error}</p>}
+      <button type="button" className="btn btn-on" disabled={resuming} onClick={() => void resume()}>
+        Resume on cuda:{gpu}
+      </button>
+    </section>
+  );
+}
+
 type Props = {
   status: TrainStatus | null;
   exports: ExportInfo[];
@@ -60,9 +123,13 @@ type Props = {
   onExportsChanged: () => void;
   onStart: (body: StartRunsRequest) => Promise<void>;
   onCancel: (id: string) => void;
+  selectedRun: Run | null;
+  onResume: (id: string, gpu: number) => Promise<void>;
 };
 
-export function TrainSidebar({ status, exports, runs, exportId, onExportChange, onExportsChanged, onStart, onCancel }: Props) {
+export function TrainSidebar({
+  status, exports, runs, exportId, onExportChange, onExportsChanged, onStart, onCancel, selectedRun, onResume,
+}: Props) {
   const [picks, setPicks] = useState<Record<string, ModelPick>>({});
   const [batchGpu, setBatchGpu] = useState<number | null>(null);
   const [perModelGpu, setPerModelGpu] = useState(false);
@@ -138,6 +205,9 @@ export function TrainSidebar({ status, exports, runs, exportId, onExportChange, 
 
   return (
     <aside className="flex shrink-0 flex-col gap-5 border-t border-line bg-panel p-3 md:w-96 md:overflow-y-auto md:border-l md:border-t-0">
+      {selectedRun !== null && selectedRun.resumable && (
+        <ResumeSection key={selectedRun.id} status={status} runs={runs} run={selectedRun} onResume={onResume} />
+      )}
       <section className="flex flex-col gap-2">
         <h2 className="heading">New runs</h2>
         <label className="flex flex-col gap-1 text-sm text-dim">

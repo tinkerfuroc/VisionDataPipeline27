@@ -230,9 +230,14 @@ the GUI's "shares memory with SAM3" warning still applies when it is chosen. The
 GPU choice for every model started together (listed best first, each labelled with its estimated TFLOPS and free
 VRAM from NVML, and the default marked), plus a "Different GPU per model" checkbox that reveals a per-model override
 seeded from that choice. `vsp train` without `--gpu` picks the same way and prints which GPU it chose and why;
-`--gpu` overrides it, as before. Cancel stops a run after SIGTERM (SIGKILL after 30 s) and keeps `last.pt`, so Resume
-continues from the last finished epoch. A run that was training when the server stopped is shown as "interrupted"
-and can be resumed; queued runs are queued again. `vsp train` runs in the foreground and owns its runs; Ctrl-C,
+`--gpu` overrides it, as before. Cancel stops a run after SIGTERM (SIGKILL after 30 s) and keeps `last.pt`. Resume
+continues a cancelled, interrupted or errored run from its last finished epoch, on a GPU you choose (default the
+fastest idle one): click "Resume" in the Runs table (or select the run) to open its "Resume run" section in the
+right sidebar, pick a GPU there (same best-first list and labels as New-runs, with the SAM3 and busy notes) and
+click "Resume on cuda:N". The worker itself needs no GPU-specific change to move a resumed run: it always trains as
+device 0 under a fresh `CUDA_VISIBLE_DEVICES` set to the newly chosen GPU, and Ultralytics' checkpoint-saved device
+("0") is relative to that, not to any physical GPU. A run that was training when the server stopped is shown as
+"interrupted" and can be resumed; queued runs are queued again. `vsp train` runs in the foreground and owns its runs; Ctrl-C,
 SIGTERM and SIGHUP (a closed terminal, `kill`) all cancel them the same way. Do not start it on a GPU the server is
 also training on. Do not set `CUDA_VISIBLE_DEVICES` for the server process itself — GPU indexes (from `vsp doctor`,
 the Train page and `vsp train --gpu`) are passed to each worker as-is, so setting it on the server would remap or

@@ -351,6 +351,44 @@ def test_resume_after_cancel(env):
         sched.resume(done)
 
 
+def test_resume_on_another_gpu_moves_run_json_and_launches_there(env):
+    sched, export = env
+    sched.start()
+    (rid,) = sched.submit(export, [("yolo26s-seg", 1)], TrainParams(epochs=99))
+    until(sched, rid, "running")
+    wait_for(lambda: (sched.runs.dir(rid) / "train" / "weights" / "last.pt").is_file())
+    sched.cancel(rid)
+    until(sched, rid, "cancelled")
+    sched.resume(rid, gpu=0)
+    assert sched.runs.read(rid)["gpu"] == 0  # moved immediately, before the worker even launches
+    until(sched, rid, "running")
+    wait_for(lambda: "resume=True" in (sched.runs.dir(rid) / "worker.log").read_text())
+    assert "gpu=0" in (sched.runs.dir(rid) / "worker.log").read_text()  # CUDA_VISIBLE_DEVICES follows it
+    sched.cancel(rid)
+    until(sched, rid, "cancelled")
+
+
+def test_resume_rejects_an_unknown_gpu_without_touching_the_run(env):
+    sched, export = env
+    sched.start()
+    (rid,) = sched.submit(export, [("yolo26s-seg", 1)], TrainParams(epochs=99))
+    until(sched, rid, "running")
+    wait_for(lambda: (sched.runs.dir(rid) / "train" / "weights" / "last.pt").is_file())
+    sched.cancel(rid)
+    until(sched, rid, "cancelled")
+    with pytest.raises(BadRequest):
+        sched.resume(rid, gpu=7)
+    run = sched.runs.read(rid)
+    assert run["gpu"] == 1 and run["status"] == "cancelled"  # unchanged
+
+
+def test_resume_not_resumable_is_a_conflict_even_with_a_gpu_given(env):
+    sched, export = env
+    (rid,) = sched.submit(export, [("yolo26s-seg", 1)], TrainParams(epochs=1))
+    with pytest.raises(Conflict):
+        sched.resume(rid, gpu=0)  # still queued, not resumable: rejected before the GPU is even checked
+
+
 def test_onnx_export(env):
     sched, export = env
     sched.start()
