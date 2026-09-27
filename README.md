@@ -305,7 +305,7 @@ middle-drag pan · right click = negative point. `Enter`, `Esc` and `Z` act on t
     export with COCO: `augment.cutouts` is `per_object`; of one without COCO: the panel notes the fallback and
     it is `per_class_region`.
 21. Several objects: on one clip label a cup (#1), press `N`, choose another class and label it (#2). The Objects
-    panel lists both with frame counts; the timeline shows one lane per project class (a class with a third, unused
+    panel lists both with frame counts; the timeline shows one lane per project class (a third, unused
     class shows an empty lane too), the active object's class tall; clicking a lane or its name selects that class's
     object, and `O` / `Shift+O` cycle. Hide #1 with its eye: it leaves the frame and its lane dims once every object
     of its class is hidden. Only the active object carries the outline; brushing #2 keeps #1 visible underneath. With
