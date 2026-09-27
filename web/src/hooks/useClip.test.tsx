@@ -98,6 +98,19 @@ describe("useClip", () => {
     act(() => result.current.apply(next, true));
     expect(result.current.maskVersion(0)).not.toBe(before);
   });
+  it("update() applies a function against whatever detail is current, not a stale snapshot", async () => {
+    vi.mocked(api.getClip).mockResolvedValue(detail);
+    const { result } = renderHook(() => useClip("c1"));
+    await waitFor(() => expect(result.current.detail).not.toBeNull());
+    // a lane patch lands (as it would while some other request is in flight) before update() runs
+    act(() => result.current.patchFrames([{ frame: 1, objects: [{ id: 1, hasMask: true }] }]));
+    const patchedStates = result.current.detail?.states;
+    act(() =>
+      result.current.update((d) => ({ ...d, classes: [...d.classes, { id: 9, name: "plate", color: "#fff" }] })),
+    );
+    expect(result.current.detail?.classes).toEqual([{ id: 9, name: "plate", color: "#fff" }]);
+    expect(result.current.detail?.states).toEqual(patchedStates); // the concurrent patch survives, not rolled back
+  });
   it("drops a reload that resolves after a newer one", async () => {
     const first = deferred<ClipDetail>();
     vi.mocked(api.getClip).mockReturnValueOnce(first.promise);

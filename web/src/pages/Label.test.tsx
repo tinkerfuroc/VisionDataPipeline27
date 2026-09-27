@@ -588,7 +588,7 @@ describe("Label page (objects)", () => {
     fireEvent.keyDown(window, { key: "O", shiftKey: true });
     expect(row(/^#2 cup/).getAttribute("aria-pressed")).toBe("true");
     fireEvent.keyDown(window, { key: "n" });
-    expect(row(/^New object \(cup\)/).getAttribute("aria-pressed")).toBe("true");
+    expect(panel().getByText("New object (cup)", { selector: "div" }).getAttribute("aria-current")).toBe("true");
   });
 
   it("K and G follow the active object's lane", async () => {
@@ -629,10 +629,10 @@ describe("Label page (objects)", () => {
     vi.stubGlobal("confirm", confirm);
     renderLabel();
     await screen.findByText("bench.mp4");
-    fireEvent.click(screen.getByRole("button", { name: "Delete object" }));
+    fireEvent.click(screen.getByRole("button", { name: "Delete #1 connector" }));
     expect(confirm).toHaveBeenCalledWith("Delete #1 connector and its masks on 20 frames?");
     expect(api.deleteObject).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "Delete object" }));
+    fireEvent.click(screen.getByRole("button", { name: "Delete #1 connector" }));
     await waitFor(() => expect(api.deleteObject).toHaveBeenCalledWith("c1", 1));
     expect((await panel().findByRole("button", { name: /^#2 cup/ })).getAttribute("aria-pressed")).toBe("true");
   });

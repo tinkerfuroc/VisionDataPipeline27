@@ -24,7 +24,7 @@ const baseDetail = (): ClipDetail => ({
 });
 const accepted = (ids: number[]): AcceptResult => ({ ...baseDetail(), object_ids: ids });
 const handle = (detail: ClipDetail): ClipHandle => ({
-  detail, error: null, refreshError: null, reload: vi.fn(), apply: vi.fn(), patchFrames: vi.fn(), maskVersion: () => "0.0",
+  detail, error: null, refreshError: null, reload: vi.fn(), apply: vi.fn(), update: vi.fn(), patchFrames: vi.fn(), maskVersion: () => "0.0",
 });
 const OBJECT_1: Selection = { kind: "object", id: 1 };
 type Args = { frame: number; selection: Selection | null; clip: ClipHandle; enabled: boolean; onCreated: (ids: number[]) => void };

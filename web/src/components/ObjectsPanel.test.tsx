@@ -47,7 +47,7 @@ describe("ObjectsPanel", () => {
     fireEvent.change(screen.getByLabelText("Class"), { target: { value: "1" } });
     expect(p.onClass).toHaveBeenCalledWith(1);
     rerender(<ObjectsPanel {...p} selection={{ kind: "new", classId: 1 }} />);
-    expect(rows().getByRole("button", { name: "New object (bowl)" }).getAttribute("aria-pressed")).toBe("true");
+    expect(rows().getByText("New object (bowl)", { selector: "div" }).getAttribute("aria-current")).toBe("true");
     expect(screen.getByText("Class of the new object")).toBeTruthy();
     expect((screen.getByRole("button", { name: /^\+ New object/ }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole("button", { name: "Delete object" }) as HTMLButtonElement).disabled).toBe(true);
@@ -57,17 +57,24 @@ describe("ObjectsPanel", () => {
     render(<ObjectsPanel {...p} />);
     fireEvent.click(screen.getByRole("button", { name: /^\+ New object/ }));
     expect(p.onNew).toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "Delete object" }));
+    fireEvent.click(screen.getByRole("button", { name: "Delete #1 cup" }));
     expect(p.onDelete).toHaveBeenCalled();
   });
-  it("keeps the selection while brush strokes are unsaved, and says why Delete is unavailable", () => {
+  it("names the Delete button after the active object", () => {
+    const p = props({ selection: { kind: "object", id: 2 } });
+    render(<ObjectsPanel {...p} />);
+    expect(screen.getByRole("button", { name: "Delete #2 bowl" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Delete object" })).toBeNull();
+  });
+  it("keeps the selection while brush strokes are unsaved, disables the class select, and says why Delete is unavailable", () => {
     render(
       <ObjectsPanel {...props({ lockReason: "Save or discard the brush strokes on frame 0 first.", deleteBlockedReason: "A propagation is running. Stop it to delete an object." })} />,
     );
     expect((rows().getByRole("button", { name: /^#2 bowl/ }) as HTMLButtonElement).disabled).toBe(true);
     expect((rows().getByRole("button", { name: /^#1 cup/ }) as HTMLButtonElement).disabled).toBe(false);
     expect((screen.getByRole("button", { name: /^\+ New object/ }) as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByRole("button", { name: "Delete object" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Delete #1 cup" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByLabelText("Class") as HTMLSelectElement).disabled).toBe(true);
     expect(screen.getByText("A propagation is running. Stop it to delete an object.")).toBeTruthy();
   });
   it("tells an empty clip how to start, and adds a class", async () => {

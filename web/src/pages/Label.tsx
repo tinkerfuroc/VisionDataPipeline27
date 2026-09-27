@@ -66,7 +66,7 @@ export function Label() {
   const [objectsError, setObjectsError] = useState<string | null>(null);
 
   // ---- propagation job -------------------------------------------------------------------------------------------
-  const { patchFrames, reload, apply } = clip;
+  const { patchFrames, reload, apply, update } = clip;
   // true when this page itself started or resumed (from its own sessionStorage key) the current job; false when it
   // was attached from a 409 naming some other job holding the GPU lock (possibly another clip's) — that job must
   // never patch this clip's frames or move this view, and its lost_at must not be seeked to when it ends.
@@ -350,10 +350,12 @@ export function Label() {
     async (name: string) => {
       if (detail === null) return;
       const created = await api.addClass(detail.clip.project_id, name);
-      apply({ ...detail, classes: [...detail.classes, created] }, false);
+      // against the latest detail, not the `detail` captured above: a lane patch from a running propagation may
+      // land while this request is in flight, and a stale snapshot here would roll it back
+      update((d) => ({ ...d, classes: [...d.classes, created] }));
       if (objects.selection?.kind === "new") setNewClass(created.id); // an existing object is relabelled only on request
     },
-    [detail, apply, objects.selection, setNewClass],
+    [detail, update, objects.selection, setNewClass],
   );
   const changeClass = useCallback(
     (classId: number) => {
@@ -559,7 +561,8 @@ export function Label() {
             }}
             onToggleOverlay={() => setOverlay((o) => !o)}
           />
-          <ClipStats states={detail.states} color={color} />
+          {/* whole-clip counts: coloured neutrally, not with the active object's class colour */}
+          <ClipStats states={detail.states} color={FALLBACK_COLOR} />
         </div>
         <Timeline
           states={detail.states}

@@ -75,16 +75,16 @@ export function ObjectsPanel(p: Props) {
         })}
         {selection.kind === "new" && (
           <li>
-            <button type="button" aria-pressed className="btn btn-on w-full justify-start gap-2">
+            <div aria-current="true" className="btn btn-on w-full justify-start gap-2">
               <span aria-hidden className="h-3.5 w-3.5 shrink-0 rounded-sm border border-dashed border-line" style={{ background: classColor(detail, classId) }} />
               New object ({className(detail, classId) ?? "choose a class"})
-            </button>
+            </div>
           </li>
         )}
       </ul>
       <label className="flex items-center gap-2 text-xs">
         <span className="w-28 shrink-0">{active !== null ? `Class of #${active.id}` : "Class of the new object"}</span>
-        <select aria-label="Class" className="field flex-1" value={classId ?? ""} onChange={(e) => p.onClass(Number(e.target.value))}>
+        <select aria-label="Class" className="field flex-1" disabled={locked} value={classId ?? ""} onChange={(e) => p.onClass(Number(e.target.value))}>
           {classId === null && <option value="">Choose a class</option>}
           {detail.classes.map((c) => (
             <option key={c.id} value={c.id}>{c.name}</option>
@@ -96,7 +96,7 @@ export function ObjectsPanel(p: Props) {
           + New object <kbd aria-hidden>N</kbd>
         </button>
         <button type="button" className="btn btn-danger" disabled={active === null || locked || p.deleteBlockedReason !== null}
-          onClick={p.onDelete}>
+          aria-label={active !== null ? `Delete ${objectLabel(detail, active)}` : undefined} onClick={p.onDelete}>
           Delete object
         </button>
       </div>

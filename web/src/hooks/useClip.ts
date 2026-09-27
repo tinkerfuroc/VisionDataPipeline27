@@ -11,6 +11,9 @@ export type ClipHandle = {
   reload: () => Promise<void>;
   /** adopt the ClipDetail a mutation returned; `masksChanged` re-versions every mask URL */
   apply: (detail: ClipDetail, masksChanged: boolean) => void;
+  /** apply a function against whatever detail is current when it runs, not a snapshot captured earlier (so it
+   * cannot roll back a lane patch that landed while an awaited request was in flight); never changes masks */
+  update: (fn: (detail: ClipDetail) => ClipDetail) => void;
   /** apply a batch of propagation frame events in one update: each listed object's lane follows its event, the
    * clip-level `states` are recomputed from all lanes, and every event's frame gets a new mask version (coalesces a
    * burst of streamed events into one render) */
@@ -64,6 +67,11 @@ export function useClip(clipId: string): ClipHandle {
     setTick((t) => t + 1);
   }, []);
 
+  const update = useCallback((fn: (detail: ClipDetail) => ClipDetail) => {
+    setDetail((d) => (d === null ? d : fn(d)));
+    setTick((t) => t + 1);
+  }, []);
+
   const patchFrames = useCallback((events: FrameEvent[]) => {
     if (events.length === 0) return;
     const frames = versions.current.frames;
@@ -77,5 +85,5 @@ export function useClip(clipId: string): ClipHandle {
     [],
   );
 
-  return { detail, error, refreshError, reload, apply, patchFrames, maskVersion };
+  return { detail, error, refreshError, reload, apply, update, patchFrames, maskVersion };
 }
