@@ -36,9 +36,9 @@ describe("train helpers", () => {
   });
   it("gpuOptionLabel: name, tflops, free VRAM, SAM3 and the default marker", () => {
     const st = { default_gpu: 0, sam3_gpu: 0 } as unknown as TrainStatus;
-    expect(gpuOptionLabel(gpu(), st)).toBe("cuda:0 · RTX 3080 Ti · 34 TFLOPS · 9.1 GB free · SAM3 · fastest idle");
+    expect(gpuOptionLabel(gpu(), st)).toBe("cuda:0 · RTX 3080 Ti · est. 34 TFLOPS · 9.1 GiB free · SAM3 · default");
     expect(gpuOptionLabel(gpu({ index: 1, memory_free: null }), { default_gpu: 0, sam3_gpu: 0 })).toBe(
-      "cuda:1 · RTX 3080 Ti · 34 TFLOPS",
+      "cuda:1 · RTX 3080 Ti · est. 34 TFLOPS",
     );
   });
   it("polygonPoints scales normalised pairs", () => {

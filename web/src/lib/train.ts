@@ -26,14 +26,14 @@ export function defaultGpu(status: Pick<TrainStatus, "gpus" | "default_gpu">): n
   return status.default_gpu ?? status.gpus[0]?.index ?? null;
 }
 
-/** e.g. "cuda:0 · RTX 3080 Ti · 34 TFLOPS · 9.1 GB free · SAM3 · fastest idle". Options are already
+/** e.g. "cuda:0 · RTX 3080 Ti · est. 34 TFLOPS · 9.1 GiB free · SAM3 · default". Options are already
  * server-sorted fastest first; this only formats one of them. */
 export function gpuOptionLabel(g: GpuQueue, status: Pick<TrainStatus, "default_gpu" | "sam3_gpu">): string {
-  const parts = [`cuda:${g.index}`, g.name.replace(/^NVIDIA GeForce /, ""), `${g.tflops} TFLOPS`];
-  if (g.memory_free !== null) parts.push(`${(g.memory_free / 2 ** 30).toFixed(1)} GB free`);
+  const parts = [`cuda:${g.index}`, g.name.replace(/^NVIDIA GeForce /, ""), `est. ${Math.round(g.tflops)} TFLOPS`];
+  if (g.memory_free !== null) parts.push(`${(g.memory_free / 2 ** 30).toFixed(1)} GiB free`);
   if (g.index === status.sam3_gpu) parts.push("SAM3");
   let label = parts.join(" · ");
-  if (g.index === status.default_gpu) label += " · fastest idle";
+  if (g.index === status.default_gpu) label += " · default";
   return label;
 }
 

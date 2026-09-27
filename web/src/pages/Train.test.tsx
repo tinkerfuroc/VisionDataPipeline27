@@ -100,13 +100,13 @@ describe("Train page", () => {
     expect(body.params.epochs).toBe(50);
   });
 
-  it("lists GPUs best first in the batch select, labelled with TFLOPS, free VRAM and SAM3", async () => {
+  it("lists GPUs best first in the batch select, labelled with estimated TFLOPS, free VRAM and SAM3", async () => {
     renderPage();
     const select = (await screen.findByLabelText("GPU")) as HTMLSelectElement;
     const options = Array.from(select.options).map((o) => o.text);
     expect(options).toEqual([
-      "cuda:0 · RTX 3080 Ti · 34 TFLOPS · 9.1 GB free · SAM3 · fastest idle",
-      "cuda:1 · RTX 2080 Ti · 13.5 TFLOPS · 5.5 GB free",
+      "cuda:0 · RTX 3080 Ti · est. 34 TFLOPS · 9.1 GiB free · SAM3 · default",
+      "cuda:1 · RTX 2080 Ti · est. 14 TFLOPS · 5.5 GiB free",
     ]);
   });
 

@@ -28,7 +28,7 @@ const AUG_FIELDS: { key: keyof Omit<AugParams, "photometric">; min: number; max:
   { key: "copy_paste", min: 0, max: 1, step: 0.05 },
 ];
 const gib = (bytes: number) => `${Math.round(bytes / 2 ** 30)} GiB`;
-const gbFree = (bytes: number) => `${(bytes / 2 ** 30).toFixed(1)} GB free`;
+const gbFree = (bytes: number) => `${(bytes / 2 ** 30).toFixed(1)} GiB free`;
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 /** Runs training on `g` that this server process is not itself running (e.g. a `vsp train` CLI
