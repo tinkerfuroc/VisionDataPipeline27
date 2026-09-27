@@ -25,6 +25,14 @@ from ..train.models import (
 )
 from ..train.results import read_metrics, tail
 from ..train.runs import best_weights, onnx_weights, read_json
+from ..train.scheduler import (
+    Gpu,
+    default_gpu,
+    estimated_tflops,
+    gpu_free_memory,
+    gpu_max_clock_ghz,
+    rank_gpus,
+)
 from .deps import State
 
 router = APIRouter(tags=["train"])
@@ -78,11 +86,32 @@ class StartBody(BaseModel):
     params: TrainParams = Field(default_factory=TrainParams)
 
 
+def _gpu_view(g: Gpu, snapshot: dict, *, tflops: float, memory_free: int | None) -> dict:
+    return {
+        **snapshot, "capability": f"{g.capability[0]}.{g.capability[1]}", "sm_count": g.sm_count,
+        "memory_free": memory_free, "tflops": round(tflops, 1),
+    }
+
+
 @router.get("/api/train/status")
 def train_status(state: State) -> dict:
+    gpus = state.train.gpus
+    clocks = gpu_max_clock_ghz(gpus)
+    free = gpu_free_memory(gpus)
+    ranked = rank_gpus(gpus, clocks)
+    snapshot_by_index = {s["index"]: s for s in state.train.snapshot()}
+    gpu_views = [
+        _gpu_view(
+            g, snapshot_by_index[g.index],
+            tflops=estimated_tflops(g.sm_count, g.capability, clocks.get(g.index, 1.5)),
+            memory_free=free.get(g.index),
+        )
+        for g in ranked
+    ]
     return {
         "available": ultralytics_error() is None, "error": ultralytics_error(),
-        "gpus": state.train.snapshot(), "sam3_gpu": sam3_gpu(state.engine),
+        "gpus": gpu_views, "default_gpu": default_gpu(ranked, state.train.busy_gpus()),
+        "sam3_gpu": sam3_gpu(state.engine),
         "models": list(MODELS), "default_models": list(DEFAULT_MODELS),
         "defaults": TrainParams().model_dump(),
         "aug_presets": {k: v.model_dump() for k, v in AUG_PRESETS.items()},

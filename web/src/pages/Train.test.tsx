@@ -21,10 +21,18 @@ vi.mock("../api/rest", async (original) => {
 });
 
 const status: TrainStatus = {
-  available: true, error: null, sam3_gpu: 0,
+  available: true, error: null, sam3_gpu: 0, default_gpu: 0,
   gpus: [
-    { index: 0, name: "RTX 3080 Ti", memory_total: 12 * 2 ** 30, running: null, running_kind: null, queue: [] },
-    { index: 1, name: "RTX 2080 Ti", memory_total: 11 * 2 ** 30, running: "r1", running_kind: "train", queue: ["r2"] },
+    // Best (fastest estimated) first: cuda:0 is the fastest GPU here, and idle, so it is the
+    // default even though SAM3 shares it. cuda:1 is slower and already training r1 (queue: r2).
+    {
+      index: 0, name: "NVIDIA GeForce RTX 3080 Ti", memory_total: 12 * 2 ** 30, memory_free: 9.1 * 2 ** 30,
+      capability: "8.6", sm_count: 80, tflops: 34, running: null, running_kind: null, queue: [],
+    },
+    {
+      index: 1, name: "NVIDIA GeForce RTX 2080 Ti", memory_total: 11 * 2 ** 30, memory_free: 5.5 * 2 ** 30,
+      capability: "7.5", sm_count: 68, tflops: 13.5, running: "r1", running_kind: "train", queue: ["r2"],
+    },
   ],
   models: ["yolo26n-seg", "yolo26s-seg", "yolo26m-seg", "yolo11s-seg", "yolo11m-seg"],
   default_models: ["yolo26s-seg", "yolo26m-seg", "yolo11s-seg", "yolo11m-seg"],
@@ -77,18 +85,47 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("Train page", () => {
-  it("starts the default models on the non-SAM3 GPU with the export and params", async () => {
+  it("starts the default models on the fastest idle GPU (SAM3's), with the export and params", async () => {
     renderPage();
     const start = await screen.findByRole("button", { name: "Start 4 runs" });
+    expect((screen.getByLabelText("GPU") as HTMLSelectElement).value).toBe("0");
     fireEvent.change(screen.getByLabelText("Epochs"), { target: { value: "50" } });
     fireEvent.click(start);
     await waitFor(() => expect(m.startRuns).toHaveBeenCalled());
     const body = m.startRuns.mock.calls[0][0];
     expect(body.export_id).toBe(exp.id);
     expect(body.runs).toEqual([
-      { model: "yolo26s-seg", gpu: 1 }, { model: "yolo26m-seg", gpu: 1 }, { model: "yolo11s-seg", gpu: 1 }, { model: "yolo11m-seg", gpu: 1 },
+      { model: "yolo26s-seg", gpu: 0 }, { model: "yolo26m-seg", gpu: 0 }, { model: "yolo11s-seg", gpu: 0 }, { model: "yolo11m-seg", gpu: 0 },
     ]);
     expect(body.params.epochs).toBe(50);
+  });
+
+  it("lists GPUs best first in the batch select, labelled with TFLOPS, free VRAM and SAM3", async () => {
+    renderPage();
+    const select = (await screen.findByLabelText("GPU")) as HTMLSelectElement;
+    const options = Array.from(select.options).map((o) => o.text);
+    expect(options).toEqual([
+      "cuda:0 · RTX 3080 Ti · 34 TFLOPS · 9.1 GB free · SAM3 · fastest idle",
+      "cuda:1 · RTX 2080 Ti · 13.5 TFLOPS · 5.5 GB free",
+    ]);
+  });
+
+  it("Different GPU per model reveals per-model overrides seeded from the batch choice", async () => {
+    renderPage();
+    await screen.findByRole("button", { name: "Start 4 runs" });
+    expect(screen.queryByLabelText("GPU for yolo26m-seg")).toBeNull();
+
+    fireEvent.click(screen.getByLabelText("Different GPU per model"));
+    const perModel = (await screen.findByLabelText("GPU for yolo26m-seg")) as HTMLSelectElement;
+    expect(perModel.value).toBe("0"); // seeded from the batch choice (cuda:0)
+
+    fireEvent.change(perModel, { target: { value: "1" } });
+    fireEvent.click(screen.getByRole("button", { name: "Start 4 runs" }));
+    await waitFor(() => expect(m.startRuns).toHaveBeenCalled());
+    const body = m.startRuns.mock.calls[0][0];
+    expect(body.runs).toEqual([
+      { model: "yolo26s-seg", gpu: 0 }, { model: "yolo26m-seg", gpu: 1 }, { model: "yolo11s-seg", gpu: 0 }, { model: "yolo11m-seg", gpu: 0 },
+    ]);
   });
 
   it("starts with the strong augmentation preset and no custom aug values", async () => {
@@ -114,12 +151,11 @@ describe("Train page", () => {
     expect(body.params.aug?.mixup).toBe(0.1);
   });
 
-  it("warns when a model is put on SAM3's GPU", async () => {
+  it("warns about SAM3 by default (its GPU is the fastest idle one), clearing when a different GPU is picked", async () => {
     renderPage();
-    const select = await screen.findByLabelText("GPU for yolo26m-seg");
+    expect(await screen.findByText(/SAM3 runs on cuda:0/)).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("GPU"), { target: { value: "1" } });
     expect(screen.queryByText(/SAM3 runs on cuda:0/)).toBeNull();
-    fireEvent.change(select, { target: { value: "0" } });
-    expect(screen.getByText(/SAM3 runs on cuda:0/)).toBeTruthy();
   });
 
   it("shows the queues, cancels a queued run, and charts the selected run", async () => {
@@ -148,20 +184,19 @@ describe("Train page", () => {
     m.listRuns.mockResolvedValue([r1, r2, r3]);
     renderPage();
 
-    // Every default-checked model starts on cuda:1 (the non-SAM3 GPU), which this server process
-    // is already training r1 ("yolo26s-seg") on.
+    // The batch default (cuda:0, the fastest idle GPU by this server's own bookkeeping) is busy
+    // with a foreign `vsp train` process's run that this server does not own.
+    expect(await screen.findByText(/cuda:0 is busy with a vsp train run in another process/)).toBeTruthy();
+
+    // Switching to cuda:1 instead shows this server's own queue-behind note (it is training r1).
+    fireEvent.change(screen.getByLabelText("GPU"), { target: { value: "1" } });
     expect(
       await screen.findByText("cuda:1 is already training yolo26s-seg; this run will queue behind it."),
     ).toBeTruthy();
 
-    // Putting a model on cuda:0 instead warns about the foreign `vsp train` run sitting there,
-    // which this server does not own (its own gpu-0 queue is empty).
-    fireEvent.change(await screen.findByLabelText("GPU for yolo26m-seg"), { target: { value: "0" } });
-    expect(await screen.findByText(/cuda:0 is busy with a vsp train run in another process/)).toBeTruthy();
-
     const queue = await screen.findByText("GPU queues");
     const panel = queue.closest("section")!;
-    const gpu0 = within(panel).getByText(/cuda:0 RTX 3080 Ti/).parentElement!.parentElement!;
+    const gpu0 = within(panel).getByText(/cuda:0 NVIDIA GeForce RTX 3080 Ti/).parentElement!.parentElement!;
     expect(
       within(gpu0).getByText("yolo11m-seg · Epoch 5/100 · running in another process (vsp train)"),
     ).toBeTruthy();

@@ -142,6 +142,13 @@ export type GpuQueue = {
   index: number;
   name: string;
   memory_total: number;
+  /** Free VRAM in bytes, via NVML; null when NVML could not report it for this GPU. */
+  memory_free: number | null;
+  /** "8.6"-style compute capability. */
+  capability: string;
+  sm_count: number;
+  /** Estimated FP32 TFLOPS (SMs × cores/SM × max clock), used to rank GPUs fastest first. */
+  tflops: number;
   running: string | null;
   running_kind: "train" | "onnx" | null;
   queue: string[];
@@ -149,7 +156,10 @@ export type GpuQueue = {
 export type TrainStatus = {
   available: boolean;
   error: string | null;
+  /** Best (fastest estimated) first. */
   gpus: GpuQueue[];
+  /** The fastest GPU that is not busy (fastest overall if every GPU is busy); null without GPUs. */
+  default_gpu: number | null;
   sam3_gpu: number | null;
   models: string[];
   default_models: string[];

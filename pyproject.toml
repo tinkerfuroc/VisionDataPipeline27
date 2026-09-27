@@ -26,6 +26,7 @@ dependencies = [
     "onnxruntime>=1.20",
     "uvicorn[standard]>=0.30",
     "albumentations>=2.0",
+    "nvidia-ml-py>=13.610.43",
 ]
 
 [dependency-groups]

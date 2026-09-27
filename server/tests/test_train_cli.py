@@ -2,12 +2,32 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import sys
 import time
 
 import vsp.cli
+import vsp.train.scheduler
 from train_fixtures import EXPORT_ID, FAKE_WORKER, make_export
 from vsp.config import Settings
-from vsp.train.scheduler import Gpu
+from vsp.train.models import TrainParams, find_export
+from vsp.train.scheduler import Gpu, TrainScheduler
+
+
+class _EmptyNvml:
+    """No NVML devices at all: every free-memory/clock lookup falls back deterministically,
+    regardless of whatever real NVIDIA hardware this test happens to run on."""
+
+    def nvmlInit(self) -> None:
+        pass
+
+    def nvmlDeviceGetCount(self) -> int:
+        return 0
+
+
+def _no_nvml(monkeypatch) -> None:
+    monkeypatch.setitem(sys.modules, "pynvml", _EmptyNvml())
+    monkeypatch.setattr(vsp.train.scheduler, "_nvml_ready", False)
 
 
 def _settings(tmp_path):
@@ -58,17 +78,42 @@ def test_failed_run_returns_nonzero(tmp_path, capsys):
     assert rc == 1 and "OutOfMemoryError" in capsys.readouterr().out
 
 
-def test_default_gpu_picks_around_sam3(tmp_path, capsys, monkeypatch):
-    monkeypatch.setattr(vsp.cli, "cuda_capabilities", lambda: [(8, 0), (7, 5)])
-    monkeypatch.setattr(vsp.cli, "pick_device", lambda requested, caps: "cuda:0")
+def test_default_gpu_picks_the_fastest_gpu_even_though_its_index_is_0(tmp_path, capsys, monkeypatch):
+    """SAM3 no longer matters to the CLI default either: cuda:0 (the fastest GPU here, by SM count)
+    is picked even though the old rule ("the first GPU SAM3 is not on") would have skipped it."""
+    _no_nvml(monkeypatch)
+    fast = Gpu(0, "RTX 3080 Ti", 12 * 2**30, capability=(8, 6), sm_count=80)
+    slow = Gpu(1, "RTX 2080 Ti", 11 * 2**30, capability=(7, 5), sm_count=68)
     s = _settings(tmp_path)
-    rc = vsp.cli._train(s, _args(gpu=None, model=["yolo26s-seg"]), gpus=[Gpu(0, "A", 1), Gpu(1, "B", 1)],
+    rc = vsp.cli._train(s, _args(gpu=None, model=["yolo26s-seg"]), gpus=[fast, slow],
                         worker_cmd=FAKE_WORKER, poll=0.05)
-    capsys.readouterr()
+    out = capsys.readouterr().out
     assert rc == 0
     (run_dir,) = (s.project.data_root / "runs").iterdir()
     run = json.loads((run_dir / "run.json").read_text())
+    assert run["gpu"] == 0
+    assert "on cuda:0 (RTX 3080 Ti, fastest idle GPU)" in out
+
+
+def test_default_gpu_skips_a_gpu_busy_in_another_process(tmp_path, capsys, monkeypatch):
+    _no_nvml(monkeypatch)
+    fast = Gpu(0, "RTX 3080 Ti", 12 * 2**30, capability=(8, 6), sm_count=80)
+    slow = Gpu(1, "RTX 2080 Ti", 11 * 2**30, capability=(7, 5), sm_count=68)
+    s = _settings(tmp_path)
+    export = find_export(s.project.data_root, EXPORT_ID)
+    # A `vsp train` in another terminal is already training on the fastest GPU.
+    pre = TrainScheduler(s.project.data_root, [fast, slow])
+    foreign = pre.runs.create(export, "yolo11s-seg", 0, TrainParams(epochs=2), owner_pid=os.getppid())
+    pre.runs.update(foreign["id"], status="running")
+    rc = vsp.cli._train(s, _args(gpu=None, model=["yolo26s-seg"]), gpus=[fast, slow],
+                        worker_cmd=FAKE_WORKER, poll=0.05)
+    out = capsys.readouterr().out
+    assert rc == 0
+    runs = sorted((s.project.data_root / "runs").iterdir())
+    new_run = next(r for r in runs if r.name != foreign["id"])
+    run = json.loads((new_run / "run.json").read_text())
     assert run["gpu"] == 1
+    assert "on cuda:1 (RTX 2080 Ti, fastest idle GPU)" in out
 
 
 def test_augment_strong(tmp_path, capsys):
@@ -81,20 +126,24 @@ def test_augment_strong(tmp_path, capsys):
     assert run["params"]["augment"] == "strong"
 
 
-def test_default_gpu_falls_back_when_pick_device_raises(tmp_path, capsys, monkeypatch):
-    def _raise(requested, caps):
-        raise ValueError(f"sam3.device must be 'auto' or 'cuda:N', got {requested!r}")
-
-    monkeypatch.setattr(vsp.cli, "cuda_capabilities", list)
-    monkeypatch.setattr(vsp.cli, "pick_device", _raise)
+def test_default_gpu_all_busy_falls_back_to_the_fastest_gpu(tmp_path, capsys, monkeypatch):
+    _no_nvml(monkeypatch)
+    fast = Gpu(0, "RTX 3080 Ti", 12 * 2**30, capability=(8, 6), sm_count=80)
+    slow = Gpu(1, "RTX 2080 Ti", 11 * 2**30, capability=(7, 5), sm_count=68)
     s = _settings(tmp_path)
-    rc = vsp.cli._train(s, _args(gpu=None, model=["yolo26s-seg"]), gpus=[Gpu(0, "A", 1), Gpu(1, "B", 1)],
+    export = find_export(s.project.data_root, EXPORT_ID)
+    pre = TrainScheduler(s.project.data_root, [fast, slow])
+    for gpu in (0, 1):
+        r = pre.runs.create(export, "yolo11s-seg", gpu, TrainParams(epochs=2), owner_pid=os.getppid())
+        pre.runs.update(r["id"], status="running")
+    rc = vsp.cli._train(s, _args(gpu=None, model=["yolo26s-seg"]), gpus=[fast, slow],
                         worker_cmd=FAKE_WORKER, poll=0.05)
-    capsys.readouterr()
+    out = capsys.readouterr().out
     assert rc == 0
-    (run_dir,) = (s.project.data_root / "runs").iterdir()
-    run = json.loads((run_dir / "run.json").read_text())
-    assert run["gpu"] == 0
+    runs = [json.loads((d / "run.json").read_text()) for d in (s.project.data_root / "runs").iterdir()]
+    (run,) = [r for r in runs if r["model"] == "yolo26s-seg"]
+    assert run["gpu"] == 0  # still the fastest, even with every GPU busy
+    assert "on cuda:0 (RTX 3080 Ti, fastest GPU, all busy)" in out
 
 
 def test_terminating_signal_cancels_the_run(tmp_path, capsys, monkeypatch):

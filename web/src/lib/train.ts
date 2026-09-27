@@ -1,4 +1,4 @@
-import type { MetricRow, Run, RunBest, TrainStatus } from "../api/types";
+import type { GpuQueue, MetricRow, Run, RunBest, TrainStatus } from "../api/types";
 import type { Pt } from "./chart";
 
 export const MASK_MAP = "metrics/mAP50-95(M)";
@@ -22,9 +22,19 @@ export function formatDuration(seconds: number | null | undefined): string {
   return `${h} h ${String(m).padStart(2, "0")} min`;
 }
 
-export function defaultGpu(status: Pick<TrainStatus, "gpus" | "sam3_gpu">): number | null {
-  const other = status.gpus.find((g) => g.index !== status.sam3_gpu);
-  return other?.index ?? status.gpus[0]?.index ?? null;
+export function defaultGpu(status: Pick<TrainStatus, "gpus" | "default_gpu">): number | null {
+  return status.default_gpu ?? status.gpus[0]?.index ?? null;
+}
+
+/** e.g. "cuda:0 · RTX 3080 Ti · 34 TFLOPS · 9.1 GB free · SAM3 · fastest idle". Options are already
+ * server-sorted fastest first; this only formats one of them. */
+export function gpuOptionLabel(g: GpuQueue, status: Pick<TrainStatus, "default_gpu" | "sam3_gpu">): string {
+  const parts = [`cuda:${g.index}`, g.name.replace(/^NVIDIA GeForce /, ""), `${g.tflops} TFLOPS`];
+  if (g.memory_free !== null) parts.push(`${(g.memory_free / 2 ** 30).toFixed(1)} GB free`);
+  if (g.index === status.sam3_gpu) parts.push("SAM3");
+  let label = parts.join(" · ");
+  if (g.index === status.default_gpu) label += " · fastest idle";
+  return label;
 }
 
 export function polygonPoints(flat: number[], w: number, h: number): string {

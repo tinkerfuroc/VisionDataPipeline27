@@ -222,15 +222,22 @@ Each run lives in `data/runs/<run_id>/`: `run.json` (request and status), `worke
 (`python -m vsp.train.worker`) with `CUDA_VISIBLE_DEVICES` set to its GPU, so a crash or out-of-memory error ends
 that run only.
 
-The server keeps one queue per GPU: one run at a time per GPU, GPUs in parallel. The default GPU is the one SAM3 is not
-on; choosing SAM3's GPU is allowed but shares its VRAM. Cancel stops a run after SIGTERM (SIGKILL after 30 s) and keeps
-`last.pt`, so Resume continues from the last finished epoch. A run that was training when the server stopped is shown
-as "interrupted" and can be resumed; queued runs are queued again. `vsp train` runs in the foreground and owns its
-runs; Ctrl-C, SIGTERM and SIGHUP (a closed terminal, `kill`) all cancel them the same way. Do not start it on a GPU
-the server is also training on. Do not set `CUDA_VISIBLE_DEVICES` for the server process itself — GPU indexes (from
-`vsp doctor`, the Train page and `vsp train --gpu`) are passed to each worker as-is, so setting it on the server
-would remap or hide devices under it. A run started by `vsp train` shows on the Train page's GPU queues as "running
-in another process (vsp train)"; it can only be cancelled from the terminal it was started in.
+The server keeps one queue per GPU: one run at a time per GPU, GPUs in parallel. GPUs are ranked fastest first by
+estimated compute throughput — SM count × cores per SM (from compute capability) × max SM clock (from NVML), not a
+real benchmark but a much better speed proxy than compute capability or VRAM alone; VRAM only breaks a throughput
+tie. The default GPU is the fastest one that is not already training — SAM3 sharing it does not disqualify it, and
+the GUI's "shares memory with SAM3" warning still applies when it is chosen. The Train page's New-runs form has one
+GPU choice for every model started together (listed best first, each labelled with its estimated TFLOPS and free
+VRAM from NVML, and the default marked), plus a "Different GPU per model" checkbox that reveals a per-model override
+seeded from that choice. `vsp train` without `--gpu` picks the same way and prints which GPU it chose and why;
+`--gpu` overrides it, as before. Cancel stops a run after SIGTERM (SIGKILL after 30 s) and keeps `last.pt`, so Resume
+continues from the last finished epoch. A run that was training when the server stopped is shown as "interrupted"
+and can be resumed; queued runs are queued again. `vsp train` runs in the foreground and owns its runs; Ctrl-C,
+SIGTERM and SIGHUP (a closed terminal, `kill`) all cancel them the same way. Do not start it on a GPU the server is
+also training on. Do not set `CUDA_VISIBLE_DEVICES` for the server process itself — GPU indexes (from `vsp doctor`,
+the Train page and `vsp train --gpu`) are passed to each worker as-is, so setting it on the server would remap or
+hide devices under it. A run started by `vsp train` shows on the Train page's GPU queues as "running in another
+process (vsp train)"; it can only be cancelled from the terminal it was started in.
 
 Defaults: 100 epochs, early stop after 30 epochs without improvement, 960 px, batch 8, COCO-pretrained weights,
 Ultralytics' default augmentation. Metrics come from `results.csv`; the comparison table ranks runs by the best mask

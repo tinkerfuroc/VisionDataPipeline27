@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { api } from "../api/rest";
 import type { AugmentMode, AugParams, ExportInfo, GpuQueue, Run, StartRunsRequest, TrainParams, TrainStatus } from "../api/types";
 import { exportLabel } from "../lib/exportName";
-import { defaultGpu, startProblem, statusText } from "../lib/train";
+import { defaultGpu, gpuOptionLabel, startProblem, statusText } from "../lib/train";
 import { AugmentPanel } from "./AugmentPanel";
 
 type ModelPick = { checked: boolean; gpu: number };
@@ -28,6 +28,7 @@ const AUG_FIELDS: { key: keyof Omit<AugParams, "photometric">; min: number; max:
   { key: "copy_paste", min: 0, max: 1, step: 0.05 },
 ];
 const gib = (bytes: number) => `${Math.round(bytes / 2 ** 30)} GiB`;
+const gbFree = (bytes: number) => `${(bytes / 2 ** 30).toFixed(1)} GB free`;
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 /** Runs training on `g` that this server process is not itself running (e.g. a `vsp train` CLI
@@ -63,6 +64,8 @@ type Props = {
 
 export function TrainSidebar({ status, exports, runs, exportId, onExportChange, onExportsChanged, onStart, onCancel }: Props) {
   const [picks, setPicks] = useState<Record<string, ModelPick>>({});
+  const [batchGpu, setBatchGpu] = useState<number | null>(null);
+  const [perModelGpu, setPerModelGpu] = useState(false);
   const [showAll, setShowAll] = useState(false);
   const [params, setParams] = useState<TrainParams | null>(null);
   const [starting, setStarting] = useState(false);
@@ -77,6 +80,7 @@ export function TrainSidebar({ status, exports, runs, exportId, onExportChange, 
     if (status === null || Object.keys(picks).length > 0) return;
     const gpu = defaultGpu(status) ?? 0;
     setPicks(Object.fromEntries(status.models.map((m) => [m, { checked: status.default_models.includes(m), gpu }])));
+    setBatchGpu(gpu);
     setParams(status.defaults);
   }, [status, picks]);
 
@@ -92,9 +96,16 @@ export function TrainSidebar({ status, exports, runs, exportId, onExportChange, 
   const setAug = (patch: Partial<AugParams>) =>
     setParams((p) => (p === null || !p.aug ? p : { ...p, aug: { ...p.aug, ...patch } }));
 
+  const gpuOf = (m: string) => (perModelGpu ? (picks[m]?.gpu ?? batchGpu ?? 0) : (batchGpu ?? 0));
+  const togglePerModelGpu = (checked: boolean) => {
+    setPerModelGpu(checked);
+    // Revealing the per-model selects seeds every one of them from the current batch choice.
+    if (checked) setPicks((p) => Object.fromEntries(Object.entries(p).map(([m, v]) => [m, { ...v, gpu: batchGpu ?? v.gpu }])));
+  };
+
   const visible = showAll ? status.models : status.models.filter((m) => status.default_models.includes(m) || picks[m]?.checked);
   const chosen = status.models.filter((m) => picks[m]?.checked);
-  const onSam3 = status.sam3_gpu !== null && chosen.some((m) => picks[m].gpu === status.sam3_gpu);
+  const onSam3 = status.sam3_gpu !== null && chosen.some((m) => gpuOf(m) === status.sam3_gpu);
   const problem = startProblem({ available: status.available, error: status.error, exportId, picked: chosen.length });
   const byId = new Map(runs.map((r) => [r.id, r]));
 
@@ -103,7 +114,7 @@ export function TrainSidebar({ status, exports, runs, exportId, onExportChange, 
     setStarting(true);
     setStartError(null);
     try {
-      await onStart({ export_id: exportId, runs: chosen.map((m) => ({ model: m, gpu: picks[m].gpu })), params });
+      await onStart({ export_id: exportId, runs: chosen.map((m) => ({ model: m, gpu: gpuOf(m) })), params });
     } catch (e) {
       setStartError(message(e));
     } finally {
@@ -158,6 +169,18 @@ export function TrainSidebar({ status, exports, runs, exportId, onExportChange, 
             onExportsChanged();
             onExportChange(id);
           }} />
+        <label className="flex flex-col gap-1 text-sm text-dim">
+          GPU
+          <select aria-label="GPU" className="field" value={batchGpu ?? 0} onChange={(e) => setBatchGpu(Number(e.target.value))}>
+            {status.gpus.map((g) => (
+              <option key={g.index} value={g.index}>{gpuOptionLabel(g, status)}</option>
+            ))}
+          </select>
+        </label>
+        <label className="flex items-center gap-2 text-sm text-dim">
+          <input type="checkbox" checked={perModelGpu} onChange={(e) => togglePerModelGpu(e.target.checked)} />
+          Different GPU per model
+        </label>
         <fieldset className="flex flex-col gap-1.5">
           <legend className="mb-1 text-sm text-dim">Models</legend>
           {visible.map((m) => (
@@ -167,14 +190,14 @@ export function TrainSidebar({ status, exports, runs, exportId, onExportChange, 
                   onChange={(e) => setPicks((p) => ({ ...p, [m]: { ...p[m], checked: e.target.checked } }))} />
                 {m}
               </label>
-              <select aria-label={`GPU for ${m}`} className="field py-0.5" value={picks[m]?.gpu ?? 0}
-                onChange={(e) => setPicks((p) => ({ ...p, [m]: { ...p[m], gpu: Number(e.target.value) } }))}>
-                {status.gpus.map((g) => (
-                  <option key={g.index} value={g.index}>
-                    cuda:{g.index} {g.name}{g.index === status.sam3_gpu ? " (shared with SAM3)" : ""}
-                  </option>
-                ))}
-              </select>
+              {perModelGpu && (
+                <select aria-label={`GPU for ${m}`} className="field py-0.5" value={picks[m]?.gpu ?? batchGpu ?? 0}
+                  onChange={(e) => setPicks((p) => ({ ...p, [m]: { ...p[m], gpu: Number(e.target.value) } }))}>
+                  {status.gpus.map((g) => (
+                    <option key={g.index} value={g.index}>{gpuOptionLabel(g, status)}</option>
+                  ))}
+                </select>
+              )}
             </div>
           ))}
           <button type="button" className="btn self-start" onClick={() => setShowAll((v) => !v)}>
@@ -186,7 +209,7 @@ export function TrainSidebar({ status, exports, runs, exportId, onExportChange, 
             SAM3 runs on cuda:{status.sam3_gpu}. Training there shares its memory; labeling or training may run out of VRAM.
           </p>
         )}
-        {[...new Set(chosen.map((m) => picks[m].gpu))].map((gpu) => {
+        {[...new Set(chosen.map((m) => gpuOf(m)))].map((gpu) => {
           const note = gpuBusyNote(status, runs, gpu);
           return note !== null ? (
             <p key={gpu} className="note text-ink">{note}</p>
@@ -241,7 +264,10 @@ export function TrainSidebar({ status, exports, runs, exportId, onExportChange, 
             <div key={g.index} className="flex flex-col gap-1.5 rounded border border-line p-2 text-sm">
               <div className="flex items-center justify-between gap-2">
                 <span className="font-medium">cuda:{g.index} {g.name}</span>
-                <span className="font-cond text-dim">{gib(g.memory_total)}{g.index === status.sam3_gpu ? " · SAM3" : ""}</span>
+                <span className="font-cond text-dim">
+                  {g.memory_free !== null ? `${gbFree(g.memory_free)} / ` : ""}{gib(g.memory_total)}
+                  {g.index === status.sam3_gpu ? " · SAM3" : ""}
+                </span>
               </div>
               {current === undefined && g.queue.length === 0 && foreign.length === 0 && <span className="note">Idle</span>}
               {current !== undefined && (

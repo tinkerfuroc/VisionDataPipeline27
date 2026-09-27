@@ -88,7 +88,14 @@ def _train(settings: Settings, args, *, gpus=None, worker_cmd=None, poll: float 
     from .store import NotFound
     from .train.models import DEFAULT_MODELS, TrainParams, find_export, list_exports
     from .train.results import BOX_MAP, MASK_MAP, MASK_MAP50, read_metrics
-    from .train.scheduler import WORKER_CMD, TrainScheduler, default_gpu, detect_gpus
+    from .train.scheduler import (
+        WORKER_CMD,
+        TrainScheduler,
+        default_gpu,
+        detect_gpus,
+        gpu_max_clock_ghz,
+        rank_gpus,
+    )
 
     data_root = settings.project.data_root
     if args.list:
@@ -109,22 +116,28 @@ def _train(settings: Settings, args, *, gpus=None, worker_cmd=None, poll: float 
     if not gpus:
         print("FAIL: no CUDA GPU is available to train on")
         return 1
-    if args.gpu is not None:
-        gpu = args.gpu
-    else:
-        try:
-            sam3 = pick_device(settings.sam3.device, cuda_capabilities())
-        except ValueError:
-            sam3 = None
-        gpu = default_gpu(gpus, int(sam3.split(":")[1]) if sam3 else None)
     try:
         export = find_export(data_root, args.export)
         sched = TrainScheduler(data_root, gpus, worker_cmd=worker_cmd or WORKER_CMD)
-        ids = sched.submit(export, [(m, gpu) for m in (args.model or DEFAULT_MODELS)], params)
     except (NotFound, BadRequest) as e:
         print(f"error: {e}")
         return 2
-    print(f"training {len(ids)} model(s) on cuda:{gpu} from export {export.id} ({export.project_name}); "
+    if args.gpu is not None:
+        gpu = args.gpu
+        gpu_desc = f"cuda:{gpu}"
+    else:
+        ranked = rank_gpus(gpus, gpu_max_clock_ghz(gpus))
+        busy = sched.busy_gpus()
+        gpu = default_gpu(ranked, busy)
+        name = next((g.name for g in gpus if g.index == gpu), "")
+        reason = "fastest idle GPU" if gpu not in busy else "fastest GPU, all busy"
+        gpu_desc = f"cuda:{gpu} ({name}, {reason})"
+    try:
+        ids = sched.submit(export, [(m, gpu) for m in (args.model or DEFAULT_MODELS)], params)
+    except BadRequest as e:
+        print(f"error: {e}")
+        return 2
+    print(f"training {len(ids)} model(s) on {gpu_desc} from export {export.id} ({export.project_name}); "
           f"runs in {sched.runs.root}")
     shown = {rid: 0 for rid in ids}
     states = {rid: "queued" for rid in ids}
@@ -237,7 +250,7 @@ def main(argv: list[str] | None = None) -> int:
     p_train.add_argument("--model", action="append", default=None,
                          help="model to train, repeatable (default: yolo26s/m-seg and yolo11s/m-seg)")
     p_train.add_argument("--gpu", type=int, default=None,
-                         help="CUDA index (default: the first GPU SAM3 is not on)")
+                         help="CUDA index (default: the fastest idle GPU; SAM3's GPU is eligible)")
     p_train.add_argument("--epochs", type=int, default=100)
     p_train.add_argument("--imgsz", type=int, default=960)
     p_train.add_argument("--batch", type=int, default=8)

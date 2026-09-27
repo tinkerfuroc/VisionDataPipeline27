@@ -1,12 +1,53 @@
 from __future__ import annotations
 
+import sys
+
 import pytest
 from fastapi.testclient import TestClient
 from train_fixtures import EXPORT_ID, FAKE_WORKER, make_export, wait_for
 from vsp.api.app import create_app
 from vsp.config import Settings
 from vsp.engine.fake import FakeEngine
+from vsp.train import scheduler as scheduler_mod
 from vsp.train.scheduler import Gpu, TrainScheduler
+
+
+class _FakeNvml:
+    """{uuid: {"free": bytes, "clock_mhz": int}}-driven stand-in for `pynvml`."""
+
+    NVML_CLOCK_SM = 1
+
+    def __init__(self, devices: dict[str, dict]) -> None:
+        self._order = list(devices)
+        self._devices = devices
+
+    def nvmlInit(self) -> None:
+        pass
+
+    def nvmlDeviceGetCount(self) -> int:
+        return len(self._order)
+
+    def nvmlDeviceGetHandleByIndex(self, i: int):
+        return self._order[i]
+
+    def nvmlDeviceGetUUID(self, handle) -> str:
+        return f"GPU-{handle}"
+
+    def nvmlDeviceGetMemoryInfo(self, handle):
+        class _Mem:
+            free = self._devices[handle]["free"]
+        return _Mem()
+
+    def nvmlDeviceGetMaxClockInfo(self, handle, clock_type):
+        return self._devices[handle]["clock_mhz"]
+
+
+@pytest.fixture(autouse=True)
+def _no_real_nvml(monkeypatch):
+    """No fake `pynvml` installed here: with an empty NVML (no devices at all), every lookup falls
+    back deterministically no matter what real NVIDIA hardware this happens to run on."""
+    monkeypatch.setitem(sys.modules, "pynvml", _FakeNvml({}))
+    monkeypatch.setattr(scheduler_mod, "_nvml_ready", False)
 
 
 @pytest.fixture
@@ -37,7 +78,13 @@ def until(client, rid, *statuses):
 def test_status_and_exports(client):
     st = client.get("/api/train/status").json()
     assert st["available"] is True and st["error"] is None
+    # "Fast" (12 GiB) and "Slow" (11 GiB) both have the fixture's default (0, 0) capability / 0 SMs,
+    # so they tie on estimated throughput; VRAM breaks the tie and "Fast" (already index 0) stays first.
     assert [g["index"] for g in st["gpus"]] == [0, 1] and st["gpus"][0]["queue"] == []
+    assert st["default_gpu"] == 0
+    g0 = st["gpus"][0]
+    assert g0["capability"] == "0.0" and g0["sm_count"] == 0 and g0["memory_free"] is None
+    assert isinstance(g0["tflops"], (int, float))
     assert "yolo11m-seg" in st["models"] and st["default_models"][0] == "yolo26s-seg"
     assert st["defaults"]["imgsz"] == 960
     assert st["aug_presets"]["strong"]["degrees"] == 15
@@ -46,6 +93,49 @@ def test_status_and_exports(client):
     assert exports == [{"id": EXPORT_ID, "project_name": "Bench", "created_at": "2026-01-01T00:00:00+00:00",
                         "classes": ["Module"], "train_images": 2, "val_images": 2,
                         "formats": ["yolo_seg"], "derived_from": None, "name": None}]
+
+
+def test_status_orders_gpus_best_first_regardless_of_index(tmp_path):
+    """The fastest GPU by estimated throughput is listed first even when it does not sit at the
+    lowest index (mirrors the real machine: cuda:0 is the slower card there)."""
+    s = Settings.load(None)
+    s.project.data_root = tmp_path / "data"
+    make_export(s.project.data_root)
+    slower_at_0 = Gpu(0, "RTX 2080 Ti", 11 * 2**30, capability=(7, 5), sm_count=68)
+    faster_at_1 = Gpu(1, "RTX 3080 Ti", 12 * 2**30, capability=(8, 6), sm_count=80)
+    sched = TrainScheduler(s.project.data_root, [slower_at_0, faster_at_1], worker_cmd=FAKE_WORKER)
+    app = create_app(s, engine=FakeEngine(), load_engine=False, train=sched)
+    with TestClient(app) as c:
+        st = c.get("/api/train/status").json()
+    assert [g["index"] for g in st["gpus"]] == [1, 0]
+    assert st["default_gpu"] == 1
+    assert st["gpus"][0]["capability"] == "8.6" and st["gpus"][0]["sm_count"] == 80
+    assert st["gpus"][0]["tflops"] > st["gpus"][1]["tflops"]
+
+
+def test_default_gpu_skips_a_gpu_with_a_run_on_it(client):
+    rid = start(client, epochs=99, gpu=0)  # occupies cuda:0, the tie-broken default here
+    until(client, rid, "running")
+    st = client.get("/api/train/status").json()
+    assert st["default_gpu"] == 1
+    client.post(f"/api/train/runs/{rid}/cancel")
+    until(client, rid, "cancelled")
+
+
+def test_status_reports_free_vram_via_nvml(tmp_path, monkeypatch):
+    s = Settings.load(None)
+    s.project.data_root = tmp_path / "data"
+    make_export(s.project.data_root)
+    gpus = [Gpu(0, "A", 12 * 2**30, uuid="uuid-a"), Gpu(1, "B", 11 * 2**30, uuid="uuid-b")]
+    monkeypatch.setitem(sys.modules, "pynvml", _FakeNvml({
+        "uuid-b": {"free": 9 * 2**30, "clock_mhz": 1545}, "uuid-a": {"free": 5 * 2**30, "clock_mhz": 1665},
+    }))
+    monkeypatch.setattr(scheduler_mod, "_nvml_ready", False)
+    sched = TrainScheduler(s.project.data_root, gpus, worker_cmd=FAKE_WORKER)
+    app = create_app(s, engine=FakeEngine(), load_engine=False, train=sched)
+    with TestClient(app) as c:
+        st = c.get("/api/train/status").json()
+    assert {g["index"]: g["memory_free"] for g in st["gpus"]} == {0: 5 * 2**30, 1: 9 * 2**30}
 
 
 def test_rename_export(client):

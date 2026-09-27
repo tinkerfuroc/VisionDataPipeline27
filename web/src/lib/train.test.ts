@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
-import type { Run, TrainStatus } from "../api/types";
-import { bestRunIds, defaultGpu, formatDuration, metricSeries, polygonPoints, startProblem, statusText } from "./train";
+import type { GpuQueue, Run, TrainStatus } from "../api/types";
+import { bestRunIds, defaultGpu, formatDuration, gpuOptionLabel, metricSeries, polygonPoints, startProblem, statusText } from "./train";
+
+const gpu = (over: Partial<GpuQueue> = {}): GpuQueue => ({
+  index: 0, name: "NVIDIA GeForce RTX 3080 Ti", memory_total: 12 * 2 ** 30, memory_free: 9.1 * 2 ** 30,
+  capability: "8.6", sm_count: 80, tflops: 34, running: null, running_kind: null, queue: [], ...over,
+});
 
 const run = (id: string, over: Partial<Run> = {}): Run => ({
   id, created_at: "", started_at: null, finished_at: null, export_id: "e", project_name: "P", model: "yolo26s-seg", gpu: 1,
@@ -21,11 +26,20 @@ describe("train helpers", () => {
     expect(formatDuration(720)).toBe("12 min");
     expect(formatDuration(3900)).toBe("1 h 05 min");
   });
-  it("defaultGpu avoids SAM3's GPU", () => {
-    const st = { gpus: [{ index: 0 }, { index: 1 }], sam3_gpu: 0 } as unknown as TrainStatus;
-    expect(defaultGpu(st)).toBe(1);
-    expect(defaultGpu({ ...st, sam3_gpu: null })).toBe(0);
-    expect(defaultGpu({ ...st, gpus: [] })).toBeNull();
+  it("defaultGpu uses the server's default_gpu, even when that is SAM3's GPU", () => {
+    const st = { gpus: [{ index: 0 }, { index: 1 }], default_gpu: 0 } as unknown as TrainStatus;
+    expect(defaultGpu(st)).toBe(0);
+    expect(defaultGpu({ ...st, default_gpu: 1 })).toBe(1);
+    // Falls back to the first listed GPU only if the server ever omits default_gpu.
+    expect(defaultGpu({ ...st, default_gpu: null })).toBe(0);
+    expect(defaultGpu({ ...st, default_gpu: null, gpus: [] })).toBeNull();
+  });
+  it("gpuOptionLabel: name, tflops, free VRAM, SAM3 and the default marker", () => {
+    const st = { default_gpu: 0, sam3_gpu: 0 } as unknown as TrainStatus;
+    expect(gpuOptionLabel(gpu(), st)).toBe("cuda:0 · RTX 3080 Ti · 34 TFLOPS · 9.1 GB free · SAM3 · fastest idle");
+    expect(gpuOptionLabel(gpu({ index: 1, memory_free: null }), { default_gpu: 0, sam3_gpu: 0 })).toBe(
+      "cuda:1 · RTX 3080 Ti · 34 TFLOPS",
+    );
   });
   it("polygonPoints scales normalised pairs", () => {
     expect(polygonPoints([0.5, 0.25, 1, 1], 200, 100)).toBe("100,25 200,100");

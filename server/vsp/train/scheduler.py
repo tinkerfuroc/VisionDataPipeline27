@@ -35,6 +35,9 @@ class Gpu:
     index: int
     name: str
     memory_total: int  # bytes
+    capability: tuple[int, int] = (0, 0)  # (major, minor), e.g. (8, 6) for an Ampere RTX 3080 Ti
+    sm_count: int = 0  # torch's multi_processor_count
+    uuid: str = ""  # bare uuid (no "GPU-" prefix), as torch reports it; matched against NVML by this
 
 
 def detect_gpus() -> list[Gpu]:
@@ -48,16 +51,146 @@ def detect_gpus() -> list[Gpu]:
     gpus = []
     for i in range(torch.cuda.device_count()):
         props = torch.cuda.get_device_properties(i)
-        gpus.append(Gpu(i, props.name, int(props.total_memory)))
+        gpus.append(Gpu(
+            i, props.name, int(props.total_memory),
+            capability=(props.major, props.minor), sm_count=props.multi_processor_count,
+            uuid=str(props.uuid),
+        ))
     return gpus
 
 
-def default_gpu(gpus: list[Gpu], sam3_gpu: int | None) -> int | None:
-    """The first GPU SAM3 is not on; SAM3's own GPU only when it is the only one."""
-    for g in gpus:
-        if g.index != sam3_gpu:
+# CUDA cores per SM by compute capability major.minor. NVIDIA-only machine assumption (no AMD/Intel
+# fallback needed). Kepler/Maxwell (3.x/5.x) are not listed since this pipeline requires CUDA 12+ /
+# recent torch builds; an unlisted (older, or newer than anything below) capability defaults to 128,
+# which matches every Ampere-and-later consumer/datacenter part currently shipping.
+_CORES_PER_SM = {
+    (6, 0): 64, (6, 1): 128, (6, 2): 128,  # Pascal
+    (7, 0): 64, (7, 2): 64, (7, 5): 64,  # Volta / Turing
+    (8, 0): 64,  # Ampere datacenter (A100)
+    (8, 6): 128, (8, 7): 128, (8, 9): 128,  # Ampere consumer/workstation, Ada
+    (9, 0): 128,  # Hopper
+}
+
+
+def cores_per_sm(capability: tuple[int, int]) -> int:
+    return _CORES_PER_SM.get(tuple(capability), 128)
+
+
+def estimated_tflops(sm_count: int, capability: tuple[int, int], clock_ghz: float) -> float:
+    """Rough FP32 TFLOPS estimate used only to rank GPUs by speed: SMs × cores/SM × 2 (FMA) × max
+    SM clock (GHz), divided by 1000 to land in TFLOPS (this is the standard back-of-envelope GPU
+    TFLOPS formula and matches published FP32 figures, e.g. an RTX 3080 Ti comes out to ~34). Not
+    a real benchmark (ignores boost sustain, memory bandwidth, etc.), but a much better speed proxy
+    than compute capability or SM count alone (it ranks a wide, lower-clocked card correctly
+    against a narrow, high-clocked one, e.g. a 3090 over a 4060 despite the 4060's newer cc)."""
+    return sm_count * cores_per_sm(capability) * 2 * clock_ghz / 1000
+
+
+def rank_gpus(gpus: list[Gpu], clocks: dict[int, float]) -> list[Gpu]:
+    """Fastest first, by estimated compute throughput; VRAM only breaks a throughput tie, then index."""
+    def key(g: Gpu) -> tuple[float, int, int]:
+        tflops = estimated_tflops(g.sm_count, g.capability, clocks.get(g.index, 1.5))
+        return (-tflops, -g.memory_total, g.index)
+    return sorted(gpus, key=key)
+
+
+def default_gpu(ranked_gpus: list[Gpu], busy: set[int]) -> int | None:
+    """The fastest GPU (already ranked, fastest first) that is not busy; the fastest one if every
+    GPU is busy; None without GPUs. SAM3's GPU is not excluded — the caller-visible "shares memory
+    with SAM3" warning is enough; it does not disqualify the fastest GPU from being the default."""
+    for g in ranked_gpus:
+        if g.index not in busy:
             return g.index
-    return gpus[0].index if gpus else None
+    return ranked_gpus[0].index if ranked_gpus else None
+
+
+_nvml_ready = False
+
+
+def _nvml_init() -> bool:
+    global _nvml_ready
+    if _nvml_ready:
+        return True
+    try:
+        import pynvml
+        pynvml.nvmlInit()
+    except Exception:  # noqa: BLE001 — no driver/NVML/pynvml: never raise, just report unavailable
+        return False
+    _nvml_ready = True
+    return True
+
+
+def _nvml_uuid_map() -> dict[str, object]:
+    """{bare uuid: NVML device handle} for every NVML device (NVML/PCI order, which may differ
+    from torch's CUDA order); empty on any failure, so callers always fall back cleanly."""
+    if not _nvml_init():
+        return {}
+    try:
+        import pynvml
+        out = {}
+        for i in range(pynvml.nvmlDeviceGetCount()):
+            handle = pynvml.nvmlDeviceGetHandleByIndex(i)
+            uuid = pynvml.nvmlDeviceGetUUID(handle)
+            if isinstance(uuid, bytes):
+                uuid = uuid.decode()
+            out[uuid.removeprefix("GPU-")] = handle
+        return out
+    except Exception:  # noqa: BLE001 — any NVML query can fail; fall back to no devices at all
+        return {}
+
+
+def gpu_free_memory(gpus: list[Gpu]) -> dict[int, int | None]:
+    """Free VRAM (bytes) per torch index, via NVML, matched by UUID (never by index: NVML's own
+    device order need not agree with torch's). None for a GPU NVML fails on, or is not found for."""
+    handles = _nvml_uuid_map()
+    out: dict[int, int | None] = {}
+    for g in gpus:
+        handle = handles.get(g.uuid)
+        if handle is None:
+            out[g.index] = None
+            continue
+        try:
+            import pynvml
+            out[g.index] = int(pynvml.nvmlDeviceGetMemoryInfo(handle).free)
+        except Exception:  # noqa: BLE001 — never raise for one GPU's free memory; None instead
+            out[g.index] = None
+    return out
+
+
+def gpu_max_clock_ghz(gpus: list[Gpu], *, fallback: float = 1.5) -> dict[int, float]:
+    """Max SM clock (GHz) per torch index, via NVML, matched by UUID. `fallback` (1.5 GHz) is used
+    whenever NVML cannot supply a clock for a GPU, so ranking still works from SMs × cores alone."""
+    handles = _nvml_uuid_map()
+    out: dict[int, float] = {}
+    for g in gpus:
+        handle = handles.get(g.uuid)
+        clock_mhz = None
+        if handle is not None:
+            try:
+                import pynvml
+                clock_mhz = pynvml.nvmlDeviceGetMaxClockInfo(handle, pynvml.NVML_CLOCK_SM)
+            except Exception:  # noqa: BLE001 — never raise for one GPU's clock; fall back instead
+                clock_mhz = None
+        out[g.index] = (clock_mhz / 1000.0) if clock_mhz is not None else fallback
+    return out
+
+
+def _busy_from_runs(runs: list[dict], *, exclude_pid: int | None) -> set[int]:
+    """GPU indexes with a run.json at status "running", owned by a live process other than
+    `exclude_pid` (that caller's own in-flight runs are tracked in memory instead, see
+    `TrainScheduler.busy_gpus`). A running row with no live owner is a stale leftover from a
+    process that died before `recover()` could reclassify it — not actually busy."""
+    busy = set()
+    for run in runs:
+        if run["status"] != "running":
+            continue
+        owner = run.get("owner_pid")
+        if owner == exclude_pid:
+            continue
+        if owner is not None and not _alive(owner):
+            continue
+        busy.add(run["gpu"])
+    return busy
 
 
 def _alive(pid: int | None) -> bool:
@@ -272,6 +405,14 @@ class TrainScheduler:
     def idle(self) -> bool:
         with self._cv:
             return not self._running and not any(self._queues.values())
+
+    def busy_gpus(self) -> set[int]:
+        """GPU indexes this scheduler should not default new runs onto: one with a run queued or
+        running here, or with a foreign process's run.json (a `vsp train` elsewhere) reporting
+        status "running" on it."""
+        with self._cv:
+            busy = {g for g, q in self._queues.items() if q} | set(self._running)
+        return busy | _busy_from_runs(self.runs.list(), exclude_pid=os.getpid())
 
     # ---- execution ----
 
