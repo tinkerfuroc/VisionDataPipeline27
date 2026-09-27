@@ -225,12 +225,16 @@ defaults to `"all"`; "all" includes objects hidden in the GUI).
 With several objects per frame, cutting composites per class region of the semantic PNG would cut two touching
 objects of one class as one. `_cutouts_and_sizes` therefore cuts per object from the source's COCO train annotations
 (`coco/annotations/instances_train.json`; each annotation's `file_name` maps to `images/<stem>.jpg`; rasterised with
-the export's own `polygons_to_mask`; class = `category_id - 1`, an export id; shared pixels go to the smaller
-object, as in the mask PNG, and holes come from the mask PNG) when the source has the `coco` format,
-and falls back to per-class regions of the mask PNGs otherwise. The `masks` format stays required (real frames are
-listed from it). The derived manifest records `cutouts: "per_object" | "per_class_region"`, and the Train page's
-augment panel notes the fallback. The same seed on an older export may now produce different composites (different
-cutout set); this is expected.
+the export's own `polygons_to_mask`; class = `category_id - 1`, an export id) when the source has the `coco` format,
+and falls back to per-class regions of the mask PNGs otherwise. Shared pixels are resolved per class: within a
+class, the smaller object wins, as in the mask PNG (each class gets its own canvas, painted largest object first);
+across classes, the mask image decides (each object's cutout is intersected with its own class's pixels of the
+mask image, not merely "any object's"). Holes come from the mask image, except a holed object lying on a larger
+object of the SAME class: the mask image only records a class per pixel, not an instance, so the hole still shows
+the host's pixels there — a known remaining limit. The `masks` format stays required (real frames are listed from
+it). The derived manifest records `cutouts: "per_object" | "per_class_region"`, and the Train page's augment panel
+notes the fallback. The same seed on an older export may now produce different composites (different cutout set);
+this is expected.
 
 ## 13. Errors and edge cases
 

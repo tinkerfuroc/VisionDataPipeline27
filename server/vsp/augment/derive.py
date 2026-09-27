@@ -97,10 +97,11 @@ def _coco_train_objects(source_dir: Path) -> dict[str, list[tuple[int, list[Poly
     return out
 
 
-# `paint`'s canvas is uint8 (0..255): a per-object index needs one value per annotation, so a frame with more
-# than this many objects falls back to per-class-region for that one frame instead (picked over widening the
-# canvas: it is the same fallback the source already has for a `coco`-less export, so it is exercised and
-# understood, and a frame this crowded is far outside normal use).
+# `paint`'s canvas is uint8 (0..255): a per-object index needs one value per annotation, so a class with more
+# than this many objects in one frame falls back to per-class-region for the WHOLE frame instead (not just that
+# class): tracking a partial, per-class fallback inside an otherwise per-object frame would need its own code
+# path, where falling back for the whole frame is simply the same path a `coco`-less export already always takes
+# (so it is exercised and understood), and a frame this crowded, in even one class, is far outside normal use.
 MAX_PAINT_OBJECTS = 255
 
 
@@ -111,15 +112,23 @@ def _cutouts_and_sizes(
     Per object from the COCO train annotations when the source has `coco`, else per class region of the indexed
     mask PNGs (touching objects of one class then come out as one). Feeds composites only.
 
-    The per-object case resolves shared pixels the way the semantic mask PNG does, then restores holes from it:
+    The per-object case resolves shared pixels one class at a time, then restores holes from the semantic mask
+    PNG (which is authoritative on which class owns a pixel, since that is what the export already decided):
     COCO polygons are outer contours only (`mask_to_polygons` uses `RETR_EXTERNAL`), so `polygons_to_mask` fills
-    a holed object's hole in and gives an object entirely inside another one the same footprint as its host. So
-    each annotation's polygons are rasterised, painted onto a canvas with `paint` (the same "largest first"
-    ownership `masks` uses, so a smaller object on top of a larger one wins the shared pixels) using per-object
-    indices instead of class values, and each object's cutout is `(canvas == its index) & (semantic_png > 0)`:
-    the canvas settles who owns a pixel, the true (unfilled, unmerged) `masks` PNG says whether that pixel is
-    really part of any object at all, restoring holes and dropping the leftover pixels a filled-in hole steals
-    from nobody.
+    a holed object's hole in and gives an object entirely inside another one the same footprint as its host. So,
+    per class, that class's annotations' polygons are rasterised and painted onto their own canvas with `paint`
+    (the same "largest first" ownership `masks` uses, so a smaller object on top of a larger one of the SAME
+    class wins the shared pixels) using per-object indices, and each of that class's objects' cutout is
+    `(canvas_c == its index) & (semantic_png == its class value)`: the per-class canvas settles who owns a pixel
+    among that class's own objects, and the true (unfilled, unmerged) `masks` PNG says whether the pixel really
+    belongs to that class at all, restoring holes and dropping the leftover pixels a filled-in hole steals from
+    another class entirely (a washer's hole shows the board underneath, not a filled-in disc of washer).
+
+    Resolving per class does NOT help a hole onto a larger object of the SAME class: the export's semantic PNG
+    only records a class per pixel, so it cannot tell two same-class objects apart there, and the canvas (built
+    from the same outer-contour, hole-filled polygons for both) can't either. A washer on a board of its own
+    class still comes out with the board's pixels showing through its hole; this is a known limit of the COCO
+    export, not something this function can fix from here.
     """
     per_object = "coco" in formats
     by_stem = _coco_train_objects(source_dir) if per_object else {}
@@ -132,10 +141,17 @@ def _cutouts_and_sizes(
             semantic = np.array(png)
         sizes.append((width, height))
         objects = by_stem.get(mask_path.stem, [])
-        if per_object and len(objects) <= MAX_PAINT_OBJECTS:
-            polys = [(cls, polygons_to_mask(polygons, width, height)) for cls, polygons in objects]
-            canvas, _overlap = paint([(i + 1, mask) for i, (_cls, mask) in enumerate(polys)], height, width)
-            found = [(cls, (canvas == i + 1) & (semantic > 0)) for i, (cls, _mask) in enumerate(polys)]
+        counts: dict[int, int] = {}
+        for cls, _polygons in objects:
+            counts[cls] = counts.get(cls, 0) + 1
+        if per_object and all(n <= MAX_PAINT_OBJECTS for n in counts.values()):
+            found: list[tuple[int, np.ndarray] | None] = [None] * len(objects)
+            for cls in counts:
+                idxs = [i for i, (c, _polygons) in enumerate(objects) if c == cls]
+                class_masks = [polygons_to_mask(objects[i][1], width, height) for i in idxs]
+                canvas, _overlap = paint(list(enumerate(class_masks, start=1)), height, width)
+                for k, i in enumerate(idxs, start=1):
+                    found[i] = (cls, (canvas == k) & (semantic == cls + 1))
         else:
             found = [(int(v) - 1, semantic == v) for v in sorted(int(v) for v in np.unique(semantic) if v > 0)]
         found = [(cls, clean_mask(mask, min_area_px)) for cls, mask in found]

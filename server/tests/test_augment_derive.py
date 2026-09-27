@@ -498,6 +498,66 @@ def test_cutouts_restore_a_hole_from_the_mask_png(store, make_clip, tmp_path):
     assert by_class[1] == 100  # the dot keeps its full cutout
 
 
+def test_cutouts_resolve_shared_pixels_per_class_a_washer_keeps_its_hole_on_a_board(store, make_clip, tmp_path):
+    """A washer (a ring) lying on a larger board of ANOTHER class: the real (semantic PNG) mask shows the board
+    through the washer's hole, because the board is painted first (largest first) and the washer -- smaller, and
+    with a genuine hole -- is painted on top of it, leaving the hole showing whatever is under it. Resolving
+    shared pixels one class at a time (instead of on one canvas shared by every object in the frame) keeps that
+    hole: the washer's own canvas is built only from the washer's (outer-contour, hole-filled) polygon, but is
+    then intersected only with the washer's OWN class in the semantic PNG, so the board's pixels in the hole are
+    never claimed by the washer."""
+    project, clip = make_clip(n_frames=1, classes=("washer", "board"))
+    clip.objects = [LabelObject(id=1, class_id=0), LabelObject(id=2, class_id=1)]
+    store.write_clip(clip)
+    board = np.zeros((60, 120), bool)
+    board[5:55, 5:105] = True  # 50x100 = 5000 px, covers the washer's whole bounding box
+    washer = np.zeros((60, 120), bool)
+    washer[10:50, 10:50] = True  # 40x40 outer = 1600 px
+    washer[20:40, 20:40] = False  # 20x20 hole = 400 px -> the washer itself is 1600 - 400 = 1200 px
+    store.write_mask(clip.id, 1, 0, washer)
+    store.write_mask(clip.id, 2, 0, board)
+    data_root = tmp_path / "data"
+    formats = ["yolo_seg", "coco", "masks"]
+    src = _export(store, project, clip, formats, data_root)
+
+    cutouts, _sizes, mode = _cutouts_and_sizes(Path(src["path"]), formats, 64, lambda: None)
+    assert mode == "per_object"
+    by_class = {c.class_id: int(c.mask.sum()) for c in cutouts}
+    assert int(washer.sum()) == 1200
+    assert by_class[0] == 1200  # the washer's hole is restored: the board's pixels there are not counted as its own
+    assert by_class[1] == 5000 - 1200  # 3800: the board's full area minus the ring (the hole's 400 px stay board's)
+
+
+def test_cutouts_still_leak_a_hole_onto_a_host_of_the_same_class(store, make_clip, tmp_path):
+    """Known remaining limit: a holed object lying on a larger object of its OWN class still carries the host's
+    pixels through its hole. The semantic PNG only records a class per pixel, not an instance, so once two
+    objects share a class it cannot tell them apart in the hole; and per-class canvases are still built from
+    COCO's outer-contour (hole-filled) polygons, so the same-class canvas fills the hole in too. Resolving per
+    class (this change) fixes a DIFFERENT class showing through a hole; it cannot fix this one, since the export
+    itself no longer distinguishes the two objects once they share a class."""
+    project, clip = make_clip(n_frames=1, classes=("part",))
+    clip.objects = [LabelObject(id=1, class_id=0), LabelObject(id=2, class_id=0)]
+    store.write_clip(clip)
+    board = np.zeros((60, 120), bool)
+    board[5:55, 5:105] = True  # 50x100 = 5000 px, covers the washer's whole bounding box
+    washer = np.zeros((60, 120), bool)
+    washer[10:50, 10:50] = True  # 40x40 outer = 1600 px
+    washer[20:40, 20:40] = False  # 20x20 hole = 400 px -> the washer itself is 1600 - 400 = 1200 px
+    store.write_mask(clip.id, 1, 0, washer)
+    store.write_mask(clip.id, 2, 0, board)
+    data_root = tmp_path / "data"
+    formats = ["yolo_seg", "coco", "masks"]
+    src = _export(store, project, clip, formats, data_root)
+
+    cutouts, _sizes, mode = _cutouts_and_sizes(Path(src["path"]), formats, 64, lambda: None)
+    assert mode == "per_object"
+    areas = sorted(int(c.mask.sum()) for c in cutouts)
+    # both objects are class 0, so they can't be told apart by class_id here: the washer's cutout is its full
+    # 1600 px outer square (its hole wrongly filled in with the board's own pixels) and the board keeps only
+    # what the washer's (filled) footprint left it, 5000 - 1600 = 3400 -- not the correct 1200 / 3800 split.
+    assert areas == [1600, 3400]
+
+
 def test_cutouts_fall_back_to_class_regions_without_coco(store, make_clip, tmp_path):
     project, clip = _multi(store, make_clip)
     data_root = tmp_path / "data"
