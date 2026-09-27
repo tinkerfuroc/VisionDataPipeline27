@@ -25,7 +25,7 @@ const idle: JobHandle = {
 const jobs: Record<string, JobHandle> = {};
 
 const exp = (over: Partial<ExportInfo> = {}): ExportInfo => ({
-  id: "20260924-040124-8336a8", project_name: "OpticsConverter1", created_at: "", classes: ["Module"],
+  id: "20260924-040124-8336a8", name: null, project_name: "OpticsConverter1", created_at: "", classes: ["Module"],
   train_images: 798, val_images: 252, formats: ["yolo_seg", "masks"], derived_from: null, ...over,
 });
 const pool = (over: Partial<BackgroundPool> = {}): BackgroundPool => ({
@@ -249,5 +249,15 @@ describe("AugmentPanel", () => {
     jobs.aug1 = { ...idle, status: "cancelled", result: { cancelled: true } };
     fireEvent.click(screen.getByRole("button", { name: "Make augmented copy" }));
     expect(await screen.findByText("Cancelled. Nothing was written.")).toBeTruthy();
+  });
+
+  it("notes that an export without COCO cuts objects per class region", async () => {
+    m.listBackgrounds.mockResolvedValue([pool({ images: 5640 })]);
+    render(<AugmentPanel exportInfo={exp()} onCreated={vi.fn()} />);
+    expect(await screen.findByText(/has no COCO format, so composites cut objects per class region/)).toBeTruthy();
+    cleanup();
+    render(<AugmentPanel exportInfo={exp({ formats: ["yolo_seg", "coco", "masks"] })} onCreated={vi.fn()} />);
+    await screen.findByText("DTD textures · 5,640 images");
+    expect(screen.queryByText(/has no COCO format/)).toBeNull();
   });
 });

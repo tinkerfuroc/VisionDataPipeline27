@@ -16,6 +16,7 @@ from vsp.train.models import (
     check_model,
     find_export,
     list_exports,
+    rename_export,
     train_overrides,
 )
 
@@ -43,6 +44,13 @@ def test_find_export(tmp_path):
     assert (info.train_images, info.val_images) == (3, 2)
     assert info.yolo_dir == tmp_path / "exports" / EXPORT_ID / "yolo_seg"
     assert info.to_json()["id"] == EXPORT_ID and "dir" not in info.to_json()
+    assert info.name is None and info.to_json()["name"] is None
+
+
+def test_find_export_with_a_name(tmp_path):
+    make_export(tmp_path, name="Cups v2")
+    info = find_export(tmp_path, EXPORT_ID)
+    assert info.name == "Cups v2" and info.to_json()["name"] == "Cups v2"
 
 
 def test_find_export_errors(tmp_path):
@@ -64,6 +72,38 @@ def test_list_exports_newest_first_and_skips_incomplete(tmp_path):
     (tmp_path / "exports" / "20260103-000000-cccccc").mkdir()  # an export still being written: no manifest
     assert [e.id for e in list_exports(tmp_path)] == ["20260102-000000-bbbbbb", "20260101-000000-aaaaaa"]
     assert list_exports(tmp_path / "missing") == []
+
+
+def test_list_exports_orders_by_created_at_then_id_descending(tmp_path):
+    # folder-name order (alphabetical) deliberately differs from created_at order
+    make_export(tmp_path, "aaa-export", created_at="2026-01-01T00:00:00+00:00")
+    make_export(tmp_path, "zzz-export", created_at="2026-01-03T00:00:00+00:00")
+    make_export(tmp_path, "mmm-export-1", created_at="2026-01-02T00:00:00+00:00")
+    make_export(tmp_path, "mmm-export-2", created_at="2026-01-02T00:00:00+00:00")
+    assert [e.id for e in list_exports(tmp_path)] == [
+        "zzz-export", "mmm-export-2", "mmm-export-1", "aaa-export",
+    ]
+
+
+def test_rename_export_sets_and_clears_the_name(tmp_path):
+    make_export(tmp_path)
+    before = json.loads((tmp_path / "exports" / EXPORT_ID / "export.json").read_text())
+
+    info = rename_export(tmp_path, EXPORT_ID, "Cups v2")
+    assert info.name == "Cups v2"
+    after = json.loads((tmp_path / "exports" / EXPORT_ID / "export.json").read_text())
+    assert {k: v for k, v in after.items() if k != "name"} == {k: v for k, v in before.items() if k != "name"}
+
+    cleared = rename_export(tmp_path, EXPORT_ID, None)
+    assert cleared.name is None
+    cleared_manifest = json.loads((tmp_path / "exports" / EXPORT_ID / "export.json").read_text())
+    assert cleared_manifest["name"] is None
+
+
+def test_rename_export_rejects_an_overlong_name(tmp_path):
+    make_export(tmp_path)
+    with pytest.raises(BadRequest, match="at most 80"):
+        rename_export(tmp_path, EXPORT_ID, "a" * 81)
 
 
 def test_aug_presets_and_overrides():

@@ -7,8 +7,10 @@ pipeline (`write_dataset`, i.e. the same exporters every export uses); their out
 copied real output (COCO's train JSON gets the synthetic images/annotations appended; everything else lives
 in its own per-stem file, so "merge" is just placing more files side by side).
 
-Cutouts for composites are still built from the source's semantic `masks` PNGs (one blob per class, per
-train frame) -- fine, since that's new synthetic data, not a real frame's own labels.
+Cutouts for composites are cut per object from the source's COCO train annotations when the source has the
+`coco` format (two touching objects of one class stay two cutouts), and per class region of the semantic `masks`
+PNGs otherwise; the derived manifest records which (`augment.cutouts`). Either way they feed composites only,
+never a real frame's own labels.
 """
 
 from __future__ import annotations
@@ -19,6 +21,7 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 from uuid import uuid4
 
 import numpy as np
@@ -26,10 +29,11 @@ from PIL import Image
 
 from ..export import ExportCancelled, manifest_for, write_dataset
 from ..export.base import ExportSummary, place_image
-from ..export.plan import ExportOptions, ExportPlan, PlanFrame, PlanObject
-from ..export.polygons import clean_mask
+from ..export.mask_png import paint
+from ..export.naming import MAX_NAME
+from ..export.plan import ExportPlan, PlanFrame, PlanObject, classes_from_manifest, options_from_manifest
+from ..export.polygons import Polygon, clean_mask, polygons_to_mask
 from ..labeling.errors import BadRequest
-from ..store.models import ClassDef
 from ..train.models import find_export
 from .backgrounds import POOLS, list_images
 from .composite import Cutout, cutout_from, make_composite
@@ -41,6 +45,18 @@ class AugmentOptions:
     max_objects: int = 2
     seed: int = 0
     pool: str = "dtd"
+
+
+def _derived_name(source_name: str, per_image: int) -> str:
+    """The source's display name (name, else id) plus ` ×<N> augmented`, truncated so the result never
+    exceeds `MAX_NAME`: the suffix is always kept whole, and the source part is shortened (trailing
+    whitespace stripped off the cut) to make room for it."""
+    suffix = f" ×{per_image} augmented"
+    base = source_name
+    max_base = MAX_NAME - len(suffix)
+    if len(base) > max_base:
+        base = base[:max_base].rstrip()
+    return f"{base}{suffix}"
 
 
 def check_augment(data_root: Path, export_id: str, opts: AugmentOptions) -> dict:
@@ -66,30 +82,88 @@ def check_augment(data_root: Path, export_id: str, opts: AugmentOptions) -> dict
     return manifest
 
 
+CutoutMode = Literal["per_object", "per_class_region"]
+
+
+def _coco_train_objects(source_dir: Path) -> dict[str, list[tuple[int, list[Polygon]]]]:
+    """Each train image's objects, by image stem: `(export class id, polygons)`, in annotation order. The COCO
+    exporter writes one annotation per object, so objects that touch or overlap stay apart."""
+    data = json.loads((source_dir / "coco" / "annotations" / "instances_train.json").read_text())
+    stems = {im["id"]: Path(im["file_name"]).stem for im in data["images"]}
+    out: dict[str, list[tuple[int, list[Polygon]]]] = {}
+    for ann in sorted(data["annotations"], key=lambda a: a["id"]):
+        polygons = [[(float(p[i]), float(p[i + 1])) for i in range(0, len(p) - 1, 2)] for p in ann["segmentation"]]
+        out.setdefault(stems[ann["image_id"]], []).append((int(ann["category_id"]) - 1, polygons))
+    return out
+
+
+# `paint`'s canvas is uint8 (0..255): a per-object index needs one value per annotation, so a class with more
+# than this many objects in one frame falls back to per-class-region for the WHOLE frame instead (not just that
+# class): tracking a partial, per-class fallback inside an otherwise per-object frame would need its own code
+# path, where falling back for the whole frame is simply the same path a `coco`-less export already always takes
+# (so it is exercised and understood), and a frame this crowded, in even one class, is far outside normal use.
+MAX_PAINT_OBJECTS = 255
+
+
 def _cutouts_and_sizes(
-    source_dir: Path, min_area_px: int, tick: Callable[[], None],
-) -> tuple[list[Cutout], list[tuple[int, int]]]:
-    """Cutouts (per class region) and `(width, height)` of every real train frame, read from the source's
-    indexed mask PNGs. Feeds composites only -- never a real frame's own labels."""
+    source_dir: Path, formats: list[str], min_area_px: int, tick: Callable[[], None],
+) -> tuple[list[Cutout], list[tuple[int, int]], CutoutMode]:
+    """Cutouts and `(width, height)` of every real train frame (the frames are listed from the `masks` format).
+    Per object from the COCO train annotations when the source has `coco`, else per class region of the indexed
+    mask PNGs (touching objects of one class then come out as one). Feeds composites only.
+
+    The per-object case resolves shared pixels one class at a time, then restores holes from the semantic mask
+    PNG (which is authoritative on which class owns a pixel, since that is what the export already decided):
+    COCO polygons are outer contours only (`mask_to_polygons` uses `RETR_EXTERNAL`), so `polygons_to_mask` fills
+    a holed object's hole in and gives an object entirely inside another one the same footprint as its host. So,
+    per class, that class's annotations' polygons are rasterised and painted onto their own canvas with `paint`
+    (the same "largest first" ownership `masks` uses, so a smaller object on top of a larger one of the SAME
+    class wins the shared pixels) using per-object indices, and each of that class's objects' cutout is
+    `(canvas_c == its index) & (semantic_png == its class value)`: the per-class canvas settles who owns a pixel
+    among that class's own objects, and the true (unfilled, unmerged) `masks` PNG says whether the pixel really
+    belongs to that class at all, restoring holes and dropping the leftover pixels a filled-in hole steals from
+    another class entirely (a washer's hole shows the board underneath, not a filled-in disc of washer).
+
+    Resolving per class does NOT help a hole onto a larger object of the SAME class: the export's semantic PNG
+    only records a class per pixel, so it cannot tell two same-class objects apart there, and the canvas (built
+    from the same outer-contour, hole-filled polygons for both) can't either. A washer on a board of its own
+    class still comes out with the board's pixels showing through its hole; this is a known limit of the COCO
+    export, not something this function can fix from here.
+    """
+    per_object = "coco" in formats
+    by_stem = _coco_train_objects(source_dir) if per_object else {}
     cutouts: list[Cutout] = []
     sizes: list[tuple[int, int]] = []
-    masks_dir = source_dir / "masks" / "masks" / "train"
-    for mask_path in sorted(masks_dir.glob("*.png")):
+    for mask_path in sorted((source_dir / "masks" / "masks" / "train").glob("*.png")):
         tick()
-        indexed = np.array(Image.open(mask_path))
-        sizes.append((indexed.shape[1], indexed.shape[0]))
-        values = sorted(int(v) for v in np.unique(indexed) if v > 0)
-        if not values:
+        with Image.open(mask_path) as png:
+            width, height = png.size
+            semantic = np.array(png)
+        sizes.append((width, height))
+        objects = by_stem.get(mask_path.stem, [])
+        counts: dict[int, int] = {}
+        for cls, _polygons in objects:
+            counts[cls] = counts.get(cls, 0) + 1
+        if per_object and all(n <= MAX_PAINT_OBJECTS for n in counts.values()):
+            found: list[tuple[int, np.ndarray] | None] = [None] * len(objects)
+            for cls in counts:
+                idxs = [i for i, (c, _polygons) in enumerate(objects) if c == cls]
+                class_masks = [polygons_to_mask(objects[i][1], width, height) for i in idxs]
+                canvas, _overlap = paint(list(enumerate(class_masks, start=1)), height, width)
+                for k, i in enumerate(idxs, start=1):
+                    found[i] = (cls, (canvas == k) & (semantic == cls + 1))
+        else:
+            found = [(int(v) - 1, semantic == v) for v in sorted(int(v) for v in np.unique(semantic) if v > 0)]
+        found = [(cls, clean_mask(mask, min_area_px)) for cls, mask in found]
+        found = [(cls, mask) for cls, mask in found if mask.any()]
+        if not found:
             continue
         image = np.array(Image.open(source_dir / "images" / f"{mask_path.stem}.jpg").convert("RGB"))
-        for value in values:
-            mask = clean_mask(indexed == value, min_area_px)
-            if not mask.any():
-                continue
-            cut = cutout_from(image, mask, value - 1)
+        for cls, mask in found:
+            cut = cutout_from(image, mask, cls)
             if cut is not None:
                 cutouts.append(cut)
-    return cutouts, sizes
+    return cutouts, sizes, "per_object" if per_object else "per_class_region"
 
 
 def _copy_label(source_dir: Path, out: Path, fmt: str, split: str, stem: str) -> None:
@@ -154,12 +228,15 @@ def _merged_format_summaries(
     merged = []
     for src in src_formats:
         synth = synth_by_name.get(src["name"], empty)
-        merged.append({
+        entry = {
             "name": src["name"],
             "images": {sp: src["images"][sp] + synth["images"][sp] for sp in ("train", "val")},
             "annotations": {sp: src["annotations"][sp] + synth["annotations"][sp] for sp in ("train", "val")},
             "linked": bool(src["linked"]) and bool(synth["linked"]) and real_linked,
-        })
+        }
+        if "overlap_px" in src or "overlap_px" in synth:  # the masks format; an older source counts as 0
+            entry["overlap_px"] = int(src.get("overlap_px", 0)) + int(synth.get("overlap_px", 0))
+        merged.append(entry)
     return merged
 
 
@@ -195,7 +272,7 @@ def run_augment(
         def load_background(path: Path) -> np.ndarray:
             return np.array(Image.open(path).convert("RGB"))
 
-        cutouts, sizes = _cutouts_and_sizes(source_dir, min_area_px, tick)
+        cutouts, sizes, cutout_mode = _cutouts_and_sizes(source_dir, formats, min_area_px, tick)
         pool_images = list_images(data_root, opts.pool)
 
         work = out / ".work"
@@ -225,13 +302,12 @@ def run_augment(
                 image_path=image_path, width=width, height=height, objects=tuple(objects),
             ))
 
-        classes = tuple(ClassDef(id=c["id"], name=c["name"], color=c["color"]) for c in manifest["classes"])
-        val_clip_ids = tuple(manifest["options"]["val_clip_ids"] or ())
-        options = ExportOptions(**{**manifest["options"], "val_clip_ids": val_clip_ids})
+        classes, class_map = classes_from_manifest(manifest)
+        options = options_from_manifest(manifest["options"])
         plan = ExportPlan(
             project_id=manifest["project"]["id"], project_name=manifest["project"]["name"], classes=classes,
-            options=options, clip_ids=tuple(c["id"] for c in manifest["clips"]),
-            clip_names={c["id"]: c["name"] for c in manifest["clips"]}, val_clip_ids=val_clip_ids,
+            class_map=class_map, options=options, clip_ids=tuple(c["id"] for c in manifest["clips"]),
+            clip_names={c["id"]: c["name"] for c in manifest["clips"]}, val_clip_ids=options.val_clip_ids or (),
             frames=tuple(synthetic),  # the exporters run on the synthetic frames only; real ones are copied
         )
         synth_summaries, _synth_counts, synth_linked = write_dataset(
@@ -261,13 +337,17 @@ def run_augment(
         )
         result_manifest["counts"] = counts
         result_manifest["derived_from"] = export_id
+        result_manifest["name"] = _derived_name(manifest.get("name") or export_id, opts.per_image)
         result_manifest["augment"] = {
             "per_image": opts.per_image, "max_objects": opts.max_objects, "seed": opts.seed,
-            "pool": opts.pool, "synthetic_images": len(synthetic),
+            "pool": opts.pool, "synthetic_images": len(synthetic), "cutouts": cutout_mode,
         }
         (out / "export.json").write_text(json.dumps(result_manifest, indent=2))
         shutil.rmtree(work)
     except BaseException:
         shutil.rmtree(out, ignore_errors=True)
         raise
-    return {"export_id": new_id, "path": str(out), "counts": counts, "synthetic": len(synthetic)}
+    return {
+        "export_id": new_id, "path": str(out), "counts": counts, "synthetic": len(synthetic),
+        "name": result_manifest["name"], "cutouts": cutout_mode,
+    }

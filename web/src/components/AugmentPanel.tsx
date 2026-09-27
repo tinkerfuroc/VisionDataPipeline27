@@ -150,6 +150,13 @@ export function AugmentPanel({ exportInfo, onCreated }: Props) {
       {fetchError !== null && <p role="alert" className="alert">{fetchError}</p>}
       {fetchJob.status === "cancelled" && <p className="note">Cancelled. Nothing was downloaded.</p>}
 
+      {!exportInfo.formats.includes("coco") && (
+        <p className="note">
+          This export has no COCO format, so composites cut objects per class region: touching objects of one class
+          are cut as one. Export with COCO ticked for per-object cutouts.
+        </p>
+      )}
+
       <label className="flex items-center justify-between gap-2 text-sm text-dim">
         Composites per image
         <input aria-label="Composites per image" type="number" className="field w-20" min={1} max={10}

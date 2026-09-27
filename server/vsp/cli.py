@@ -93,7 +93,7 @@ def _train(settings: Settings, args, *, gpus=None, worker_cmd=None, poll: float 
     data_root = settings.project.data_root
     if args.list:
         for e in list_exports(data_root):
-            print(f"{e.id}  {e.project_name}  train {e.train_images}  val {e.val_images}  "
+            print(f"{e.id}  {e.name or '-'}  {e.project_name}  train {e.train_images}  val {e.val_images}  "
                   f"classes: {', '.join(e.classes)}")
         return 0
     if not args.export:

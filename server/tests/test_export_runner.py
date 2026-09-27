@@ -33,7 +33,8 @@ def test_run_export_writes_every_format_a_manifest_and_reports_progress(store, m
     manifest = json.loads((out / "export.json").read_text())
     assert manifest["options"]["split_mode"] == "contiguous" and manifest["options"]["min_area_px"] == 64
     assert manifest["clips"] == [{"id": clip.id, "name": clip.source.name, "train": 4, "val": 2}]
-    assert manifest["classes"] == [{"id": 0, "name": "part", "color": manifest["classes"][0]["color"], "yolo_id": 0, "coco_id": 1, "mask_value": 1}]
+    assert manifest["classes"] == [{"id": 0, "project_class_id": 0, "name": "part", "color": manifest["classes"][0]["color"], "yolo_id": 0, "coco_id": 1, "mask_value": 1}]
+    assert manifest["options"]["class_ids"] is None
     assert seen[-1] == (6 * 4, 6 * 4) and [d for d, _ in seen] == sorted(d for d, _ in seen)
     # the store was only read: no stray file, and the export holds copies, not links to store frames
     import os
@@ -51,3 +52,66 @@ def test_a_cancelled_export_leaves_nothing_behind(store, make_clip, tmp_path):
     with pytest.raises(ExportCancelled):
         run_export(store, project.id, [clip.id], ["coco"], ExportOptions(), tmp_path / "exports", cancel=cancel)
     assert list((tmp_path / "exports").iterdir()) == []
+
+
+def test_run_export_with_a_name_slugs_the_folder_id(store, make_clip, tmp_path):
+    project, clip = _labelled(store, make_clip)
+    result = run_export(store, project.id, [clip.id], ["yolo_seg"], ExportOptions(), tmp_path / "exports",
+                        name="Cups v2")
+    assert result["export_id"] == "cups-v2" and result["name"] == "Cups v2"
+    manifest = json.loads((tmp_path / "exports" / "cups-v2" / "export.json").read_text())
+    assert manifest["name"] == "Cups v2"
+
+    second = run_export(store, project.id, [clip.id], ["yolo_seg"], ExportOptions(), tmp_path / "exports",
+                        name="Cups v2")
+    assert second["export_id"] == "cups-v2-2"
+
+
+def test_run_export_without_a_name_gets_a_timestamp_id_and_null_name(store, make_clip, tmp_path):
+    project, clip = _labelled(store, make_clip)
+    result = run_export(store, project.id, [clip.id], ["yolo_seg"], ExportOptions(), tmp_path / "exports")
+    assert result["name"] is None
+    assert len(result["export_id"]) == len("20260926-104433-a1b2c3")
+    manifest = json.loads((tmp_path / "exports" / result["export_id"] / "export.json").read_text())
+    assert manifest["name"] is None
+
+
+def test_a_failed_named_export_removes_its_reserved_folder(store, make_clip, tmp_path):
+    project, clip = _labelled(store, make_clip)
+    calls = {"n": 0}
+
+    def cancel():
+        calls["n"] += 1
+        return calls["n"] > 2
+
+    with pytest.raises(ExportCancelled):
+        run_export(store, project.id, [clip.id], ["coco"], ExportOptions(), tmp_path / "exports",
+                   cancel=cancel, name="Cups v2")
+    assert list((tmp_path / "exports").iterdir()) == []
+
+
+def test_the_manifest_maps_export_ids_back_to_project_classes(store, make_clip, tmp_path):
+    project, clip = make_clip(n_frames=4, classes=("cup", "bowl", "plate"))
+    clip.objects = [LabelObject(id=1, class_id=2)]
+    store.write_clip(clip)
+    mask = np.zeros((60, 120), bool)
+    mask[10:40, 20:60] = True
+    for i in range(4):
+        store.write_mask(clip.id, 1, i, mask)
+    result = run_export(store, project.id, [clip.id], ["yolo_seg"], ExportOptions(class_ids=(2,)),
+                        tmp_path / "exports")
+    manifest = json.loads((tmp_path / "exports" / result["export_id"] / "export.json").read_text())
+    assert manifest["options"]["class_ids"] == [2]
+    assert manifest["classes"] == [{
+        "id": 0, "project_class_id": 2, "name": "plate", "color": project.classes[2].color,
+        "yolo_id": 0, "coco_id": 1, "mask_value": 1,
+    }]
+
+
+def test_overlap_px_is_reported_for_the_mask_format_only(store, make_clip, tmp_path):
+    project, clip = _labelled(store, make_clip)
+    result = run_export(store, project.id, [clip.id], ["yolo_seg", "masks"], ExportOptions(), tmp_path / "exports")
+    manifest = json.loads((tmp_path / "exports" / result["export_id"] / "export.json").read_text())
+    formats = {f["name"]: f for f in manifest["formats"]}
+    assert formats["masks"]["overlap_px"] == 0  # one object per frame
+    assert "overlap_px" not in formats["yolo_seg"]

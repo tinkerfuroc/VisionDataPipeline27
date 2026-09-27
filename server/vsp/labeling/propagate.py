@@ -1,5 +1,5 @@
-"""Keyframe-capped propagation with anchor-prepended chunks (spec 5.3); the next chunk is read and
-preprocessed while the current one runs."""
+"""Keyframe-capped propagation of one or more objects with anchor-prepended chunks (spec 5.3, multi-object
+spec §6); the next chunk is read and preprocessed while the current one runs."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from typing import Literal
 import numpy as np
 
 from ..engine.types import ChunkOOMError, Engine
-from ..store import Clip, LabelObject, ProjectStore
+from ..store import Clip, LabelObject, NotFound, ProjectStore
 from .errors import BadRequest, PropagationFailed
 from .prefetch import ChunkPrefetcher
 from .ranges import add_range
@@ -21,13 +21,16 @@ Emit = Callable[[dict], None]
 
 @dataclass
 class PropagateResult:
-    processed: int = 0
-    written: int = 0
+    processed: int = 0  # frames covered by at least one object
+    written: int = 0  # masks written, over all objects
     cleared: int = 0
-    lost_at: int | None = None
+    lost_at: int | None = None  # the frame the page seeks to (spec §6)
     cancelled: bool = False
     oom_retries: int = 0
-    lost_by_direction: dict[str, int] = field(default_factory=dict)
+    lost_by_direction: dict[str, dict[int, int]] = field(default_factory=dict)
+    lost: dict[int, int] = field(default_factory=dict)
+    skipped: list[int] = field(default_factory=list)
+    objects: list[int] = field(default_factory=list)
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -37,7 +40,8 @@ def plan_indices(clip: Clip, obj: LabelObject, from_frame: int, direction: Liter
     """Frames a run from `from_frame` covers: up to, not including, the next keyframe in `direction`.
 
     Any frame may be a start (a keyframe, or a propagated frame when a stopped run is resumed); whether it
-    has a mask to seed from is checked by `check_seed`. Keyframes are never overwritten, so they bound the run.
+    has a mask to seed from is checked by `resolve_participants`. Keyframes are never overwritten, so they
+    bound the run.
     """
     if not 0 <= from_frame < clip.frame_count:
         raise BadRequest(f"frame {from_frame} is out of range 0..{clip.frame_count - 1}")
@@ -49,147 +53,207 @@ def plan_indices(clip: Clip, obj: LabelObject, from_frame: int, direction: Liter
     return list(range(from_frame - 1, stop, -1))
 
 
-def check_seed(store: ProjectStore, clip: Clip, obj: LabelObject, from_frame: int) -> np.ndarray:
-    """The mask a run from `from_frame` seeds with, or BadRequest when there is none to seed from."""
+def resolve_participants(
+    store: ProjectStore,
+    clip: Clip,
+    from_frame: int,
+    objects: Literal["all"] | list[int],
+    *,
+    strict: bool,
+) -> tuple[list[tuple[LabelObject, np.ndarray]], list[int]]:
+    """The objects a run from `from_frame` propagates, each with its seed mask, and the ids skipped.
+
+    `strict` (the route, validating a request): an unknown id is NotFound and a listed object without a mask on
+    `from_frame` is BadRequest. Not strict (the job, which re-reads the clip): both are skipped instead, so an object
+    deleted between the request and the job's start does not fail the run.
+    """
+    if not 0 <= from_frame < clip.frame_count:
+        raise BadRequest(f"frame {from_frame} is out of range 0..{clip.frame_count - 1}")
     if from_frame in clip.deleted_frames:
         raise BadRequest(f"frame {from_frame} is deleted; restore it or propagate from another frame")
-    seed = store.read_mask(clip.id, obj.id, from_frame)
-    if seed is None:
+    by_id = {o.id: o for o in clip.objects}
+    explicit = objects != "all"
+    wanted = list(by_id) if not explicit else list(dict.fromkeys(objects))
+    participants: list[tuple[LabelObject, np.ndarray]] = []
+    skipped: list[int] = []
+    for oid in wanted:
+        obj = by_id.get(oid)
+        if obj is None:
+            if strict:
+                raise NotFound(f"object {oid} not found in clip {clip.id}")
+            skipped.append(oid)
+            continue
+        seed = store.read_mask(clip.id, oid, from_frame)
+        if seed is None:
+            if strict and explicit:
+                raise BadRequest(
+                    f"object {oid} has no mask on frame {from_frame}; propagate it from a frame where it has one"
+                )
+            skipped.append(oid)
+            continue
+        participants.append((obj, seed))
+    if not participants:
+        if not clip.objects:
+            raise BadRequest("nothing to propagate: accept a prompt first")
         raise BadRequest(f"frame {from_frame} has no mask; propagate from a masked frame or prompt here first")
-    return seed
+    return participants, skipped
 
 
 def _record_range(store: ProjectStore, clip_id: str, object_id: int, indices: list[int]) -> None:
     with store.lock(clip_id):
         clip = store.read_clip(clip_id)
-        obj = next(o for o in clip.objects if o.id == object_id)
+        obj = next((o for o in clip.objects if o.id == object_id), None)
+        if obj is None:  # deleted while the run was going (the API forbids it, but never crash the run on it)
+            return
         obj.propagated_ranges = add_range(obj.propagated_ranges, min(indices), max(indices))
         store.write_clip(clip)
+
+
+@dataclass
+class _Track:
+    """One object's progress through one direction's frame list."""
+
+    obj_id: int
+    limit: int  # how many frames of the direction's list this object may cover (up to its next keyframe)
+    anchor_idx: int  # its last frame with a mask: the chunk it runs in is seeded there
+    anchor_mask: np.ndarray
+    pos: int = 0  # index of its next frame in the direction's list
+    empties: int = 0
+    first_empty: int | None = None
+    finished: bool = False  # lost
+
+    @property
+    def active(self) -> bool:
+        return not self.finished and self.pos < self.limit
 
 
 def _run_direction(
     store: ProjectStore,
     engine: Engine,
     clip: Clip,
-    object_id: int,
-    from_frame: int,
-    seed: np.ndarray,
-    indices: list[int],
+    tracks: list[_Track],
+    frames_list: list[int],
     direction: str,
     *,
     chunk_size: int,
     min_chunk_size: int,
     lost_after: int,
+    base: int,
     total: int,
     result: PropagateResult,
     emit: Emit,
     cancel: Callable[[], bool],
     prefetch: ChunkPrefetcher,
 ) -> int:
-    """Run one direction's chunk loop.
+    """Run one direction: engine calls over chunks, one per group of objects sharing an anchor frame.
 
-    Returns the (possibly OOM-backed-off) chunk size actually used, so that a following
-    direction in a "both" run starts from it instead of re-attempting a size that just OOM'd.
+    Each object keeps the single-object rule of old: it is seeded on its own last masked frame, which is prepended
+    to the chunk. Objects whose anchors (and positions) coincide share one engine call -- the usual case; an object
+    that missed a frame falls behind into its own group until it is found again or lost. Returns the (possibly
+    OOM-backed-off) chunk size, so a following direction starts from it.
     """
-    anchor_idx, anchor_mask = from_frame, seed
-    pending = list(indices)
     size = max(min_chunk_size, chunk_size)
-    empties, first_empty = 0, None
-
-    while pending:
-        # Deletes/restores stay allowed during a run: re-read every chunk so a frame restored
-        # mid-run gets its mask written starting from the next chunk.
+    while True:
+        live = [t for t in tracks if t.active]
+        if not live:
+            return size
+        groups: dict[tuple[int, int], list[_Track]] = {}
+        for t in live:
+            groups.setdefault((t.pos, t.anchor_idx), []).append(t)
+        (pos, anchor_idx), members = min(groups.items(), key=lambda kv: (kv[0][0], -len(kv[1])))
+        end = max(t.limit for t in members)
+        chunk = frames_list[pos:min(pos + size, end)]
+        # Deletes/restores stay allowed during a run: re-read every chunk so a frame restored mid-run gets its mask
+        # written starting from the next chunk.
         deleted = set(store.read_clip(clip.id).deleted_frames)
-        chunk = pending[:size]
         frames = prefetch.take(anchor_idx, chunk)
-        # Predict the next chunk (this one completes and its last frame with a mask becomes the anchor) and
-        # start reading and preprocessing it now, so that work overlaps this chunk's GPU time instead of
-        # following it. A wrong prediction (an OOM back-off, an anchor that is not the chunk's last frame) is
-        # rebuilt from the frames the prefetcher still holds; the abandoned prediction is dropped and read
-        # again if it is needed later.
-        if len(pending) > size:
-            prefetch.schedule(chunk[-1], pending[size:2 * size])
-        done_in_chunk: list[int] = []
+        # Predict this group's next chunk and start reading it now (see ChunkPrefetcher: a wrong prediction -- an
+        # OOM back-off, another group running next, an anchor that is not the chunk's last frame -- only costs a
+        # rebuild from the frames the prefetcher still holds).
+        after = frames_list[pos + size:min(pos + 2 * size, end)]
+        others = [t for t in live if t not in members]
+        # only when this group will run next: no other group may be left behind this chunk's end
+        if after and all(t.pos >= pos + len(chunk) for t in others):
+            prefetch.schedule(chunk[-1], after)
+        seeds = {t.obj_id: t.anchor_mask for t in members}
+        covered: dict[int, list[int]] = {t.obj_id: [] for t in members}
+        yielded = 0
         oom_error: ChunkOOMError | None = None
-        direction_lost_frame: int | None = None
         try:
-            with closing(engine.propagate(frames, anchor_mask, cancel_cb=cancel)) as masks:
-                for offset, mask in masks:
+            with closing(engine.propagate(frames, seeds, cancel_cb=cancel)) as outputs:
+                for offset, masks in outputs:
                     if offset == 0:
                         continue  # the anchor's own output is discarded
-                    expected = len(done_in_chunk) + 1
-                    if offset != expected or offset > len(chunk):
-                        raise PropagationFailed(f"engine yielded offset {offset}, expected {expected}")
+                    if offset != yielded + 1 or offset > len(chunk):
+                        raise PropagationFailed(f"engine yielded offset {offset}, expected {yielded + 1}")
+                    if set(masks) != set(seeds):
+                        raise PropagationFailed(f"engine yielded objects {sorted(masks)}, expected {sorted(seeds)}")
+                    yielded = offset
                     idx = chunk[offset - 1]
-                    done_in_chunk.append(idx)
-                    result.processed += 1
-                    if mask is None:
-                        if store.delete_mask(clip.id, object_id, idx):
-                            result.cleared += 1
-                        empties += 1
-                        first_empty = idx if first_empty is None else first_empty
-                    else:
-                        empties, first_empty = 0, None
-                        anchor_idx, anchor_mask = idx, mask
-                        if idx not in deleted:
-                            store.write_mask(clip.id, object_id, idx, mask)
-                            result.written += 1
+                    report = []
+                    for t in members:
+                        if not t.active:
+                            continue  # bounded or lost earlier in this chunk: its outputs are ignored
+                        mask = masks[t.obj_id]
+                        t.pos += 1
+                        covered[t.obj_id].append(idx)
+                        if mask is None:
+                            if store.delete_mask(clip.id, t.obj_id, idx):
+                                result.cleared += 1
+                            t.empties += 1
+                            t.first_empty = idx if t.first_empty is None else t.first_empty
+                        else:
+                            t.empties, t.first_empty = 0, None
+                            t.anchor_idx, t.anchor_mask = idx, mask
+                            if idx not in deleted:
+                                store.write_mask(clip.id, t.obj_id, idx, mask)
+                                result.written += 1
+                        report.append({"id": t.obj_id, "has_mask": mask is not None and idx not in deleted})
+                        if t.empties >= lost_after:
+                            t.finished = True
+                            result.lost_by_direction.setdefault(direction, {})[t.obj_id] = t.first_empty
+                    done = base + max(t.pos for t in tracks)
                     emit({
-                        "type": "frame", "frame": idx,
-                        "has_mask": mask is not None and idx not in deleted,
-                        "done": result.processed, "total": total,
+                        "type": "frame", "frame": idx, "objects": report,
+                        "done": done, "total": total,
                     })
-                    if empties >= lost_after:
-                        direction_lost_frame = first_empty
+                    if not any(t.active for t in members):
                         break  # leaving the `with` closes the generator and frees the GPU lock
         except ChunkOOMError as e:
             oom_error = e
         finally:
-            # Frames landed in this chunk must be recorded on EVERY exit -- normal end, lost,
-            # cancel, OOM, or any other exception escaping the loop -- before it propagates.
-            if done_in_chunk:
-                _record_range(store, clip.id, object_id, done_in_chunk)
-                pending = pending[len(done_in_chunk):]
+            # Frames landed in this call must be recorded on EVERY exit -- normal end, lost, cancel, OOM, or any
+            # other exception escaping the loop -- before it propagates.
+            for oid, idxs in covered.items():
+                if idxs:
+                    _record_range(store, clip.id, oid, idxs)
         del frames
 
         if oom_error is not None:
             result.oom_retries += 1
             if size <= min_chunk_size:
-                if not done_in_chunk:
+                if yielded == 0:
                     raise PropagationFailed(
                         f"CUDA out of memory even at chunk size {size}; lower propagate.min_chunk_size "
                         "or free GPU memory (check nvidia-smi)"
                     ) from oom_error
-                # Progress was made at the floor: keep the size, retry the remaining pending frames.
             else:
                 size = max(min_chunk_size, size // 2)
             emit({"type": "log", "message": f"out of memory; retrying with chunk size {size}"})
-            # Drop the traceback so the failed chunk's prepared tensors are freed before the retry
-            # reads the next one -- it would otherwise keep the generator frame (and everything it
-            # held) alive through prefetch.take().
-            oom_error = None
+            oom_error = None  # drop the traceback so the failed chunk's tensors are freed before the retry
             continue
 
-        if direction_lost_frame is not None:
-            result.lost_by_direction[direction] = direction_lost_frame
-            break
-
-        # Cancellation is latched from whether the engine actually stopped short of the chunk
-        # while cancel() is true -- not from re-polling cancel() after a chunk that completed.
-        # A cancel that arrives after a complete chunk with frames still pending is caught by
-        # the next chunk instead (the engine yields nothing there -> stopped short).
-        stopped_short = len(done_in_chunk) < len(chunk)
-        if stopped_short:
+        # Cancellation is latched from whether the engine actually stopped short of the chunk while cancel() is
+        # true -- not from re-polling cancel() after a call that completed (see the single-object history).
+        if yielded < len(chunk) and any(t.active for t in members):
             if cancel():
                 result.cancelled = True
-                break
-            if done_in_chunk:
+                return size
+            if yielded:
                 raise PropagationFailed(
-                    f"the engine stopped after {len(done_in_chunk)} of {len(chunk)} frames without being cancelled"
+                    f"the engine stopped after {yielded} of {len(chunk)} frames without being cancelled"
                 )
             raise PropagationFailed("the engine returned no frames for a non-empty chunk")
-
-    return size
 
 
 def run_propagation(
@@ -199,13 +263,14 @@ def run_propagation(
     from_frame: int,
     direction: Literal["forward", "backward", "both"],
     *,
+    objects: Literal["all"] | list[int] = "all",
     chunk_size: int,
     min_chunk_size: int,
     lost_after: int,
     emit: Emit | None = None,
     cancel: Callable[[], bool] | None = None,
 ) -> PropagateResult:
-    """Propagate the clip's single labeled object from `from_frame` in `direction`.
+    """Propagate `objects` (default: every object with a mask on `from_frame`) from `from_frame` in `direction`.
 
     `emit` and `cancel` are both called while the engine's `propagate()` generator is open, i.e.
     while the GPU lock is held. Both must return quickly: no blocking I/O, no blocking on a slow
@@ -216,28 +281,35 @@ def run_propagation(
     emit = emit or (lambda event: None)
     cancel = cancel or (lambda: False)
     clip = store.read_clip(clip_id)
-    if not clip.objects:
-        raise BadRequest("nothing to propagate: accept a prompt first")
-    obj = clip.objects[0]
+    participants, skipped = resolve_participants(store, clip, from_frame, objects, strict=False)
     directions = ["forward", "backward"] if direction == "both" else [direction]
-    plans = [plan_indices(clip, obj, from_frame, d) for d in directions]
-    seed = check_seed(store, clip, obj, from_frame)
+    plans = {d: {obj.id: plan_indices(clip, obj, from_frame, d) for obj, _ in participants} for d in directions}
+    frames_lists = {d: max(plans[d].values(), key=len) for d in directions}
 
-    result = PropagateResult()
-    total = sum(len(p) for p in plans)
+    result = PropagateResult(skipped=skipped, objects=[obj.id for obj, _ in participants])
+    total = sum(len(f) for f in frames_lists.values())
     emit({"type": "progress", "done": 0, "total": total})
     size = chunk_size
+    base = 0
     with ChunkPrefetcher(store, clip, engine) as prefetch:
-        for d, indices in zip(directions, plans):
+        for d in directions:
             if result.cancelled:
                 break
+            tracks = [_Track(obj.id, len(plans[d][obj.id]), from_frame, seed) for obj, seed in participants]
             size = _run_direction(
-                store, engine, clip, obj.id, from_frame, seed, indices, d,
+                store, engine, clip, tracks, frames_lists[d], d,
                 chunk_size=size, min_chunk_size=min_chunk_size, lost_after=lost_after,
-                total=total, result=result, emit=emit, cancel=cancel, prefetch=prefetch,
+                base=base, total=total, result=result, emit=emit, cancel=cancel, prefetch=prefetch,
             )
+            covered = max((t.pos for t in tracks), default=0)
+            result.processed += covered
+            base += covered
     for d in directions:
-        if d in result.lost_by_direction:
-            result.lost_at = result.lost_by_direction[d]
+        for oid, frame in result.lost_by_direction.get(d, {}).items():
+            result.lost.setdefault(oid, frame)
+    for d in directions:
+        lost_here = result.lost_by_direction.get(d)
+        if lost_here:
+            result.lost_at = min(lost_here.values(), key=lambda f: abs(f - from_frame))
             break
     return result

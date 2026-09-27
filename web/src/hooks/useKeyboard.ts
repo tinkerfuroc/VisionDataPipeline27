@@ -13,7 +13,11 @@ export type KeyAction =
   /** mark the current frame as the first / last frame of the range to clear */
   | { type: "mark"; edge: "start" | "end" }
   /** `-` shrinks, `=` grows the brush */
-  | { type: "brushSize"; dir: 1 | -1 };
+  | { type: "brushSize"; dir: 1 | -1 }
+  /** `O` / `Shift+O`: next / previous object */
+  | { type: "object"; dir: 1 | -1 }
+  /** `N`: start a new object */
+  | { type: "newObject" };
 
 type KeyLike = { key: string; shiftKey: boolean; ctrlKey: boolean; metaKey: boolean; altKey: boolean };
 
@@ -52,6 +56,10 @@ export function keyAction(e: KeyLike): KeyAction | null {
       return { type: "nextEmpty" };
     case "m":
       return { type: "overlay" };
+    case "o":
+      return { type: "object", dir: e.shiftKey ? -1 : 1 };
+    case "n":
+      return { type: "newObject" };
   }
   return null;
 }

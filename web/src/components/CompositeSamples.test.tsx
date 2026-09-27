@@ -12,7 +12,7 @@ vi.mock("../api/rest", async (original) => {
 const m = vi.mocked(api);
 
 const exp = (over: Partial<ExportInfo> = {}): ExportInfo => ({
-  id: "expA", project_name: "OpticsConverter1", created_at: "", classes: ["Module"],
+  id: "expA", name: null, project_name: "OpticsConverter1", created_at: "", classes: ["Module"],
   train_images: 3192, val_images: 252, formats: ["yolo_seg", "masks"], derived_from: "src", ...over,
 });
 const sample = (n: number): ExportSample => ({
@@ -46,5 +46,13 @@ describe("CompositeSamples", () => {
     // a subsequent Shuffle on the new export starts counting from its own reset seed, not the old one
     fireEvent.click(await screen.findByRole("button", { name: "Shuffle" }));
     await waitFor(() => expect(m.exportSamples).toHaveBeenLastCalledWith("expB", 12, 1));
+  });
+
+  it("shows the export's name in the heading when set, else its id", async () => {
+    const { rerender } = render(<CompositeSamples exportInfo={exp({ name: "Cups v2" })} />);
+    await screen.findByText("Composite samples · Cups v2");
+
+    rerender(<CompositeSamples exportInfo={exp()} />);
+    await screen.findByText("Composite samples · expA");
   });
 });

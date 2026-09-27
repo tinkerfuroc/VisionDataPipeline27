@@ -32,10 +32,28 @@ export type Clip = {
   original_names?: Record<string, string>;
   deleted_frames: number[];
   objects: LabelObject[];
+  /** the next object id the server hands out (ids are never reused); absent or 0 in older clip files */
+  next_object_id?: number;
 };
 export type ClipSummary = Clip & { labeled_frames: number };
 export type FrameState = "empty" | "masked" | "keyframe" | "deleted";
-export type ClipDetail = { clip: Clip; states: FrameState[]; classes: ClassDef[] };
+export type ClipDetail = {
+  clip: Clip;
+  /** the whole clip per frame (any object): deleted > keyframe > masked > empty */
+  states: FrameState[];
+  classes: ClassDef[];
+  /** each object's own per-frame states, keyed by the object id as a string (JSON keys); a deleted frame is
+   * "deleted" in every lane */
+  object_states: Record<string, FrameState[]>;
+};
+/** every object ("all"), or the listed object ids (never empty) */
+export type ObjectSelection = "all" | number[];
+/** where a mask is written: an existing object, or a new object of `classId` created by that very write */
+export type WriteTarget = { objectId: number } | { objectId: null; classId: number };
+/** `/accept`: the ids written, one per accepted candidate when several became new objects */
+export type AcceptResult = ClipDetail & { object_ids: number[] };
+/** `/mask`: the id of the object written */
+export type MaskResult = ClipDetail & { object_id: number };
 
 export type Candidate = {
   score: number;
@@ -67,10 +85,22 @@ export type SplitMode = "per_clip" | "contiguous";
 export type ExportRequest = {
   clips: string[];
   formats: ExportFormat[];
-  options: { split_mode: SplitMode; val_clips?: string[]; val_fraction: number; stride: number; include_empty: boolean };
+  options: {
+    split_mode: SplitMode; val_clips?: string[]; val_fraction: number; stride: number; include_empty: boolean;
+    /** Project class ids to export; null = every class. */
+    classes: number[] | null;
+  };
+  name?: string | null;
 };
 export type SplitCounts = { images: number; annotated: number; empty: number };
-export type ExportResult = { export_id: string; path: string; formats: ExportFormat[]; counts: { train: SplitCounts; val: SplitCounts }; linked: boolean };
+export type ExportResult = {
+  export_id: string;
+  name: string | null;
+  path: string;
+  formats: ExportFormat[];
+  counts: { train: SplitCounts; val: SplitCounts };
+  linked: boolean;
+};
 
 export type Health = {
   status: string;
@@ -128,6 +158,7 @@ export type TrainStatus = {
 };
 export type ExportInfo = {
   id: string;
+  name: string | null;
   project_name: string;
   created_at: string;
   classes: string[];

@@ -1,8 +1,9 @@
 import pytest
+from conftest import OBJ
 from vsp.engine.fake import FakeEngine
 from vsp.labeling.errors import BadRequest
 from vsp.labeling.frames import clear_range, delete_frame, prune_from, restore_frame
-from vsp.labeling.prompts import OBJECT_ID, PromptSpec, accept
+from vsp.labeling.prompts import PromptSpec, accept
 from vsp.labeling.propagate import run_propagation
 from vsp.store import NotFound
 
@@ -44,20 +45,20 @@ def test_index_validation(store, make_clip):
 def test_clear_range_removes_keyframes_too_and_trims_ranges(store, make_clip):
     eng = FakeEngine()
     _, clip = make_clip(n_frames=12)
-    accept(store, eng, clip.id, 0, CLICK, class_id=0)
-    accept(store, eng, clip.id, 6, CLICK)
+    accept(store, eng, clip.id, 0, CLICK, object_id=None, class_id=0)
+    accept(store, eng, clip.id, 6, CLICK, object_id=OBJ)
     run_propagation(store, eng, clip.id, 0, "forward", chunk_size=8, min_chunk_size=4, lost_after=3)
     run_propagation(store, eng, clip.id, 6, "forward", chunk_size=8, min_chunk_size=4, lost_after=3)
     assert store.read_clip(clip.id).objects[0].propagated_ranges == [(1, 5), (7, 11)]
     out = clear_range(store, clip.id, 4, 8)
-    assert store.mask_indices(clip.id, OBJECT_ID) == [0, 1, 2, 3, 9, 10, 11]  # keyframe 6 cleared with the rest
+    assert store.mask_indices(clip.id, OBJ) == [0, 1, 2, 3, 9, 10, 11]  # keyframe 6 cleared with the rest
     assert out.objects[0].propagated_ranges == [(1, 3), (9, 11)]
     assert [k.frame_idx for k in out.objects[0].keyframes] == [0]
     assert store.frame_states(out)[4:9] == ["empty"] * 5
     # clearing the last keyframe leaves the object (and its class) in place for the next accepted prompt
     out = clear_range(store, clip.id, 0, 0)
     assert out.objects[0].keyframes == [] and out.objects[0].class_id == 0
-    assert store.mask_indices(clip.id, OBJECT_ID) == [1, 2, 3, 9, 10, 11]
+    assert store.mask_indices(clip.id, OBJ) == [1, 2, 3, 9, 10, 11]
 
 
 def test_clear_range_without_an_object_is_a_no_op(store, make_clip):
@@ -74,9 +75,9 @@ def test_unknown_clip_does_not_grow_the_lock_table(store):
 def test_a_prompt_accepted_after_the_last_keyframe_was_cleared_lands_on_the_same_object(store, make_clip):
     eng = FakeEngine()
     _, clip = make_clip(n_frames=6)
-    accept(store, eng, clip.id, 0, CLICK, class_id=0)
+    accept(store, eng, clip.id, 0, CLICK, object_id=None, class_id=0)
     clear_range(store, clip.id, 0, 0)
-    out = accept(store, eng, clip.id, 3, CLICK)  # no class_id: the object, and its class, are still there
-    assert [o.id for o in out.objects] == [OBJECT_ID] and out.objects[0].class_id == 0
+    out, _ = accept(store, eng, clip.id, 3, CLICK, object_id=OBJ)  # no class_id: the object, and its class, are still there
+    assert [o.id for o in out.objects] == [OBJ] and out.objects[0].class_id == 0
     assert [k.frame_idx for k in out.objects[0].keyframes] == [3]
-    assert store.mask_indices(clip.id, OBJECT_ID) == [3]
+    assert store.mask_indices(clip.id, OBJ) == [3]

@@ -13,29 +13,42 @@ describe("mask tinting", () => {
     expect(out).toBe(px);
     expect(Array.from(out)).toEqual([10, 20, 30, 128, 0, 0, 0, 0]);
   });
-  it("outlines the object when it knows the image size: solid rings inside, a white halo outside", () => {
-    // 9×9 image with a 7×7 object in the middle; at this size the edge is 2 px wide
+  // 9×9 image with a 7×7 object in the middle
+  const square = () => {
     const w = 9;
     const px = new Uint8ClampedArray(w * w * 4);
     for (let y = 1; y <= 7; y++) for (let x = 1; x <= 7; x++) px.fill(255, (y * w + x) * 4, (y * w + x) * 4 + 4);
-    const out = tintMask(px, [10, 20, 30], 0.5, { width: w, height: w });
-    const at = (x: number, y: number) => Array.from(out.slice((y * w + x) * 4, (y * w + x) * 4 + 4));
-    expect(at(0, 0)).toEqual([255, 255, 255, 230]); // halo, diagonal neighbour of the object's corner
-    expect(at(0, 4)).toEqual([255, 255, 255, 230]);
-    expect(at(1, 4)).toEqual([10, 20, 30, 255]); // outermost ring
-    expect(at(2, 4)).toEqual([10, 20, 30, 255]); // second ring
-    expect(at(3, 4)).toEqual([10, 20, 30, 128]); // interior keeps the translucent tint
-    expect(at(4, 4)).toEqual([10, 20, 30, 128]);
+    return px;
+  };
+  const pixel = (out: Uint8ClampedArray, x: number, y: number, w = 9) => Array.from(out.slice((y * w + x) * 4, (y * w + x) * 4 + 4));
+  it("outlines the object with solid rings of the outline colour, and draws nothing outside it", () => {
+    const out = tintMask(square(), [10, 20, 30], 0.5, { width: 9, height: 9 }, { rgb: [200, 100, 0], edge: 2 });
+    expect(pixel(out, 0, 0)).toEqual([0, 0, 0, 0]); // no halo, even diagonally off the object's corner
+    expect(pixel(out, 0, 4)[3]).toBe(0);
+    expect(pixel(out, 1, 4)).toEqual([200, 100, 0, 255]); // outermost ring
+    expect(pixel(out, 2, 4)).toEqual([200, 100, 0, 255]); // second ring
+    expect(pixel(out, 3, 4)).toEqual([10, 20, 30, 128]); // interior keeps the translucent class tint
+    expect(pixel(out, 4, 4)).toEqual([10, 20, 30, 128]);
   });
-  it("draws no edge where the frame cuts the object off, and leaves far background transparent", () => {
+  it("draws the outline as thick as asked", () => {
+    const out = tintMask(square(), [10, 20, 30], 0.5, { width: 9, height: 9 }, { rgb: [200, 100, 0], edge: 3 });
+    expect(pixel(out, 3, 4)).toEqual([200, 100, 0, 255]);
+    expect(pixel(out, 4, 4)).toEqual([10, 20, 30, 128]);
+  });
+  it("draws no outline at thickness 0", () => {
+    const out = tintMask(square(), [10, 20, 30], 0.5, { width: 9, height: 9 }, { rgb: [200, 100, 0], edge: 0 });
+    expect(pixel(out, 1, 4)).toEqual([10, 20, 30, 128]);
+    expect(pixel(out, 0, 4)[3]).toBe(0);
+  });
+  it("draws no edge where the frame cuts the object off, and leaves the background transparent", () => {
     const w = 8;
     const px = new Uint8ClampedArray(w * w * 4);
     for (let y = 0; y < w; y++) for (let x = 0; x < 3; x++) px.fill(255, (y * w + x) * 4, (y * w + x) * 4 + 4);
-    const out = tintMask(px, [10, 20, 30], 0.5, { width: w, height: w });
+    const out = tintMask(px, [10, 20, 30], 0.5, { width: w, height: w }, { rgb: [10, 20, 30], edge: 2 });
     const alpha = (x: number, y: number) => out[(y * w + x) * 4 + 3];
     expect(alpha(0, 4)).toBe(128); // touches the image border only: interior, not edge
     expect(alpha(2, 4)).toBe(255); // the real boundary
-    expect(alpha(3, 4)).toBe(230); // halo
+    expect(alpha(3, 4)).toBe(0); // right outside it
     expect(alpha(6, 4)).toBe(0);
   });
   it("clamps alpha to 0..1", () => {

@@ -126,7 +126,10 @@ def main() -> int:
                 # a box, not a click: a click on one wedge tends to select that wedge alone
                 cx, cy = ball_center(0)
                 prompt = {"type": "box", "box": [cx - R - 4, cy - R - 4, cx + R + 4, cy + R + 4]}
-                client.post(f"/api/clips/{clip_id}/accept", json={"frame": 0, "prompt": prompt, "class_id": cls["id"]}).raise_for_status()
+                client.post(
+                    f"/api/clips/{clip_id}/accept",
+                    json={"frame": 0, "prompt": prompt, "object_id": None, "class_id": cls["id"]},
+                ).raise_for_status()
                 started = client.post(f"/api/clips/{clip_id}/propagate", json={"from_frame": 0, "direction": "forward"})
                 started.raise_for_status()
                 result = wait_job(client, started.json()["job_id"])

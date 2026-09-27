@@ -61,7 +61,65 @@ afterEach(() => {
 
 const formatNames = ["YOLO segmentation", "YOLO detection", "COCO", "Mask images"];
 
+const threeClasses: Project = {
+  ...project,
+  classes: [
+    { id: 0, name: "connector", color: "#e6194b" },
+    { id: 1, name: "cup", color: "#3cb44b" },
+    { id: 2, name: "bowl", color: "#ffe119" },
+  ],
+};
+const obj = (id: number, class_id: number) => ({ id, class_id, keyframes: [], propagated_ranges: [] });
+const classClips = [
+  { ...clipA, objects: [obj(1, 1), obj(2, 1), obj(3, 0)] },
+  { ...clipB, objects: [obj(1, 2)] },
+  clipC,
+];
+const classRow = (name: string) => screen.getByRole("checkbox", { name: `Class ${name}` }).closest("label")!;
+
 describe("Export page", () => {
+  it("lists every class ticked, with its object count over the included clips, and sends null for all", async () => {
+    m.listProjects.mockResolvedValue([threeClasses]);
+    m.listClips.mockResolvedValue(classClips);
+    m.startExport.mockResolvedValue({ job_id: "j1" });
+    renderPage();
+    await screen.findByText("a.mp4");
+    for (const name of ["connector", "cup", "bowl"]) {
+      expect((screen.getByRole("checkbox", { name: `Class ${name}` }) as HTMLInputElement).checked).toBe(true);
+    }
+    expect(classRow("connector").textContent).toContain("1 object");
+    expect(classRow("cup").textContent).toContain("2 objects");
+    expect(classRow("bowl").textContent).toContain("1 object");
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Include b.mp4" }));
+    expect(classRow("bowl").textContent).toContain("0 objects");
+
+    fireEvent.click(screen.getByRole("button", { name: "Export 2 clips" }));
+    await waitFor(() => expect(m.startExport).toHaveBeenCalled());
+    expect(m.startExport.mock.calls[0][1].options.classes).toBeNull();
+  });
+
+  it("sends only the ticked classes, in class order", async () => {
+    m.listProjects.mockResolvedValue([threeClasses]);
+    m.listClips.mockResolvedValue(classClips);
+    m.startExport.mockResolvedValue({ job_id: "j1" });
+    renderPage();
+    await screen.findByText("a.mp4");
+    fireEvent.click(screen.getByRole("checkbox", { name: "Class connector" }));
+    fireEvent.click(screen.getByRole("button", { name: "Export 3 clips" }));
+    await waitFor(() => expect(m.startExport).toHaveBeenCalled());
+    expect(m.startExport.mock.calls[0][1].options.classes).toEqual([1, 2]);
+  });
+
+  it("says why it cannot start when no class is ticked", async () => {
+    m.listProjects.mockResolvedValue([threeClasses]);
+    m.listClips.mockResolvedValue(classClips);
+    renderPage();
+    await screen.findByText("a.mp4");
+    for (const name of ["connector", "cup", "bowl"]) fireEvent.click(screen.getByRole("checkbox", { name: `Class ${name}` }));
+    expect(screen.getByText("Choose at least one class.")).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Export 3 clips" }) as HTMLButtonElement).disabled).toBe(true);
+  });
   it("selects every clip, pre-selects the newest for validation, and starts the export with exactly what is shown", async () => {
     m.startExport.mockResolvedValue({ job_id: "j1" });
     renderPage();
@@ -86,9 +144,47 @@ describe("Export page", () => {
       expect(m.startExport).toHaveBeenCalledWith("p1", {
         clips: ["a", "b", "c"],
         formats: ["yolo_seg", "yolo_det", "coco", "masks"],
-        options: { split_mode: "per_clip", val_clips: ["b"], val_fraction: 0.2, stride: 1, include_empty: true },
+        options: { split_mode: "per_clip", val_clips: ["b"], val_fraction: 0.2, stride: 1, include_empty: true, classes: null },
+        name: null,
       }),
     );
+  });
+
+  it("names the dataset, showing the resulting folder id, and sends it with the export", async () => {
+    m.startExport.mockResolvedValue({ job_id: "j1" });
+    renderPage();
+    await screen.findByText("a.mp4");
+
+    expect(screen.getByText(/Folder: a timestamp, e\.g\. 20260926-104433-…/)).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText("Dataset name"), { target: { value: "Cups v2" } });
+    expect(screen.getByText("Folder: cups-v2 (a number is added if it is taken)")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Export 3 clips" }));
+    await waitFor(() =>
+      expect(m.startExport).toHaveBeenCalledWith(
+        "p1",
+        expect.objectContaining({ name: "Cups v2" }),
+      ),
+    );
+  });
+
+  it("sends no name for a blank field, and for one that slugs to nothing", async () => {
+    m.startExport.mockResolvedValue({ job_id: "j1" });
+    renderPage();
+    await screen.findByText("a.mp4");
+
+    fireEvent.click(screen.getByRole("button", { name: "Export 3 clips" }));
+    await waitFor(() => expect(m.startExport).toHaveBeenCalledWith("p1", expect.objectContaining({ name: null })));
+
+    cleanup();
+    m.startExport.mockClear();
+    renderPage();
+    await screen.findByText("a.mp4");
+    fireEvent.change(screen.getByLabelText("Dataset name"), { target: { value: "杯子" } });
+    expect(screen.getByText(/Folder: a timestamp, e\.g\. 20260926-104433-…/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Export 3 clips" }));
+    await waitFor(() => expect(m.startExport).toHaveBeenCalledWith("p1", expect.objectContaining({ name: "杯子" })));
   });
 
   it("lets the user move a clip between training and validation", async () => {
@@ -178,6 +274,38 @@ describe("Export page", () => {
     expect(screen.getByText("32 training images, 2 without a mask")).toBeTruthy();
     expect(screen.getByText("8 validation images")).toBeTruthy();
     expect(screen.queryByText(/hardlinks/)).toBeNull();
+  });
+
+  it("shows the dataset name above the folder path once written, and nothing when it has none", async () => {
+    m.startExport.mockResolvedValue({ job_id: "j1" });
+    renderPage();
+    await screen.findByText("a.mp4");
+    fireEvent.click(screen.getByRole("button", { name: "Export 3 clips" }));
+    await waitFor(() => expect(FakeSocket.last?.url).toMatch(/j1$/));
+    act(() =>
+      FakeSocket.last!.onmessage!({
+        data: JSON.stringify({
+          type: "done", seq: 0, export_id: "cups-v2", name: "Cups v2", path: "/data/exports/cups-v2", formats: ["coco"],
+          counts: { train: { images: 4, annotated: 4, empty: 0 }, val: { images: 1, annotated: 1, empty: 0 } }, linked: true,
+        }),
+      }),
+    );
+    expect(await screen.findByDisplayValue("/data/exports/cups-v2")).toBeTruthy();
+    expect(screen.getByText("Cups v2")).toBeTruthy();
+
+    m.startExport.mockResolvedValue({ job_id: "j2" });
+    fireEvent.click(screen.getByRole("button", { name: "Export 3 clips" }));
+    await waitFor(() => expect(FakeSocket.last?.url).toMatch(/j2$/));
+    act(() =>
+      FakeSocket.last!.onmessage!({
+        data: JSON.stringify({
+          type: "done", seq: 0, export_id: "e2", name: null, path: "/data/exports/e2", formats: ["coco"],
+          counts: { train: { images: 4, annotated: 4, empty: 0 }, val: { images: 1, annotated: 1, empty: 0 } }, linked: true,
+        }),
+      }),
+    );
+    expect(await screen.findByDisplayValue("/data/exports/e2")).toBeTruthy();
+    expect(screen.queryByText("Cups v2")).toBeNull();
   });
 
   it("warns when no clip is left for validation, without blocking the export", async () => {

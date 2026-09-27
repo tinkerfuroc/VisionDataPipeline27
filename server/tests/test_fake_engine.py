@@ -21,10 +21,10 @@ def test_satisfies_protocol():
 
 def test_propagate_shifts_seed_right_by_dx_per_frame():
     eng = FakeEngine(dx=3)
-    out = list(eng.propagate(_frames(4), _seed()))
+    out = list(eng.propagate(_frames(4), {1: _seed()}))
     assert [o for o, _ in out] == [0, 1, 2, 3]
-    assert np.array_equal(out[0][1], _seed())
-    _ys, xs = np.where(out[2][1])
+    assert np.array_equal(out[0][1][1], _seed())
+    _ys, xs = np.where(out[2][1][1])
     assert (xs.min(), xs.max() + 1) == (16, 36)  # 10 + 2*3
     assert eng.propagate_calls == [4]
 
@@ -33,15 +33,15 @@ def test_propagate_reports_none_where_is_empty_says_so():
     frames = _frames(4)
     frames[2][0, 0, 0] = 255
     eng = FakeEngine(is_empty=lambda fr: fr[0, 0, 0] == 255)
-    out = dict(eng.propagate(frames, _seed()))
-    assert out[2] is None and out[1] is not None and out[3] is not None
+    out = dict(eng.propagate(frames, {1: _seed()}))
+    assert out[2][1] is None and out[1][1] is not None and out[3][1] is not None
 
 
 def test_propagate_oom_when_chunk_too_large():
     eng = FakeEngine(oom_if_more_than=5)
     with pytest.raises(ChunkOOMError):
-        list(eng.propagate(_frames(6), _seed()))
-    assert len(list(eng.propagate(_frames(5), _seed()))) == 5
+        list(eng.propagate(_frames(6), {1: _seed()}))
+    assert len(list(eng.propagate(_frames(5), {1: _seed()}))) == 5
 
 
 def test_propagate_honours_cancel():
@@ -51,7 +51,7 @@ def test_propagate_honours_cancel():
     def cancel():
         return len(seen) >= 2
 
-    for off, _ in eng.propagate(_frames(10), _seed(), cancel_cb=cancel):
+    for off, _ in eng.propagate(_frames(10), {1: _seed()}, cancel_cb=cancel):
         seen.append(off)
     assert seen == [0, 1]
 
@@ -95,9 +95,36 @@ def test_propagate_yields_none_once_the_shifted_mask_shrinks_below_min_area():
     # still nonzero -- so this exercises the degenerate-mask filter, not the "shifted off
     # the frame entirely" all-zero case that was already handled.
     eng = FakeEngine(dx=27)
-    out = dict(eng.propagate(_frames(5), _seed()))
-    assert out[0] is not None and out[1] is not None and out[2] is not None and out[3] is not None
-    assert out[4] is None
+    out = dict(eng.propagate(_frames(5), {1: _seed()}))
+    assert out[0][1] is not None and out[1][1] is not None and out[2][1] is not None and out[3][1] is not None
+    assert out[4][1] is None
+
+
+def test_tracks_every_seed_independently():
+    eng = FakeEngine(dx=2)
+    a = _seed()
+    b = np.zeros_like(a)
+    b[40:50, 60:70] = True
+    c = np.zeros_like(a)
+    c[5:20, 90:110] = True
+    out = dict(eng.propagate(_frames(3), {1: a, 5: b, 7: c}))
+    assert set(out[2]) == {1, 5, 7}
+    assert np.array_equal(out[2][1][:, 4:], a[:, :-4]) and np.array_equal(out[2][5][:, 4:], b[:, :-4])
+    assert eng.seed_calls == [[1, 5, 7]]
+
+
+def test_per_object_emptiness_hook():
+    eng = FakeEngine(is_empty_obj=lambda frame, oid: oid == 5)
+    b = _seed()
+    out = dict(eng.propagate(_frames(2), {1: _seed(), 5: b}))
+    assert out[1][1] is not None and out[1][5] is None
+
+
+@pytest.mark.parametrize("seeds", [{}, {1: np.zeros((60, 120), dtype=bool)}, {1: np.ones((5, 5), dtype=bool)}])
+def test_bad_seeds_raise_lazily(seeds):
+    gen = FakeEngine().propagate(_frames(2), seeds)  # nothing raised yet
+    with pytest.raises(ValueError):
+        next(gen)
 
 
 def test_fake_engine_knobs_accept_the_speck_box():
@@ -115,11 +142,11 @@ def test_prepare_returns_the_frames_and_propagate_accepts_them():
     prepared = eng.prepare(frames)
     assert isinstance(prepared, list) and len(prepared) == 4 and prepared is not frames
     assert eng.prepare_calls == [4]
-    raw = [(o, None if m is None else m.copy()) for o, m in eng.propagate(frames, seed)]
-    via_prepared = list(eng.propagate(prepared, seed))
+    raw = [(o, {k: (None if m is None else m.copy()) for k, m in d.items()}) for o, d in eng.propagate(frames, {1: seed})]
+    via_prepared = list(eng.propagate(prepared, {1: seed}))
     assert [o for o, _ in raw] == [o for o, _ in via_prepared]
     for (_, a), (_, b) in zip(raw, via_prepared):
-        assert (a is None) == (b is None)
-        if a is not None:
-            assert np.array_equal(a, b)
+        assert (a[1] is None) == (b[1] is None)
+        if a[1] is not None:
+            assert np.array_equal(a[1], b[1])
     assert eng.propagate_calls == [4, 4]

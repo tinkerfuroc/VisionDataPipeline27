@@ -1,5 +1,5 @@
 import type {
-  AugmentRequest, BackgroundPool, Candidate, ClassDef, ClipDetail, ClipSummary, Direction, ExportInfo, ExportRequest, ExportSample, Health, JobSnapshot, PredictionFilter, PredictionPage, Project, PromptSpec, Run, RunDetail, StartRunsRequest, TrainStatus,
+  AcceptResult, AugmentRequest, BackgroundPool, Candidate, ClassDef, ClipDetail, ClipSummary, Direction, ExportInfo, ExportRequest, ExportSample, Health, JobSnapshot, MaskResult, ObjectSelection, PredictionFilter, PredictionPage, Project, PromptSpec, Run, RunDetail, StartRunsRequest, TrainStatus, WriteTarget,
 } from "./types";
 
 /** The `job_id` the server reports while a prompt/accept/clear-range call holds the GPU lease. */
@@ -135,9 +135,21 @@ const post = (body?: unknown): RequestInit =>
     ? { method: "POST" }
     : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
 
+const patch = (body: unknown): RequestInit => ({
+  method: "PATCH",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify(body),
+});
+
+/** `object_id` is always sent (the server requires the key; null = a new object); `class_id` only for a new object. */
+const targetBody = (t: WriteTarget) =>
+  t.objectId === null ? { object_id: null, class_id: t.classId } : { object_id: t.objectId };
+
 export const frameUrl = (clipId: string, idx: number) => `/api/clips/${clipId}/frames/${idx}`;
 export const thumbUrl = (clipId: string, idx: number) => `/api/clips/${clipId}/thumbs/${idx}`;
-export const maskUrl = (clipId: string, idx: number, version: string) => `/api/clips/${clipId}/masks/${idx}?v=${version}`;
+/** One object's stored mask on one frame; `version` busts the cache when the mask is rewritten in place. */
+export const objectMaskUrl = (clipId: string, objectId: number, idx: number, version: string) =>
+  `/api/clips/${clipId}/objects/${objectId}/masks/${idx}?v=${version}`;
 export const weightsUrl = (runId: string, file: "best.pt" | "best.onnx") => `/api/train/runs/${runId}/weights/${file}`;
 export const exportImageUrl = (exportId: string, split: "train" | "val", name: string) =>
   `/api/exports/${exportId}/images/${split}/${encodeURIComponent(name)}`;
@@ -152,6 +164,8 @@ export const api = {
   createProject: (name: string) => request<Project>("/api/projects", post({ name })),
   getProject: (id: string) => request<Project>(`/api/projects/${id}`),
   addClass: (projectId: string, name: string) => request<ClassDef>(`/api/projects/${projectId}/classes`, post({ name })),
+  setClassColor: (projectId: string, classId: number, color: string) =>
+    request<ClassDef>(`/api/projects/${projectId}/classes/${classId}`, patch({ color })),
   listClips: (projectId: string) => request<ClipSummary[]>(`/api/projects/${projectId}/clips`),
 
   importFrames: (projectId: string, body: { path: string; fps: number; stride: number }) =>
@@ -161,31 +175,40 @@ export const api = {
   getClip: (id: string) => request<ClipDetail>(`/api/clips/${id}`),
   deleteClip: (id: string) => request<void>(`/api/clips/${id}`, { method: "DELETE" }),
 
-  prompt: (clipId: string, frame: number, prompt: PromptSpec) =>
-    request<{ candidates: Candidate[] }>(`/api/clips/${clipId}/prompt`, post({ frame, prompt })),
-  accept: (clipId: string, frame: number, prompt: PromptSpec, opts: { classId?: number; candidate?: number } = {}) =>
-    request<ClipDetail>(
+  /** `objectId`: a clicks prompt without a box derives its box from that object's mask here; null = a fresh one */
+  prompt: (clipId: string, frame: number, prompt: PromptSpec, objectId: number | null) =>
+    request<{ candidates: Candidate[] }>(`/api/clips/${clipId}/prompt`, post({ frame, prompt, object_id: objectId })),
+  /** `candidates` (a new object only): each listed candidate becomes its own new object */
+  accept: (
+    clipId: string, frame: number, prompt: PromptSpec, target: WriteTarget,
+    opts: { candidate?: number; candidates?: number[] } = {},
+  ) =>
+    request<AcceptResult>(
       `/api/clips/${clipId}/accept`,
       post({
         frame,
         prompt,
-        ...(opts.classId === undefined ? {} : { class_id: opts.classId }),
+        ...targetBody(target),
         candidate: opts.candidate ?? 0,
+        ...(opts.candidates === undefined ? {} : { candidates: opts.candidates }),
       }),
     ),
-  setMask: (clipId: string, frame: number, maskPngB64: string, opts: { classId?: number } = {}) =>
-    request<ClipDetail>(
-      `/api/clips/${clipId}/mask`,
-      post({ frame, mask_png_b64: maskPngB64, ...(opts.classId === undefined ? {} : { class_id: opts.classId }) }),
-    ),
-  propagate: (clipId: string, fromFrame: number, direction: Direction) =>
-    request<{ job_id: string }>(`/api/clips/${clipId}/propagate`, post({ from_frame: fromFrame, direction })),
+  setMask: (clipId: string, frame: number, maskPngB64: string, target: WriteTarget) =>
+    request<MaskResult>(`/api/clips/${clipId}/mask`, post({ frame, mask_png_b64: maskPngB64, ...targetBody(target) })),
+  propagate: (clipId: string, fromFrame: number, direction: Direction, objects: ObjectSelection = "all") =>
+    request<{ job_id: string }>(`/api/clips/${clipId}/propagate`, post({ from_frame: fromFrame, direction, objects })),
 
   deleteFrame: (clipId: string, idx: number) => request<ClipDetail>(`/api/clips/${clipId}/frames/${idx}/delete`, post()),
   restoreFrame: (clipId: string, idx: number) => request<ClipDetail>(`/api/clips/${clipId}/frames/${idx}/restore`, post()),
   prune: (clipId: string, from: number) => request<ClipDetail>(`/api/clips/${clipId}/prune`, post({ from })),
-  clearRange: (clipId: string, start: number, end: number) =>
-    request<ClipDetail>(`/api/clips/${clipId}/clear-range`, post({ start, end })),
+  clearRange: (clipId: string, start: number, end: number, objects: ObjectSelection = "all") =>
+    request<ClipDetail>(`/api/clips/${clipId}/clear-range`, post({ start, end, objects })),
+  /** relabel at once; allowed during a propagation (it touches no mask) */
+  relabelObject: (clipId: string, objectId: number, classId: number) =>
+    request<ClipDetail>(`/api/clips/${clipId}/objects/${objectId}`, patch({ class_id: classId })),
+  /** 409 while a propagation or an export runs */
+  deleteObject: (clipId: string, objectId: number) =>
+    request<ClipDetail>(`/api/clips/${clipId}/objects/${objectId}`, { method: "DELETE" }),
 
   getJob: (id: string) => request<JobSnapshot>(`/api/jobs/${id}`),
   cancelJob: (id: string) => request<JobSnapshot>(`/api/jobs/${id}`, { method: "DELETE" }),
@@ -195,6 +218,8 @@ export const api = {
 
   trainStatus: () => request<TrainStatus>("/api/train/status"),
   listExports: () => request<ExportInfo[]>("/api/exports"),
+  renameExport: (exportId: string, name: string | null) =>
+    request<ExportInfo>(`/api/exports/${exportId}`, patch({ name })),
   listRuns: () => request<Run[]>("/api/train/runs"),
   getRun: (id: string) => request<RunDetail>(`/api/train/runs/${id}`),
   startRuns: (body: StartRunsRequest) => request<{ run_ids: string[] }>("/api/train/runs", post(body)),

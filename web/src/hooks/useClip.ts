@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api/rest";
 import type { ClipDetail } from "../api/types";
-import { applyFrameEvent } from "../lib/timeline";
+import { patchObjectFrames, type FrameEvent } from "../lib/objects";
 
 export type ClipHandle = {
   detail: ClipDetail | null;
@@ -11,10 +11,13 @@ export type ClipHandle = {
   reload: () => Promise<void>;
   /** adopt the ClipDetail a mutation returned; `masksChanged` re-versions every mask URL */
   apply: (detail: ClipDetail, masksChanged: boolean) => void;
-  /** a propagation job wrote (or cleared) this frame's mask */
-  patchFrame: (frame: number, hasMask: boolean) => void;
-  /** apply a batch of frame events in one update (coalesces a burst of streamed `frame` events into one render) */
-  patchFrames: (events: { frame: number; hasMask: boolean }[]) => void;
+  /** apply a function against whatever detail is current when it runs, not a snapshot captured earlier (so it
+   * cannot roll back a lane patch that landed while an awaited request was in flight); never changes masks */
+  update: (fn: (detail: ClipDetail) => ClipDetail) => void;
+  /** apply a batch of propagation frame events in one update: each listed object's lane follows its event, the
+   * clip-level `states` are recomputed from all lanes, and every event's frame gets a new mask version (coalesces a
+   * burst of streamed events into one render) */
+  patchFrames: (events: FrameEvent[]) => void;
   /** cache-busting version for a frame's mask URL */
   maskVersion: (frame: number) => string;
 };
@@ -64,25 +67,23 @@ export function useClip(clipId: string): ClipHandle {
     setTick((t) => t + 1);
   }, []);
 
-  const patchFrames = useCallback((events: { frame: number; hasMask: boolean }[]) => {
-    if (events.length === 0) return;
-    const frames = versions.current.frames;
-    for (const { frame } of events) frames.set(frame, (frames.get(frame) ?? 0) + 1);
-    setDetail((d) => {
-      if (d === null) return d;
-      let states = d.states;
-      for (const { frame, hasMask } of events) states = applyFrameEvent(states, frame, hasMask);
-      return states === d.states ? d : { ...d, states };
-    });
+  const update = useCallback((fn: (detail: ClipDetail) => ClipDetail) => {
+    setDetail((d) => (d === null ? d : fn(d)));
     setTick((t) => t + 1);
   }, []);
 
-  const patchFrame = useCallback((frame: number, hasMask: boolean) => patchFrames([{ frame, hasMask }]), [patchFrames]);
+  const patchFrames = useCallback((events: FrameEvent[]) => {
+    if (events.length === 0) return;
+    const frames = versions.current.frames;
+    for (const { frame } of events) frames.set(frame, (frames.get(frame) ?? 0) + 1);
+    setDetail((d) => (d === null ? d : patchObjectFrames(d, events)));
+    setTick((t) => t + 1);
+  }, []);
 
   const maskVersion = useCallback(
     (frame: number) => `${versions.current.epoch}.${versions.current.frames.get(frame) ?? 0}`,
     [],
   );
 
-  return { detail, error, refreshError, reload, apply, patchFrame, patchFrames, maskVersion };
+  return { detail, error, refreshError, reload, apply, update, patchFrames, maskVersion };
 }

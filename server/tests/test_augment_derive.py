@@ -7,8 +7,16 @@ from pathlib import Path
 import cv2
 import numpy as np
 import pytest
-from vsp.augment.derive import AugmentOptions, check_augment, run_augment
+from vsp.augment.derive import (
+    AugmentOptions,
+    _cutouts_and_sizes,
+    _merged_format_summaries,
+    check_augment,
+    run_augment,
+)
 from vsp.export import ExportCancelled, ExportOptions, run_export
+from vsp.export.base import ExportSummary
+from vsp.export.mask_png import MaskSummary
 from vsp.labeling.errors import BadRequest
 from vsp.store import NotFound
 from vsp.store.models import LabelObject
@@ -178,6 +186,49 @@ def test_check_augment_errors(store, make_clip, tmp_path):
         check_augment(data_root, with_masks["export_id"], AugmentOptions(per_image=11))
 
 
+def test_augmented_copy_of_a_named_source_gets_a_derived_name(store, make_clip, tmp_path):
+    project, clip = _labelled(store, make_clip)
+    data_root = tmp_path / "data"
+    src = _export(store, project, clip, ["yolo_seg", "masks"], data_root)
+    _make_pool(data_root)
+    manifest_path = Path(src["path"]) / "export.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["name"] = "Cups v2"
+    manifest_path.write_text(json.dumps(manifest))
+
+    result = run_augment(data_root, src["export_id"], AugmentOptions(per_image=3, seed=0))
+    assert result["name"] == "Cups v2 ×3 augmented"
+    new_manifest = json.loads((Path(result["path"]) / "export.json").read_text())
+    assert new_manifest["name"] == "Cups v2 ×3 augmented"
+
+
+def test_augmented_copy_name_is_truncated_to_stay_within_max_name(store, make_clip, tmp_path):
+    project, clip = _labelled(store, make_clip)
+    data_root = tmp_path / "data"
+    src = _export(store, project, clip, ["yolo_seg", "masks"], data_root)
+    _make_pool(data_root)
+    manifest_path = Path(src["path"]) / "export.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["name"] = "x" * 80  # an already-max-length source name
+    manifest_path.write_text(json.dumps(manifest))
+
+    result = run_augment(data_root, src["export_id"], AugmentOptions(per_image=3, seed=0))
+    assert len(result["name"]) <= 80
+    assert result["name"].endswith(" ×3 augmented")
+    new_manifest = json.loads((Path(result["path"]) / "export.json").read_text())
+    assert new_manifest["name"] == result["name"]
+
+
+def test_augmented_copy_of_an_unnamed_source_is_named_from_its_id(store, make_clip, tmp_path):
+    project, clip = _labelled(store, make_clip)
+    data_root = tmp_path / "data"
+    src = _export(store, project, clip, ["yolo_seg", "masks"], data_root)
+    _make_pool(data_root)
+
+    result = run_augment(data_root, src["export_id"], AugmentOptions(per_image=3, seed=0))
+    assert result["name"] == f"{src['export_id']} ×3 augmented"
+
+
 def test_list_exports_reports_formats_and_derived_from(store, make_clip, tmp_path):
     project, clip = _labelled(store, make_clip)
     data_root = tmp_path / "data"
@@ -301,3 +352,233 @@ def test_progress_is_monotonic_with_a_fixed_total(store, make_clip, tmp_path):
     assert len({total for _, total in seen}) == 1  # the total is fixed up front, never moved
     dones = [done for done, _ in seen]
     assert dones == sorted(dones)  # done never goes backwards
+
+
+def test_a_derived_copy_keeps_the_class_map_and_the_export_ids(store, make_clip, tmp_path):
+    project, clip = make_clip(n_frames=6, classes=("cup", "bowl", "plate"))
+    clip.objects = [LabelObject(id=1, class_id=2)]
+    store.write_clip(clip)
+    mask = np.zeros((60, 120), bool)
+    mask[10:40, 20:60] = True
+    for i in range(6):
+        store.write_mask(clip.id, 1, i, mask)
+    data_root = tmp_path / "data"
+    src = run_export(store, project.id, [clip.id], ["yolo_seg", "masks"], ExportOptions(class_ids=(2,)),
+                     data_root / "exports")
+    _make_pool(data_root)
+    result = run_augment(data_root, src["export_id"], AugmentOptions(per_image=1, seed=0))
+    manifest = json.loads((Path(result["path"]) / "export.json").read_text())
+    assert [(c["id"], c["project_class_id"], c["name"]) for c in manifest["classes"]] == [(0, 2, "plate")]
+    assert manifest["options"]["class_ids"] == [2]
+    syn = list((Path(result["path"]) / "yolo_seg" / "labels" / "train").glob("syn_*.txt"))
+    assert syn
+    for p in syn:
+        assert {line.split()[0] for line in p.read_text().splitlines()} == {"0"}
+
+
+def test_a_source_manifest_without_project_class_id_maps_to_itself(store, make_clip, tmp_path):
+    project, clip = _labelled(store, make_clip)
+    data_root = tmp_path / "data"
+    src = _export(store, project, clip, ["yolo_seg", "masks"], data_root)
+    _make_pool(data_root)
+    manifest_path = Path(src["path"]) / "export.json"
+    old = json.loads(manifest_path.read_text())
+    for c in old["classes"]:
+        del c["project_class_id"]  # as an export written before class selection
+    del old["options"]["class_ids"]
+    manifest_path.write_text(json.dumps(old))
+
+    result = run_augment(data_root, src["export_id"], AugmentOptions(per_image=1, seed=0))
+    manifest = json.loads((Path(result["path"]) / "export.json").read_text())
+    assert [(c["id"], c["project_class_id"]) for c in manifest["classes"]] == [(0, 0)]
+    assert manifest["options"]["class_ids"] is None
+
+
+def test_merged_summaries_sum_overlap_px_and_leave_other_formats_alone():
+    counts = {"images": {"train": 4, "val": 1}, "annotations": {"train": 4, "val": 1}, "linked": True}
+    src = [{"name": "masks", **counts, "overlap_px": 30}, {"name": "yolo_seg", **counts}]
+    synth = [MaskSummary("masks", overlap_px=5), ExportSummary("yolo_seg")]
+    merged = {m["name"]: m for m in _merged_format_summaries(src, synth, True)}
+    assert merged["masks"]["overlap_px"] == 35
+    assert "overlap_px" not in merged["yolo_seg"]
+    older = _merged_format_summaries([{"name": "masks", **counts}], [MaskSummary("masks", overlap_px=0)], True)
+    assert older[0]["overlap_px"] == 0  # a source written before overlap_px counts as 0
+
+
+def test_the_derived_mask_summary_carries_the_source_overlap(store, make_clip, tmp_path):
+    project, clip = _multi(store, make_clip)
+    data_root = tmp_path / "data"
+    src = _export(store, project, clip, ["yolo_seg", "masks"], data_root)
+    _make_pool(data_root)
+    result = run_augment(data_root, src["export_id"], AugmentOptions(per_image=1, seed=0))
+    src_masks = next(f for f in json.loads((Path(src["path"]) / "export.json").read_text())["formats"]
+                     if f["name"] == "masks")
+    new_masks = next(f for f in json.loads((Path(result["path"]) / "export.json").read_text())["formats"]
+                     if f["name"] == "masks")
+    # _multi: m1&m2 share column 29 on rows 10-19 (10 px), and rows 20-29, columns 20-44 hold 2+ objects (250 px)
+    assert src_masks["overlap_px"] == 6 * 260
+    assert new_masks["overlap_px"] == src_masks["overlap_px"]  # composites never overlap: one owner per pixel
+
+
+def _train_images(src) -> int:
+    return json.loads((Path(src["path"]) / "export.json").read_text())["counts"]["train"]["images"]
+
+
+def test_cutouts_are_per_object_when_the_source_has_coco(store, make_clip, tmp_path):
+    project, clip = _multi(store, make_clip)  # two touching "a" objects and an overlapping "b" on every frame
+    data_root = tmp_path / "data"
+    formats = ["yolo_seg", "coco", "masks"]
+    src = _export(store, project, clip, formats, data_root)
+    ticks = []
+    cutouts, sizes, mode = _cutouts_and_sizes(Path(src["path"]), formats, 64, lambda: ticks.append(1))
+    n = _train_images(src)
+    assert mode == "per_object"
+    assert sizes == [(120, 60)] * n and len(ticks) == n
+    assert len(cutouts) == 3 * n
+    # paint() paints largest first and a later (smaller) object overwrites an earlier (larger) one wherever they
+    # overlap: painted order is m3 (625) then m1 (500) then m2 (420).
+    # m2 is painted last, so it wins every pixel it covers: 420 (no loss).
+    # m1 is painted before m2, so it only loses to m2: m1 ^ m2 is column 29, rows 10-29 = 1 x 20 = 20 px ->
+    # 500 - 20 = 480.
+    # m3 is painted first, so it loses to both m1 (rows 20-29 x cols 20-29 = 10 x 10 = 100 px) and m2 (rows 20-29 x
+    # cols 29-44 = 10 x 16 = 160 px); those two losses share column 29, rows 20-29 (10 px), so together they take
+    # 100 + 160 - 10 = 250 px -> 625 - 250 = 375.
+    assert sorted((c.class_id, int(c.mask.sum())) for c in cutouts[:3]) == [(0, 420), (0, 480), (1, 375)]
+
+
+def test_cutouts_keep_a_fully_contained_object_and_the_rest_of_its_host(store, make_clip, tmp_path):
+    """A screw entirely inside a board: the old `mask & (owners == 1)` rule claimed every one of the screw's
+    pixels for "more than one owner" and dropped it completely, and holed the board where the screw sat. `paint`
+    paints the board (bigger) first and the screw (smaller) on top, so the screw's cutout is its own full area
+    and the board keeps whatever is left over."""
+    project, clip = make_clip(n_frames=1, classes=("board", "screw"))
+    clip.objects = [LabelObject(id=1, class_id=0), LabelObject(id=2, class_id=1)]
+    store.write_clip(clip)
+    board = np.zeros((60, 120), bool)
+    board[5:45, 5:45] = True  # 40x40 = 1600 px
+    screw = np.zeros((60, 120), bool)
+    screw[15:25, 15:25] = True  # 10x10 = 100 px, entirely inside the board
+    store.write_mask(clip.id, 1, 0, board)
+    store.write_mask(clip.id, 2, 0, screw)
+    data_root = tmp_path / "data"
+    formats = ["yolo_seg", "coco", "masks"]
+    src = _export(store, project, clip, formats, data_root)
+
+    cutouts, _sizes, mode = _cutouts_and_sizes(Path(src["path"]), formats, 64, lambda: None)
+    assert mode == "per_object"
+    by_class = {c.class_id: int(c.mask.sum()) for c in cutouts}
+    assert by_class == {1: 100, 0: 1600 - 100}  # the screw keeps its full 10x10; the board keeps the rest
+
+
+def test_cutouts_restore_a_hole_from_the_mask_png(store, make_clip, tmp_path):
+    """COCO polygons are outer contours only (`mask_to_polygons` uses `RETR_EXTERNAL`): a ring's polygon,
+    refilled by `polygons_to_mask`, is a solid square with its hole filled in. Intersecting the painted canvas
+    with the semantic `masks` PNG (which keeps the true, holed mask) restores the hole; a dot sitting inside
+    that hole still gets its own full cutout, since `paint` puts it on top of the (reconstructed, hole-filled)
+    ring."""
+    project, clip = make_clip(n_frames=1, classes=("ring", "dot"))
+    clip.objects = [LabelObject(id=1, class_id=0), LabelObject(id=2, class_id=1)]
+    store.write_clip(clip)
+    ring = np.zeros((60, 120), bool)
+    ring[10:50, 10:50] = True  # 40x40 outer = 1600 px
+    ring[20:34, 20:34] = False  # 14x14 hole = 196 px -> the ring itself is 1600 - 196 = 1404 px
+    dot = np.zeros((60, 120), bool)
+    dot[22:32, 22:32] = True  # 10x10 = 100 px, entirely inside the hole
+    store.write_mask(clip.id, 1, 0, ring)
+    store.write_mask(clip.id, 2, 0, dot)
+    data_root = tmp_path / "data"
+    formats = ["yolo_seg", "coco", "masks"]
+    src = _export(store, project, clip, formats, data_root)
+
+    cutouts, _sizes, mode = _cutouts_and_sizes(Path(src["path"]), formats, 64, lambda: None)
+    assert mode == "per_object"
+    by_class = {c.class_id: int(c.mask.sum()) for c in cutouts}
+    assert int(ring.sum()) == 1404
+    assert by_class[0] == 1404  # cut without the (polygon-filled) hole, matching the ring mask's own pixel count
+    assert by_class[1] == 100  # the dot keeps its full cutout
+
+
+def test_cutouts_resolve_shared_pixels_per_class_a_washer_keeps_its_hole_on_a_board(store, make_clip, tmp_path):
+    """A washer (a ring) lying on a larger board of ANOTHER class: the real (semantic PNG) mask shows the board
+    through the washer's hole, because the board is painted first (largest first) and the washer -- smaller, and
+    with a genuine hole -- is painted on top of it, leaving the hole showing whatever is under it. Resolving
+    shared pixels one class at a time (instead of on one canvas shared by every object in the frame) keeps that
+    hole: the washer's own canvas is built only from the washer's (outer-contour, hole-filled) polygon, but is
+    then intersected only with the washer's OWN class in the semantic PNG, so the board's pixels in the hole are
+    never claimed by the washer."""
+    project, clip = make_clip(n_frames=1, classes=("washer", "board"))
+    clip.objects = [LabelObject(id=1, class_id=0), LabelObject(id=2, class_id=1)]
+    store.write_clip(clip)
+    board = np.zeros((60, 120), bool)
+    board[5:55, 5:105] = True  # 50x100 = 5000 px, covers the washer's whole bounding box
+    washer = np.zeros((60, 120), bool)
+    washer[10:50, 10:50] = True  # 40x40 outer = 1600 px
+    washer[20:40, 20:40] = False  # 20x20 hole = 400 px -> the washer itself is 1600 - 400 = 1200 px
+    store.write_mask(clip.id, 1, 0, washer)
+    store.write_mask(clip.id, 2, 0, board)
+    data_root = tmp_path / "data"
+    formats = ["yolo_seg", "coco", "masks"]
+    src = _export(store, project, clip, formats, data_root)
+
+    cutouts, _sizes, mode = _cutouts_and_sizes(Path(src["path"]), formats, 64, lambda: None)
+    assert mode == "per_object"
+    by_class = {c.class_id: int(c.mask.sum()) for c in cutouts}
+    assert int(washer.sum()) == 1200
+    assert by_class[0] == 1200  # the washer's hole is restored: the board's pixels there are not counted as its own
+    assert by_class[1] == 5000 - 1200  # 3800: the board's full area minus the ring (the hole's 400 px stay board's)
+
+
+def test_cutouts_still_leak_a_hole_onto_a_host_of_the_same_class(store, make_clip, tmp_path):
+    """Known remaining limit: a holed object lying on a larger object of its OWN class still carries the host's
+    pixels through its hole. The semantic PNG only records a class per pixel, not an instance, so once two
+    objects share a class it cannot tell them apart in the hole; and per-class canvases are still built from
+    COCO's outer-contour (hole-filled) polygons, so the same-class canvas fills the hole in too. Resolving per
+    class (this change) fixes a DIFFERENT class showing through a hole; it cannot fix this one, since the export
+    itself no longer distinguishes the two objects once they share a class."""
+    project, clip = make_clip(n_frames=1, classes=("part",))
+    clip.objects = [LabelObject(id=1, class_id=0), LabelObject(id=2, class_id=0)]
+    store.write_clip(clip)
+    board = np.zeros((60, 120), bool)
+    board[5:55, 5:105] = True  # 50x100 = 5000 px, covers the washer's whole bounding box
+    washer = np.zeros((60, 120), bool)
+    washer[10:50, 10:50] = True  # 40x40 outer = 1600 px
+    washer[20:40, 20:40] = False  # 20x20 hole = 400 px -> the washer itself is 1600 - 400 = 1200 px
+    store.write_mask(clip.id, 1, 0, washer)
+    store.write_mask(clip.id, 2, 0, board)
+    data_root = tmp_path / "data"
+    formats = ["yolo_seg", "coco", "masks"]
+    src = _export(store, project, clip, formats, data_root)
+
+    cutouts, _sizes, mode = _cutouts_and_sizes(Path(src["path"]), formats, 64, lambda: None)
+    assert mode == "per_object"
+    areas = sorted(int(c.mask.sum()) for c in cutouts)
+    # both objects are class 0, so they can't be told apart by class_id here: the washer's cutout is its full
+    # 1600 px outer square (its hole wrongly filled in with the board's own pixels) and the board keeps only
+    # what the washer's (filled) footprint left it, 5000 - 1600 = 3400 -- not the correct 1200 / 3800 split.
+    assert areas == [1600, 3400]
+
+
+def test_cutouts_fall_back_to_class_regions_without_coco(store, make_clip, tmp_path):
+    project, clip = _multi(store, make_clip)
+    data_root = tmp_path / "data"
+    formats = ["yolo_seg", "masks"]
+    src = _export(store, project, clip, formats, data_root)
+    cutouts, _sizes, mode = _cutouts_and_sizes(Path(src["path"]), formats, 64, lambda: None)
+    assert mode == "per_class_region"
+    assert len(cutouts) == 2 * _train_images(src)
+    # the two touching "a" objects come out as one 20x45 region; "b" keeps only what the mask PNG shows of it
+    assert sorted((c.class_id, int(c.mask.sum())) for c in cutouts[:2]) == [(0, 900), (1, 375)]
+
+
+def test_the_derived_manifest_records_how_cutouts_were_made(store, make_clip, tmp_path):
+    project, clip = _labelled(store, make_clip)
+    data_root = tmp_path / "data"
+    with_coco = _export(store, project, clip, ["yolo_seg", "coco", "masks"], data_root)
+    without = _export(store, project, clip, ["yolo_seg", "masks"], data_root)
+    _make_pool(data_root)
+    per_object = run_augment(data_root, with_coco["export_id"], AugmentOptions(per_image=1, seed=0))
+    fallback = run_augment(data_root, without["export_id"], AugmentOptions(per_image=1, seed=0))
+    assert per_object["cutouts"] == "per_object" and fallback["cutouts"] == "per_class_region"
+    assert json.loads((Path(per_object["path"]) / "export.json").read_text())["augment"]["cutouts"] == "per_object"
+    assert json.loads((Path(fallback["path"]) / "export.json").read_text())["augment"]["cutouts"] == \
+        "per_class_region"

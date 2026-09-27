@@ -5,7 +5,13 @@ import uuid
 import cv2
 import numpy as np
 import pytest
-from vsp.export.plan import ExportOptions, build_plan, check_request
+from vsp.export.plan import (
+    ExportOptions,
+    build_plan,
+    check_request,
+    classes_from_manifest,
+    options_from_manifest,
+)
 from vsp.ingest import FrameDirSource, import_clip
 from vsp.labeling.errors import BadRequest
 from vsp.store.models import LabelObject
@@ -148,3 +154,93 @@ def test_duplicate_formats_are_refused(store, make_clip):
     project, clip = make_clip(n_frames=4)
     with pytest.raises(BadRequest, match="listed twice"):
         check_request(store, project.id, [clip.id], ["coco", "coco"], ExportOptions())
+
+
+def _cup_and_plate(store, make_clip, n=4):
+    """Classes cup (0), bowl (1), plate (2); a cup on every frame, a plate on the first half; no bowl anywhere."""
+    project, clip = make_clip(n_frames=n, classes=("cup", "bowl", "plate"))
+    clip.objects = [LabelObject(id=1, class_id=0), LabelObject(id=2, class_id=2)]
+    store.write_clip(clip)
+    cup = np.zeros((60, 120), bool)
+    cup[10:30, 5:30] = True
+    plate = np.zeros((60, 120), bool)
+    plate[10:30, 70:100] = True
+    for i in range(n):
+        store.write_mask(clip.id, 1, i, cup)
+    for i in range(n // 2):
+        store.write_mask(clip.id, 2, i, plate)
+    return project, store.read_clip(clip.id)
+
+
+def test_selected_classes_are_renumbered_in_project_class_order(store, make_clip):
+    project, clip = _cup_and_plate(store, make_clip)
+    only_plate = build_plan(store, project.id, [clip.id], ExportOptions(val_fraction=0.0, class_ids=(2,)))
+    assert [(c.id, c.name) for c in only_plate.classes] == [(0, "plate")]
+    assert only_plate.class_map == {0: 2}
+    assert only_plate.options.class_ids == (2,)
+    assert [[(o.object_id, o.class_id) for o in f.objects] for f in only_plate.frames] == [[(2, 0)], [(2, 0)], [], []]
+
+    both = build_plan(store, project.id, [clip.id], ExportOptions(val_fraction=0.0, class_ids=(2, 0)))
+    assert [(c.id, c.name) for c in both.classes] == [(0, "cup"), (1, "plate")]
+    assert both.class_map == {0: 0, 1: 2}
+    assert both.options.class_ids == (0, 2)  # resolved: sorted
+    assert [(o.object_id, o.class_id) for o in both.frames[0].objects] == [(1, 0), (2, 1)]
+
+
+def test_every_class_selected_is_the_identity_map(store, make_clip):
+    project, clip = _cup_and_plate(store, make_clip)
+    plan = build_plan(store, project.id, [clip.id], ExportOptions(val_fraction=0.0))
+    assert plan.options.class_ids is None
+    assert [c.id for c in plan.classes] == [0, 1, 2] and plan.class_map == {0: 0, 1: 1, 2: 2}
+    assert [(o.object_id, o.class_id) for o in plan.frames[0].objects] == [(1, 0), (2, 2)]
+
+
+def test_dropped_objects_leave_their_frames_to_include_empty_and_the_split_follows(store, make_clip):
+    project, clip = _cup_and_plate(store, make_clip, n=10)  # plate on frames 0-4
+    keep = build_plan(store, project.id, [clip.id], ExportOptions(val_fraction=0.0, class_ids=(2,)))
+    assert [len(f.objects) for f in keep.frames] == [1] * 5 + [0] * 5
+    drop = build_plan(store, project.id, [clip.id], ExportOptions(class_ids=(2,), include_empty=False))
+    # the contiguous tail is taken from the 5 frames left after the filter: ceil(0.2 * 5) = 1
+    assert [(f.frame_idx, f.split) for f in drop.frames] == [
+        (0, "train"), (1, "train"), (2, "train"), (3, "train"), (4, "val"),
+    ]
+    with pytest.raises(BadRequest, match="nothing to export"):  # bowl: selected, but on no frame
+        build_plan(store, project.id, [clip.id], ExportOptions(class_ids=(1,), include_empty=False))
+    empty = build_plan(store, project.id, [clip.id], ExportOptions(class_ids=(1,)))
+    assert len(empty.frames) == 10 and not any(f.objects for f in empty.frames)
+
+
+def test_class_selection_is_validated(store, make_clip):
+    project, clip = make_clip(n_frames=2, classes=("cup", "bowl"))
+    with pytest.raises(BadRequest, match="at least one class"):
+        check_request(store, project.id, [clip.id], ["coco"], ExportOptions(class_ids=()))
+    with pytest.raises(BadRequest, match="unknown class 5"):
+        check_request(store, project.id, [clip.id], ["coco"], ExportOptions(class_ids=(0, 5)))
+    with pytest.raises(BadRequest, match="class is listed twice"):
+        check_request(store, project.id, [clip.id], ["coco"], ExportOptions(class_ids=(1, 1)))
+    assert check_request(store, project.id, [clip.id], ["coco"], ExportOptions(class_ids=(1, 0))).class_ids == (0, 1)
+    assert check_request(store, project.id, [clip.id], ["coco"], ExportOptions()).class_ids is None
+
+
+def test_manifest_helpers_restore_the_options_and_the_class_map():
+    stored = {"split_mode": "contiguous", "val_clip_ids": [], "val_fraction": 0.2, "stride": 1,
+              "include_empty": True, "min_area_px": 64, "class_ids": [2]}
+    opts = options_from_manifest(stored)
+    assert opts.class_ids == (2,) and opts.val_clip_ids == () and opts.split_mode == "contiguous"
+    old = {k: v for k, v in stored.items() if k != "class_ids"}
+    assert options_from_manifest({**old, "val_clip_ids": None}).class_ids is None
+    assert options_from_manifest({**old, "val_clip_ids": None}).val_clip_ids == ()
+
+    classes, class_map = classes_from_manifest({"classes": [
+        {"id": 1, "project_class_id": 4, "name": "plate", "color": "#00ff00", "yolo_id": 1, "coco_id": 2,
+         "mask_value": 2},
+        {"id": 0, "project_class_id": 2, "name": "cup", "color": "#ff0000", "yolo_id": 0, "coco_id": 1,
+         "mask_value": 1},
+    ]})
+    assert [(c.id, c.name, c.color) for c in classes] == [(0, "cup", "#ff0000"), (1, "plate", "#00ff00")]
+    assert class_map == {0: 2, 1: 4}
+    _, old_map = classes_from_manifest({"classes": [
+        {"id": 0, "name": "a", "color": "#000000", "yolo_id": 0, "coco_id": 1, "mask_value": 1},
+        {"id": 1, "name": "b", "color": "#111111", "yolo_id": 1, "coco_id": 2, "mask_value": 2},
+    ]})
+    assert old_map == {0: 0, 1: 1}  # an export written before class selection maps to itself

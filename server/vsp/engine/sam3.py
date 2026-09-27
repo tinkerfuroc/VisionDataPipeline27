@@ -4,7 +4,8 @@ Ported from tinkerfuroc/tk25_vision_train (MIT, (c) 2025 tinker@furoc),
 server/tk_vision/annotate/sam3.py @ 5874ba0. Changes from the template:
   * device auto-selection; torch.autocast always gets device_type "cuda";
   * tracker_neck weights are synced from whichever key layout the checkpoint uses;
-  * single-object API matching vsp.engine.types.Engine;
+  * propagate() tracks several objects (one per seed) in a single tracker session; predict_prompt()
+    and predict_text() remain single-object previews, matching vsp.engine.types.Engine;
   * predict_prompt(): real point/box prompts through the tracker's prompt encoder
     (the template collapsed clicks into a padded box on the detector).
 """
@@ -14,7 +15,7 @@ from __future__ import annotations
 import collections
 import logging
 import threading
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -245,8 +246,10 @@ class Sam3Engine:
         feats, pos = self._model.get_vision_features_for_tracker(vision_embeds=vision_embeds)
         session.cache.cache_vision_features(frame_idx, {"vision_feats": feats, "vision_pos_embeds": pos})
 
-    def _binarize(self, pred_masks: torch.Tensor, h: int, w: int) -> np.ndarray:
-        full = torch.nn.functional.interpolate(pred_masks.float(), size=(h, w), mode="bilinear", align_corners=False)
+    def _binarize(self, pred_masks: torch.Tensor, h: int, w: int, row: int = 0) -> np.ndarray:
+        full = torch.nn.functional.interpolate(
+            pred_masks[row:row + 1].float(), size=(h, w), mode="bilinear", align_corners=False
+        )
         return (full.sigmoid() > self.MASK_THRESHOLD)[0, 0].cpu().numpy()
 
     def predict_prompt(
@@ -297,10 +300,14 @@ class Sam3Engine:
     def propagate(
         self,
         frames: list[np.ndarray] | PreparedChunk,
-        seed_mask: np.ndarray,
+        seeds: Mapping[int, np.ndarray],
         cancel_cb: Callable[[], bool] | None = None,
-    ) -> Iterator[tuple[int, np.ndarray | None]]:
-        """Track `seed_mask` (given for `frames[0]`) forward through `frames`.
+    ) -> Iterator[tuple[int, dict[int, np.ndarray | None]]]:
+        """Track every seed (object id -> bool mask, all given for `frames[0]`) forward through `frames`.
+
+        Yields `(offset, {object_id: mask or None})` with exactly the seeded ids as keys; None means no usable
+        mask for that object on that frame. At least one seed; each non-empty and of the frames' shape, else
+        ValueError.
 
         This is a generator: argument validation and all GPU work happen lazily, starting on the
         first `next()` call, not when `propagate()` is called. `frames` is either the raw BGR
@@ -326,14 +333,17 @@ class Sam3Engine:
                 return
             prepared = self.prepare(frames)
         h, w = prepared.h, prepared.w
-        if seed_mask.shape != (h, w):
-            raise ValueError(f"seed_mask shape {seed_mask.shape} does not match frames {(h, w)}")
-        if not seed_mask.any():
-            raise ValueError("seed_mask must be non-empty")
+        if not seeds:
+            raise ValueError("at least one seed is required")
+        for oid, seed in seeds.items():
+            if seed.shape != (h, w):
+                raise ValueError(f"seed {oid} shape {seed.shape} does not match frames {(h, w)}")
+            if not seed.any():
+                raise ValueError(f"seed {oid} must be non-empty")
         video = prepared.pixel_values
         try:
             with self._lock, torch.inference_mode(), self._autocast():
-                yield from self._propagate_locked(video, seed_mask, h, w, cancel_cb)
+                yield from self._propagate_locked(video, seeds, h, w, cancel_cb)
         except torch.cuda.OutOfMemoryError as e:
             raise ChunkOOMError(str(e)) from e
         except RuntimeError as e:
@@ -348,7 +358,7 @@ class Sam3Engine:
         embeds = self._model.detector_model.get_vision_features(pixel_values=px)
         self._cache_tracker_features(session, frame_idx, embeds)
 
-    def _propagate_locked(self, video, seed_mask, h, w, cancel_cb):
+    def _propagate_locked(self, video, seeds, h, w, cancel_cb):
         n = int(video.shape[0])
         session = self._new_session(video, h, w)
         # The image encoder is where the time goes; the tracker head is cheap and causal, reading
@@ -356,21 +366,29 @@ class Sam3Engine:
         # of the whole chunk up front) lets each mask reach the caller as soon as it is ready, so the
         # GUI sees a steady stream of frames rather than a long silence and then the whole chunk.
         self._encode_frame(session, 0)
-        obj_idx = session.obj_id_to_idx(_OBJ_ID)
-        seed = torch.from_numpy(seed_mask.astype(np.float32))[None, None].to(self.device, dtype=self.torch_dtype)
-        session.add_mask_inputs(obj_idx, 0, seed)
-        session.obj_with_new_inputs = [_OBJ_ID]
+        ids = [int(oid) for oid in seeds]
+        for oid in ids:
+            obj_idx = session.obj_id_to_idx(oid)
+            seed = torch.from_numpy(seeds[oid].astype(np.float32))[None, None].to(self.device, dtype=self.torch_dtype)
+            session.add_mask_inputs(obj_idx, 0, seed)
+        session.obj_with_new_inputs = list(ids)
         for out in self._model.tracker_model.propagate_in_video_iterator(
             inference_session=session, start_frame_idx=0, max_frame_num_to_track=n
         ):
             if cancel_cb is not None and cancel_cb():
                 return
-            mask = None
+            masks: dict[int, np.ndarray | None] = dict.fromkeys(ids)
             if out.pred_masks is not None and len(out.pred_masks) > 0:
-                m = self._binarize(out.pred_masks, h, w)
-                if not is_degenerate_mask(m, max_area_frac=self.MAX_MASK_AREA_FRAC, min_area_px=self.MIN_MASK_AREA_PX):
-                    mask = m
+                # one row per tracked object, in session order (out.object_ids); the tracker head runs once per
+                # object per frame, so its cost grows with the object count while frame encoding is shared
+                rows = list(out.object_ids) if out.object_ids is not None else ids
+                for row, oid in enumerate(rows):
+                    if oid not in masks or row >= len(out.pred_masks):
+                        continue
+                    m = self._binarize(out.pred_masks, h, w, row)
+                    if not is_degenerate_mask(m, max_area_frac=self.MAX_MASK_AREA_FRAC, min_area_px=self.MIN_MASK_AREA_PX):
+                        masks[oid] = m
             fr = int(out.frame_idx)
-            yield fr, mask
+            yield fr, masks
             if fr + 1 < n:
                 self._encode_frame(session, fr + 1)

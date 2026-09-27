@@ -1,4 +1,5 @@
-"""On-disk schema. `objects` is a list for forward compatibility; v1 uses at most one."""
+"""On-disk schema. A clip holds any number of objects; ids are unique within the clip
+and never reused."""
 
 from __future__ import annotations
 
@@ -56,3 +57,5 @@ class Clip(BaseModel):
     original_names: dict[int, str] = Field(default_factory=dict)
     deleted_frames: list[int] = Field(default_factory=list)
     objects: list[LabelObject] = Field(default_factory=list)
+    # ids are never reused: a deleted object's stale mask URLs and job events can never reach a new object
+    next_object_id: int = 0

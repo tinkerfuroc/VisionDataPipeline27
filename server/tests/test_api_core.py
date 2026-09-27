@@ -90,6 +90,22 @@ def test_projects_and_classes(client):
     assert client.get("/api/projects/..%2Fx").status_code in (400, 404)
 
 
+def test_set_class_color(client):
+    pid = _project(client, classes=("connector",))
+    class_id = client.get(f"/api/projects/{pid}").json()["classes"][0]["id"]
+
+    ok = client.patch(f"/api/projects/{pid}/classes/{class_id}", json={"color": "#ABCDEF"})
+    assert ok.status_code == 200 and ok.json()["color"] == "#abcdef"
+    got = client.get(f"/api/projects/{pid}").json()
+    assert got["classes"][0]["color"] == "#abcdef"
+
+    bad = client.patch(f"/api/projects/{pid}/classes/{class_id}", json={"color": "not-a-colour"})
+    assert bad.status_code == 422
+
+    assert client.patch(f"/api/projects/{pid}/classes/{class_id + 1}", json={"color": "#111111"}).status_code == 404
+    assert client.patch(f"/api/projects/nope-000000/classes/{class_id}", json={"color": "#111111"}).status_code == 404
+
+
 def test_import_frames_then_browse_the_clip(client, tmp_path):
     pid = _project(client)
     src = _frames_dir(tmp_path)
@@ -111,6 +127,8 @@ def test_import_frames_then_browse_the_clip(client, tmp_path):
     assert frame.status_code == 200 and frame.headers["content-type"] == "image/jpeg"
     assert client.get(f"/api/clips/{clip_id}/thumbs/0").status_code == 200
     assert client.get(f"/api/clips/{clip_id}/frames/3").status_code == 404
+    assert client.get(f"/api/clips/{clip_id}/objects/1/masks/0").status_code == 404
+    # the un-scoped mask route no longer exists
     assert client.get(f"/api/clips/{clip_id}/masks/0").status_code == 404
 
     assert client.delete(f"/api/clips/{clip_id}").status_code == 204

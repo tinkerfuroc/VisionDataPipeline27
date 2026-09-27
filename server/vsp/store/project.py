@@ -14,10 +14,11 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from .models import ClassDef, Clip, Project
+from .models import ClassDef, Clip, LabelObject, Project
 
 _ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 _PALETTE = ["#e6194b", "#3cb44b", "#4363d8", "#f58231", "#911eb4", "#42d4f4", "#f032e6", "#bfef45"]
+_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 
 
 class StoreError(Exception):
@@ -106,6 +107,20 @@ class ProjectStore:
             self.write_project(project)
             return cls
 
+    def set_class_color(self, project_id: str, class_id: int, color: str) -> ClassDef:
+        self.read_project(project_id)  # raises NotFound before the lock table grows an entry for a bogus id
+        if not _COLOR_RE.match(color):
+            raise StoreError(f"invalid colour: {color!r}; expected #rrggbb")
+        color = color.lower()
+        with self.lock(project_id):
+            project = self.read_project(project_id)
+            for cls in project.classes:
+                if cls.id == class_id:
+                    cls.color = color
+                    self.write_project(project)
+                    return cls
+            raise NotFound(f"class {class_id} not found in project {project_id!r}")
+
     # --------------------------------------------------------------- clips
     def new_clip_dir(self, project_id: str) -> tuple[str, Path]:
         self.read_project(project_id)
@@ -177,14 +192,14 @@ class ProjectStore:
             return []
         return sorted(int(p.stem) for p in mdir.glob("[0-9]*.png"))
 
-    def frame_states(self, clip: Clip) -> list[str]:
-        """Per-frame state for the timeline. Priority: deleted > keyframe > masked > empty."""
+    def _states(self, clip: Clip, objects: list) -> list[str]:
+        """Priority: deleted > keyframe > masked > empty, over `objects`."""
         states = ["empty"] * clip.frame_count
-        for obj in clip.objects:
+        for obj in objects:
             for i in self.mask_indices(clip.id, obj.id):
                 if 0 <= i < clip.frame_count:
                     states[i] = "masked"
-        for obj in clip.objects:
+        for obj in objects:
             for kf in obj.keyframes:
                 if 0 <= kf.frame_idx < clip.frame_count:
                     states[kf.frame_idx] = "keyframe"
@@ -192,3 +207,14 @@ class ProjectStore:
             if 0 <= i < clip.frame_count:
                 states[i] = "deleted"
         return states
+
+    def frame_states(self, clip: Clip) -> list[str]:
+        """Per-frame state of the whole clip (any object), for the Clips page and the timeline summary."""
+        return self._states(clip, clip.objects)
+
+    def object_states(self, clip: Clip, obj: LabelObject) -> list[str]:
+        """Per-frame state of one object; a deleted frame is `deleted` in every object's lane."""
+        return self._states(clip, [obj])
+
+    def delete_object_masks(self, clip_id: str, object_id: int) -> None:
+        shutil.rmtree(self.clip_dir(clip_id) / "masks" / str(int(object_id)), ignore_errors=True)

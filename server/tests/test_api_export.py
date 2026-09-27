@@ -58,7 +58,10 @@ def _project(client, classes=("part",)):
 def _clip_with_masks(client, tmp_path, project_id):
     started = client.post(f"/api/projects/{project_id}/clips/import-frames", json={"path": str(_frames_dir(tmp_path, n=6)), "fps": 10})
     clip_id = wait_job(client, started.json()["job_id"])["result"]["clip_id"]
-    accepted = client.post(f"/api/clips/{clip_id}/accept", json={"frame": 0, "prompt": {"type": "clicks", "points": [[30, 30, 1]]}, "class_id": 0})
+    accepted = client.post(
+        f"/api/clips/{clip_id}/accept",
+        json={"frame": 0, "prompt": {"type": "clicks", "points": [[30, 30, 1]]}, "object_id": None, "class_id": 0},
+    )
     assert accepted.status_code == 200, accepted.text
     job = client.post(f"/api/clips/{clip_id}/propagate", json={"from_frame": 0, "direction": "forward"}).json()["job_id"]
     assert wait_job(client, job)["status"] == "done"
@@ -77,6 +80,24 @@ def test_export_runs_as_a_job_and_reports_where_it_wrote(client, tmp_path):
     assert json.loads((out / "export.json").read_text())["options"]["val_fraction"] == 0.2
 
 
+def test_export_with_a_name_produces_a_slugged_export_id(client, tmp_path):
+    project_id = _project(client)
+    clip_id = _clip_with_masks(client, tmp_path, project_id)
+    started = client.post(f"/api/projects/{project_id}/export",
+                          json={"clips": [clip_id], "formats": ["yolo_seg"], "name": "Cups v2"})
+    assert started.status_code == 202, started.text
+    snap = wait_job(client, started.json()["job_id"])
+    assert snap["result"]["export_id"] == "cups-v2" and snap["result"]["name"] == "Cups v2"
+
+
+def test_export_rejects_an_overlong_name_before_the_job_starts(client, tmp_path):
+    project_id = _project(client)
+    clip_id = _clip_with_masks(client, tmp_path, project_id)
+    started = client.post(f"/api/projects/{project_id}/export",
+                          json={"clips": [clip_id], "formats": ["yolo_seg"], "name": "a" * 81})
+    assert started.status_code == 400
+
+
 def test_export_request_errors(client, tmp_path):
     project_id = _project(client)
     clip_id = _clip_with_masks(client, tmp_path, project_id)
@@ -91,8 +112,8 @@ def test_export_request_errors(client, tmp_path):
 
 
 class _SlowEngine(FakeEngine):
-    def propagate(self, frames, seed_mask, cancel_cb=None):
-        for item in super().propagate(frames, seed_mask, cancel_cb):
+    def propagate(self, frames, seeds, cancel_cb=None):
+        for item in super().propagate(frames, seeds, cancel_cb):
             time.sleep(0.03)
             yield item
 
@@ -104,7 +125,10 @@ def test_export_is_refused_while_a_propagation_runs(tmp_path):
         started = slow.post(f"/api/projects/{project_id}/clips/import-frames", json={"path": str(_frames_dir(tmp_path, n=40)), "fps": 10})
         clip_id = wait_job(slow, started.json()["job_id"])["result"]["clip_id"]
         click = {"type": "clicks", "points": [[30, 30, 1]]}
-        assert slow.post(f"/api/clips/{clip_id}/accept", json={"frame": 0, "prompt": click, "class_id": 0}).status_code == 200
+        assert slow.post(
+            f"/api/clips/{clip_id}/accept",
+            json={"frame": 0, "prompt": click, "object_id": None, "class_id": 0},
+        ).status_code == 200
         job_id = slow.post(f"/api/clips/{clip_id}/propagate", json={"from_frame": 0, "direction": "forward"}).json()["job_id"]
         busy = slow.post(f"/api/projects/{project_id}/export", json={"clips": [clip_id], "formats": ["coco"]})
         assert busy.status_code == 409 and busy.json()["job_id"] == job_id
@@ -149,3 +173,20 @@ def test_a_clip_cannot_be_deleted_while_an_export_reads_it(client, tmp_path, mon
     release.set()
     assert wait_job(client, job_id)["status"] == "done"
     assert client.delete(f"/api/clips/{clip_id}").status_code == 204
+
+
+def test_export_class_selection_is_validated_before_the_job_and_applied(client, tmp_path):
+    project_id = _project(client, classes=("part", "cup"))
+    clip_id = _clip_with_masks(client, tmp_path, project_id)  # one object of class 0 ("part")
+    url = f"/api/projects/{project_id}/export"
+    empty = client.post(url, json={"clips": [clip_id], "formats": ["coco"], "options": {"classes": []}})
+    assert empty.status_code == 400 and "at least one class" in empty.json()["detail"]
+    unknown = client.post(url, json={"clips": [clip_id], "formats": ["coco"], "options": {"classes": [7]}})
+    assert unknown.status_code == 400 and "unknown class 7" in unknown.json()["detail"]
+    started = client.post(url, json={"clips": [clip_id], "formats": ["yolo_seg"], "options": {"classes": [0]}})
+    assert started.status_code == 202, started.text
+    snap = wait_job(client, started.json()["job_id"])
+    assert snap["status"] == "done", snap
+    manifest = json.loads((Path(snap["result"]["path"]) / "export.json").read_text())
+    assert manifest["options"]["class_ids"] == [0]
+    assert [c["name"] for c in manifest["classes"]] == ["part"]

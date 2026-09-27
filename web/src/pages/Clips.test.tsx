@@ -11,7 +11,7 @@ vi.mock("../api/rest", async (original) => {
   return {
     ...real,
     api: {
-      listProjects: vi.fn(), createProject: vi.fn(), addClass: vi.fn(), listClips: vi.fn(),
+      listProjects: vi.fn(), createProject: vi.fn(), addClass: vi.fn(), setClassColor: vi.fn(), listClips: vi.fn(),
       importFrames: vi.fn(), uploadClip: vi.fn(), deleteClip: vi.fn(), getJob: vi.fn(), cancelJob: vi.fn(),
     },
   };
@@ -90,6 +90,40 @@ describe("Clips page", () => {
     fireEvent.click(screen.getByRole("button", { name: "Add class" }));
     expect(await screen.findByText("bolt")).toBeTruthy();
     expect(m.addClass).toHaveBeenCalledWith(project.id, "bolt");
+  });
+
+  it("shows a picked class colour at once and saves only the final one, ~300ms later", async () => {
+    m.setClassColor.mockResolvedValue({ id: 0, name: "connector", color: "#123456" });
+    m.listProjects
+      .mockResolvedValueOnce([project])
+      .mockResolvedValue([{ ...project, classes: [{ id: 0, name: "connector", color: "#123456" }] }]);
+    renderPage();
+    await screen.findByText("connector");
+    const picker = screen.getByLabelText("Colour of connector") as HTMLInputElement;
+
+    vi.useFakeTimers();
+    fireEvent.change(picker, { target: { value: "#111111" } });
+    fireEvent.change(picker, { target: { value: "#222222" } });
+    fireEvent.change(picker, { target: { value: "#123456" } });
+    expect(picker.value).toBe("#123456"); // shown locally at once, before the debounce fires
+    expect(m.setClassColor).not.toHaveBeenCalled();
+
+    await act(async () => vi.advanceTimersByTime(300));
+    vi.useRealTimers();
+    expect(m.setClassColor).toHaveBeenCalledTimes(1);
+    expect(m.setClassColor).toHaveBeenCalledWith(project.id, 0, "#123456");
+    await waitFor(() => expect(m.listProjects).toHaveBeenCalledTimes(2)); // reloaded, as addClass does
+  });
+
+  it("shows a class colour save error the way the page already shows errors", async () => {
+    m.setClassColor.mockRejectedValue(new Error("disk full"));
+    renderPage();
+    await screen.findByText("connector");
+    vi.useFakeTimers();
+    fireEvent.change(screen.getByLabelText("Colour of connector"), { target: { value: "#111111" } });
+    await act(async () => vi.advanceTimersByTime(300));
+    vi.useRealTimers();
+    expect(await screen.findByText("disk full")).toBeTruthy();
   });
 
   it("starts a frame-directory import, shows its progress and reloads the clips when it is done", async () => {

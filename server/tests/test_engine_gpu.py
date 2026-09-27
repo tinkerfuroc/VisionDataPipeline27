@@ -109,7 +109,7 @@ def test_text_prompt_runs_and_returns_ranked_detections(engine, video):
 
 
 def _track(engine, frames, truth):
-    got = dict(engine.propagate(frames, truth[0]))
+    got = {k: v[1] for k, v in engine.propagate(frames, {1: truth[0]})}
     assert sorted(got) == list(range(len(frames)))
     good = [i for i in range(1, len(frames)) if got[i] is not None and _iou(got[i], truth[i]) > 0.7]
     return len(good)
@@ -125,6 +125,41 @@ def test_backward_propagation_is_just_a_reversed_list(engine, video):
     assert _track(engine, frames[::-1], truth[::-1]) >= 18
 
 
+@pytest.fixture(scope="module")
+def two_object_video():
+    # A half-disc seed tends to grow back into the whole disc, so splitting the existing single
+    # disc would not test anything; this builds a second, independently moving disc instead.
+    rng = np.random.default_rng(0)
+    centers_a = [(120 + 6 * i, 200 + 2 * i) for i in range(20)]  # disc A: exactly the `video` fixture
+    centers_b = [(500 - 6 * i, 300) for i in range(20)]  # disc B: green, moving the other way
+    frames, truth_a, truth_b = [], [], []
+    for (ax, ay), (bx, by) in zip(centers_a, centers_b):
+        img = rng.integers(60, 120, size=(H, W, 3), dtype=np.uint8)
+        da, db = _disc(ax, ay), _disc(bx, by)
+        img[da] = (40, 60, 230)  # BGR: a red disc
+        img[db] = (60, 200, 60)  # BGR: a green disc
+        frames.append(img)
+        truth_a.append(da)
+        truth_b.append(db)
+    return frames, {1: truth_a, 2: truth_b}
+
+
+def test_two_object_propagation_tracks_both_discs(engine, two_object_video):
+    """Seeds two objects in one propagate() call and checks each is tracked independently -- also
+    catches a row/id swap between the tracker's per-object output rows and the seeded object ids."""
+    frames, truths = two_object_video
+    n = len(frames)
+    got: dict[int, dict[int, np.ndarray | None]] = {}
+    with contextlib.closing(engine.propagate(frames, {k: t[0] for k, t in truths.items()})) as masks:
+        for offset, out in masks:
+            assert set(out) == {1, 2}
+            got[offset] = out
+    assert sorted(got) == list(range(n))
+    for oid, truth in truths.items():
+        good = [i for i in range(1, n) if got[i][oid] is not None and _iou(got[i][oid], truth[i]) > 0.7]
+        assert len(good) >= 18  # of 19 non-seed frames
+
+
 def test_propagation_streams_masks_instead_of_encoding_the_whole_chunk_first(engine, video, monkeypatch):
     """Frame k's mask must reach the caller before frame k+1 is encoded, so the GUI sees a steady
     stream of frames rather than a long silence followed by a burst of the whole chunk."""
@@ -137,7 +172,7 @@ def test_propagation_streams_masks_instead_of_encoding_the_whole_chunk_first(eng
         real(session, frame_idx, embeds)
 
     monkeypatch.setattr(engine, "_cache_tracker_features", spy)
-    with contextlib.closing(engine.propagate(frames, truth[0])) as masks:
+    with contextlib.closing(engine.propagate(frames, {1: truth[0]})) as masks:
         for offset, _ in masks:
             order.append(f"yield {offset}")
     n = len(frames)
@@ -167,8 +202,9 @@ def test_end_to_end_store_ingest_engine_store(engine, video, tmp_path):
     store.write_mask(clip.id, 1, 0, det.mask)
 
     disk_frames = [cv2.imread(str(store.frame_path(clip.id, i))) for i in range(clip.frame_count)]
-    with contextlib.closing(engine.propagate(disk_frames, store.read_mask(clip.id, 1, 0))) as gen:
-        for offset, mask in gen:
+    with contextlib.closing(engine.propagate(disk_frames, {1: store.read_mask(clip.id, 1, 0)})) as gen:
+        for offset, out in gen:
+            mask = out[1]
             if offset >= 1 and mask is not None:
                 store.write_mask(clip.id, 1, offset, mask)
 
@@ -206,7 +242,7 @@ def test_peak_vram_fits_the_12gb_card(engine, video):
 
     frames, truth = video
     torch.cuda.reset_peak_memory_stats(engine.device)
-    list(engine.propagate(frames + frames[::-1][:4], truth[0]))  # 24 frames = default chunk_size
+    list(engine.propagate(frames + frames[::-1][:4], {1: truth[0]}))  # 24 frames = default chunk_size
     peak = torch.cuda.max_memory_allocated(engine.device) / 2**30
     print(f"\n[vram] peak during 24-frame propagate: {peak:.2f} GiB")
     assert peak < 11.0
@@ -241,8 +277,8 @@ def test_many_clicks_without_a_box_stay_accurate(engine, video):
 
 def test_a_prepared_chunk_propagates_like_raw_frames(engine, video):
     frames, truth = video
-    raw = dict(engine.propagate(frames, truth[0]))
-    got = dict(engine.propagate(engine.prepare(frames), truth[0]))
+    raw = {k: v[1] for k, v in engine.propagate(frames, {1: truth[0]})}
+    got = {k: v[1] for k, v in engine.propagate(engine.prepare(frames), {1: truth[0]})}
     assert sorted(got) == sorted(raw) == list(range(len(frames)))
     for i, r in raw.items():
         assert (r is None) == (got[i] is None)
@@ -254,7 +290,7 @@ def test_prepare_runs_on_another_thread_while_a_propagation_is_open(engine, vide
     """prepare() must not take the GPU lock: the chunk loop calls it from a worker thread while
     the current chunk's generator (which holds the lock) is open."""
     frames, truth = video
-    with contextlib.closing(engine.propagate(frames[:4], truth[0])) as masks:
+    with contextlib.closing(engine.propagate(frames[:4], {1: truth[0]})) as masks:
         next(masks)  # the lock is now held by this thread
         done = threading.Event()
         out = {}

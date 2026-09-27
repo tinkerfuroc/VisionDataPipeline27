@@ -1,10 +1,13 @@
 import numpy as np
 import pytest
+from conftest import OBJ
 from pydantic import ValidationError
 from vsp.engine.fake import FakeEngine
 from vsp.engine.masks import bbox_of
-from vsp.labeling.errors import BadRequest, Conflict
-from vsp.labeling.prompts import OBJECT_ID, PromptSpec, accept, create_object, padded_box, preview
+from vsp.labeling.errors import BadRequest
+from vsp.labeling.objects import relabel_object
+from vsp.labeling.prompts import PromptSpec, accept, create_object, padded_box, preview
+from vsp.store import LabelObject
 
 CLICK = PromptSpec(type="clicks", points=[(30, 30, 1)])  # FakeEngine -> rect x 20:40, y 20:40 (400 px)
 
@@ -26,7 +29,7 @@ def test_preview_persists_nothing(store, make_clip):
     dets = preview(store, FakeEngine(), clip, 0, CLICK)
     assert len(dets) == 1 and dets[0].mask[30, 30]
     assert store.read_clip(clip.id).objects == []
-    assert store.mask_indices(clip.id, OBJECT_ID) == []
+    assert store.mask_indices(clip.id, OBJ) == []
 
 
 def test_preview_text_returns_ranked_candidates(store, make_clip):
@@ -37,15 +40,16 @@ def test_preview_text_returns_ranked_candidates(store, make_clip):
 
 def test_first_accept_creates_object_keyframe_and_mask(store, make_clip):
     project, clip = make_clip()
-    out = accept(store, FakeEngine(), clip.id, 3, CLICK, class_id=project.classes[0].id)
-    assert [o.id for o in out.objects] == [OBJECT_ID]
+    out, ids = accept(store, FakeEngine(), clip.id, 3, CLICK, object_id=None, class_id=project.classes[0].id)
+    assert ids == [OBJ]
+    assert [o.id for o in out.objects] == [OBJ]
     obj = out.objects[0]
     assert obj.class_id == project.classes[0].id
     assert [k.frame_idx for k in obj.keyframes] == [3]
     assert obj.keyframes[0].prompt.type == "clicks"
     assert obj.keyframes[0].prompt.payload["points"] == [[30, 30, 1]]
     assert "box_from_mask" not in obj.keyframes[0].prompt.payload
-    mask = store.read_mask(clip.id, OBJECT_ID, 3)
+    mask = store.read_mask(clip.id, OBJ, 3)
     assert mask[30, 30] and mask.sum() == 400
     assert store.read_clip(clip.id).objects[0].keyframes[0].frame_idx == 3  # persisted
 
@@ -53,50 +57,72 @@ def test_first_accept_creates_object_keyframe_and_mask(store, make_clip):
 def test_first_accept_needs_a_valid_class(store, make_clip):
     _, clip = make_clip()
     with pytest.raises(BadRequest, match="class_id"):
-        accept(store, FakeEngine(), clip.id, 0, CLICK)
+        accept(store, FakeEngine(), clip.id, 0, CLICK, object_id=None)
     with pytest.raises(BadRequest, match="unknown class"):
-        accept(store, FakeEngine(), clip.id, 0, CLICK, class_id=99)
+        accept(store, FakeEngine(), clip.id, 0, CLICK, object_id=None, class_id=99)
     assert store.read_clip(clip.id).objects == []
+
+
+def test_accept_without_object_id_or_class_id_runs_no_inference(store, make_clip):
+    """The request is doomed (resolve_target always needs class_id for a new object) -- reject it before
+    the engine call, not after."""
+
+    class CountingEngine(FakeEngine):
+        def __init__(self):
+            super().__init__()
+            self.predict_prompt_calls = 0
+
+        def predict_prompt(self, *args, **kwargs):
+            self.predict_prompt_calls += 1
+            return super().predict_prompt(*args, **kwargs)
+
+    _, clip = make_clip()
+    eng = CountingEngine()
+    with pytest.raises(BadRequest, match="class_id is required"):
+        accept(store, eng, clip.id, 0, CLICK, object_id=None, class_id=None)
+    assert eng.predict_prompt_calls == 0
 
 
 def test_text_accept_uses_the_chosen_candidate(store, make_clip):
     _project, clip = make_clip()
     eng = FakeEngine(n_text_candidates=3)
-    out = accept(store, eng, clip.id, 0, PromptSpec(type="text", phrase="part"), class_id=0, candidate=1)
-    mask = store.read_mask(clip.id, OBJECT_ID, 0)
+    out, _ = accept(
+        store, eng, clip.id, 0, PromptSpec(type="text", phrase="part"), object_id=None, class_id=0, candidate=1
+    )
+    mask = store.read_mask(clip.id, OBJ, 0)
     assert mask[10, 40] and not mask[10, 10]  # candidate 1 sits at x 35:55, candidate 0 at x 5:25
     assert out.objects[0].keyframes[0].prompt.payload["candidate"] == 1
     with pytest.raises(BadRequest, match="candidate"):
-        accept(store, eng, clip.id, 1, PromptSpec(type="text", phrase="part"), candidate=7)
+        accept(store, eng, clip.id, 1, PromptSpec(type="text", phrase="part"), object_id=OBJ, candidate=7)
 
 
 def test_later_accepts_add_sorted_keyframes_and_replace_same_frame(store, make_clip):
     _, clip = make_clip()
     eng = FakeEngine()
-    accept(store, eng, clip.id, 8, CLICK, class_id=0)
-    accept(store, eng, clip.id, 2, CLICK)  # class optional now
-    out = accept(store, eng, clip.id, 8, PromptSpec(type="box", box=(50, 10, 90, 40)))
+    accept(store, eng, clip.id, 8, CLICK, object_id=None, class_id=0)
+    accept(store, eng, clip.id, 2, CLICK, object_id=OBJ)  # class optional now
+    out, _ = accept(store, eng, clip.id, 8, PromptSpec(type="box", box=(50, 10, 90, 40)), object_id=OBJ)
     assert [k.frame_idx for k in out.objects[0].keyframes] == [2, 8]
     assert out.objects[0].keyframes[1].prompt.type == "box"
-    assert store.read_mask(clip.id, OBJECT_ID, 8)[20, 70]
+    assert store.read_mask(clip.id, OBJ, 8)[20, 70]
 
 
 def test_accept_can_reclass_the_object(store, make_clip):
     _, clip = make_clip(classes=("a", "b"))
     eng = FakeEngine()
-    accept(store, eng, clip.id, 0, CLICK, class_id=0)
-    assert accept(store, eng, clip.id, 1, CLICK, class_id=1).objects[0].class_id == 1
+    accept(store, eng, clip.id, 0, CLICK, object_id=None, class_id=0)
+    assert relabel_object(store, clip.id, OBJ, 1).objects[0].class_id == 1
 
 
 def test_correction_on_a_masked_frame_uses_a_box_from_the_existing_mask(store, make_clip):
     _, clip = make_clip()
     eng = FakeEngine()
-    accept(store, eng, clip.id, 0, CLICK, class_id=0)  # mask x 20:40, y 20:40
+    accept(store, eng, clip.id, 0, CLICK, object_id=None, class_id=0)  # mask x 20:40, y 20:40
     fix = PromptSpec(type="clicks", points=[(30, 30, 1), (22, 22, 0)])
-    out = accept(store, eng, clip.id, 0, fix)
+    out, _ = accept(store, eng, clip.id, 0, fix, object_id=OBJ)
     payload = out.objects[0].keyframes[0].prompt.payload
     assert payload["box_from_mask"] == [10, 10, 50, 50]  # 20:40 padded by 10
-    mask = store.read_mask(clip.id, OBJECT_ID, 0)
+    mask = store.read_mask(clip.id, OBJ, 0)
     assert mask[12, 12] and not mask[22, 22]  # FakeEngine fills the box, negative click carves a hole
 
 
@@ -105,7 +131,7 @@ def test_no_usable_mask_is_a_bad_request(store, make_clip):
     tiny = PromptSpec(type="box", box=(5, 5, 8, 8))  # 9 px < 64 px -> engine returns None
     assert preview(store, FakeEngine(), clip, 0, tiny) == []
     with pytest.raises(BadRequest, match="no usable mask"):
-        accept(store, FakeEngine(), clip.id, 0, tiny, class_id=0)
+        accept(store, FakeEngine(), clip.id, 0, tiny, object_id=None, class_id=0)
 
 
 def test_frame_out_of_range_and_deleted_frame(store, make_clip):
@@ -115,14 +141,22 @@ def test_frame_out_of_range_and_deleted_frame(store, make_clip):
     clip.deleted_frames = [2]
     store.write_clip(clip)
     with pytest.raises(BadRequest, match="deleted"):
-        accept(store, FakeEngine(), clip.id, 2, CLICK, class_id=0)
+        accept(store, FakeEngine(), clip.id, 2, CLICK, object_id=None, class_id=0)
 
 
-def test_single_object_guard(store, make_clip):
+def test_object_ids_grow_and_are_never_reused(store, make_clip):
     _, clip = make_clip()
-    create_object(clip, 0)
-    with pytest.raises(Conflict, match="one object per clip"):
-        create_object(clip, 0)
+    assert [create_object(clip, 0).id for _ in range(3)] == [1, 2, 3]
+    assert clip.next_object_id == 4
+    clip.objects = [o for o in clip.objects if o.id != 3]  # deleting the newest must not free its id
+    assert create_object(clip, 0).id == 4
+
+
+def test_old_clip_files_without_next_object_id_continue_after_the_highest_id(store, make_clip):
+    _, clip = make_clip()
+    clip.objects = [LabelObject(id=1, class_id=0)]
+    clip.next_object_id = 0  # what an old clip.json loads as
+    assert create_object(clip, 0).id == 2
 
 
 def test_padded_box_is_clamped():
@@ -151,7 +185,7 @@ def test_inverted_box_gives_the_same_mask_and_payload_stores_the_normalised_box(
     normal_mask = preview(store, eng, clip, 0, normal)[0].mask
     inverted_mask = preview(store, eng, clip, 0, inverted)[0].mask
     assert np.array_equal(normal_mask, inverted_mask)
-    out = accept(store, eng, clip.id, 0, inverted, class_id=0)
+    out, _ = accept(store, eng, clip.id, 0, inverted, object_id=None, class_id=0)
     assert out.objects[0].keyframes[0].prompt.payload["box"] == [40, 10, 80, 30]
 
 
@@ -201,6 +235,6 @@ def test_accept_rechecks_deleted_inside_the_lock(store, make_clip, monkeypatch):
 
     monkeypatch.setattr(store, "lock", sneaky_lock)
     with pytest.raises(BadRequest, match="deleted"):
-        accept(store, eng, clip.id, 0, CLICK, class_id=0)
+        accept(store, eng, clip.id, 0, CLICK, object_id=None, class_id=0)
     assert store.read_clip(clip.id).objects == []
-    assert store.mask_indices(clip.id, OBJECT_ID) == []
+    assert store.mask_indices(clip.id, OBJ) == []

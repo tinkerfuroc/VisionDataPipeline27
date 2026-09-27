@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol, TypeAlias
 
@@ -62,10 +62,14 @@ class Engine(Protocol):
     def propagate(
         self,
         frames: list[np.ndarray] | PreparedChunk,
-        seed_mask: np.ndarray,
+        seeds: Mapping[int, np.ndarray],
         cancel_cb: Callable[[], bool] | None = None,
-    ) -> Iterator[tuple[int, np.ndarray | None]]:
-        """Track `seed_mask` (given for `frames[0]`) forward through `frames`.
+    ) -> Iterator[tuple[int, dict[int, np.ndarray | None]]]:
+        """Track every seed (object id -> bool mask, all given for `frames[0]`) forward through `frames`.
+
+        Yields `(offset, {object_id: mask or None})` with exactly the seeded ids as keys; None means no usable
+        mask for that object on that frame. At least one seed; each non-empty and of the frames' shape, else
+        ValueError.
 
         Implementations are generators: argument validation and all work happen lazily, starting
         on the first `next()` call, not when `propagate()` is called. `frames` is either the raw

@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, type MouseEvent } from "react";
 import type { Box, Candidate } from "../api/types";
 import type { BrushMode } from "../lib/brush";
-import { MASK_ALPHA, PREVIEW_ALPHA, type FrameStore } from "../lib/frameCache";
+import { MASK_ALPHA, PREVIEW_ALPHA, compositeKey, type FrameStore, type MaskPart } from "../lib/frameCache";
 import {
   clampPoint, fitView, insideImage, normBox, panBy, pickCandidate, toImage, toScreen, zoomAt, type View,
 } from "../lib/geometry";
-import { hexToRgb } from "../lib/mask";
+import { hexToRgb, type Outline } from "../lib/mask";
 import type { Draft, Tool } from "../lib/promptState";
 
 type Props = {
@@ -14,10 +14,13 @@ type Props = {
   width: number;
   height: number;
   frameUrl: string;
-  /** stored mask of this frame, or null when there is none / the overlay is off */
-  maskUrl: string | null;
-  /** class colour, hex */
+  /** the stored masks to draw on this frame, one part per visible object, active object last (`maskParts`); empty
+   * when the overlay is off. They are composited into one cached layer by `store.composite`. */
+  masks: MaskPart[];
+  /** class colour of the active (or new) object, hex: candidate previews are tinted in it */
   color: string;
+  /** how preview boundaries are drawn; keep its identity stable, it keys the preview cache lookups */
+  outline: Outline;
   /** null disables prompting input; zoom and pan always work */
   tool: Tool | null;
   draft: Draft;
@@ -53,7 +56,7 @@ type Drag = {
 };
 
 export function FrameCanvas(props: Props) {
-  const { store, width, height, frameUrl, maskUrl, color, tool, candidates, onPoint, onBox, onPickCandidate, fitSignal, brush } = props;
+  const { store, width, height, frameUrl, masks, color, outline, tool, candidates, onPoint, onBox, onPickCandidate, fitSignal, brush } = props;
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const size = useRef({ w: 0, h: 0 });
@@ -66,6 +69,10 @@ export function FrameCanvas(props: Props) {
   const latest = useRef(props);
   latest.current = props;
   const rgb = useMemo(() => hexToRgb(color), [color]);
+  // `masks` is rebuilt on every page render; only its content matters
+  const masksKey = compositeKey(masks, MASK_ALPHA);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- masksKey covers every field of `masks`
+  const stableMasks = useMemo(() => masks, [masksKey]);
   /** screen position of the pointer, for the brush footprint circle */
   const pointer = useRef<[number, number] | null>(null);
 
@@ -85,14 +92,16 @@ export function FrameCanvas(props: Props) {
     ctx.imageSmoothingEnabled = v.scale < 3;
     if (assets.current.frame) {
       ctx.drawImage(assets.current.frame, 0, 0, p.width, p.height);
-      // No mask or preview layer is drawn when the frame itself failed to load: either would be meaningless
-      // floating over a black canvas, and a stale stored mask would be actively misleading.
+      // The stored masks come first: every visible object on this frame, composited into one layer. While the
+      // active object is being edited (candidates or brush strokes) the page leaves it out of `masks`, and its
+      // preview or brush layer is drawn on top instead.
+      if (assets.current.mask) ctx.drawImage(assets.current.mask, 0, 0, p.width, p.height);
       if (p.candidates.length > 0) {
         const state = layers.current;
         const current = state.owner === p.candidates;
         // Not current: new previews are still decoding. Only bridge the gap when it's the same single
         // candidate being refined (an extra click on the same object) — anything else would flash a mismatched
-        // preview (or, previously, the frame's stored mask) against the wrong candidate list.
+        // preview against the wrong candidate list.
         const bridgeOld = !current && state.owner !== null && state.owner.length === 1 && p.candidates.length === 1;
         if (current || bridgeOld) {
           state.items.forEach((layer, i) => {
@@ -102,14 +111,10 @@ export function FrameCanvas(props: Props) {
           });
           ctx.globalAlpha = 1;
         }
-      } else if (p.brush !== null) {
-        if (p.brush.layer) {
-          ctx.globalAlpha = MASK_ALPHA;
-          ctx.drawImage(p.brush.layer, 0, 0, p.width, p.height);
-          ctx.globalAlpha = 1;
-        }
-      } else if (assets.current.mask) {
-        ctx.drawImage(assets.current.mask, 0, 0, p.width, p.height);
+      } else if (p.brush !== null && p.brush.layer) {
+        ctx.globalAlpha = MASK_ALPHA;
+        ctx.drawImage(p.brush.layer, 0, 0, p.width, p.height);
+        ctx.globalAlpha = 1;
       }
     }
     ctx.restore();
@@ -214,11 +219,10 @@ export function FrameCanvas(props: Props) {
     refit();
   }, [fitSignal, refit]);
 
-  // Swap the frame and its mask in together so the overlay never shows on the wrong frame.
+  // Swap the frame and its masks in together so an overlay never shows on the wrong frame.
   useEffect(() => {
     let live = true;
-    const mask = maskUrl === null ? Promise.resolve(null) : store.layer(maskUrl, rgb, MASK_ALPHA);
-    void Promise.all([store.image(frameUrl), mask]).then(([frame, layer]) => {
+    void Promise.all([store.image(frameUrl), store.composite(stableMasks)]).then(([frame, layer]) => {
       if (!live) return;
       assets.current = { frame, mask: layer };
       draw();
@@ -226,7 +230,7 @@ export function FrameCanvas(props: Props) {
     return () => {
       live = false;
     };
-  }, [store, frameUrl, maskUrl, rgb, draw]);
+  }, [store, frameUrl, stableMasks, draw]);
 
   useEffect(() => {
     let live = true;
@@ -235,7 +239,7 @@ export function FrameCanvas(props: Props) {
       draw();
       return;
     }
-    const pending = candidates.map((c) => store.preview(`data:image/png;base64,${c.mask_png_b64}`, rgb, PREVIEW_ALPHA));
+    const pending = candidates.map((c) => store.preview(`data:image/png;base64,${c.mask_png_b64}`, rgb, PREVIEW_ALPHA, outline));
     void Promise.all(pending).then((items) => {
       if (!live) return;
       layers.current = { owner: candidates, items };
@@ -244,7 +248,7 @@ export function FrameCanvas(props: Props) {
     return () => {
       live = false;
     };
-  }, [store, candidates, rgb, draw]);
+  }, [store, candidates, rgb, outline, draw]);
 
   useEffect(draw); // points, box and candidate selection arrive as props
 

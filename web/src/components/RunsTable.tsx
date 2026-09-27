@@ -1,5 +1,6 @@
-import type { Run, RunBest } from "../api/types";
+import type { ExportInfo, Run, RunBest } from "../api/types";
 import { weightsUrl } from "../api/rest";
+import { exportLabel } from "../lib/exportName";
 import { bestRunIds, formatDuration, statusText } from "../lib/train";
 
 const METRICS: { key: keyof RunBest; label: string }[] = [
@@ -14,6 +15,7 @@ type Props = {
   runs: Run[];
   selectedId: string | null;
   compareIds: string[];
+  exports?: ExportInfo[];
   onSelect: (id: string) => void;
   onToggleCompare: (id: string) => void;
   onCancel: (id: string) => void;
@@ -34,7 +36,7 @@ function OnnxCell({ run, onOnnx }: { run: Run; onOnnx: (id: string) => void }) {
   );
 }
 
-export function RunsTable({ runs, selectedId, compareIds, onSelect, onToggleCompare, onCancel, onResume, onOnnx, onDelete }: Props) {
+export function RunsTable({ runs, selectedId, compareIds, exports = [], onSelect, onToggleCompare, onCancel, onResume, onOnnx, onDelete }: Props) {
   const best = Object.fromEntries(METRICS.map((m) => [m.key, bestRunIds(runs, m.key)]));
   if (runs.length === 0) return <p className="note">No training runs yet. Start one from the panel on the right.</p>;
   return (
@@ -61,6 +63,10 @@ export function RunsTable({ runs, selectedId, compareIds, onSelect, onToggleComp
           {runs.map((r) => {
             const comparing = compareIds.includes(r.id);
             const active = r.status === "queued" || r.status === "running";
+            const runExport = exports.find((e) => e.id === r.export_id);
+            // The Runs table's own ruling: an export with no name falls back to the run's project name,
+            // not to its (often less meaningful) folder id -- unlike `exportLabel`'s usual name-or-id choice.
+            const runExportLabel = runExport !== undefined && runExport.name !== null ? exportLabel(runExport) : r.project_name;
             return (
               <tr key={r.id} aria-selected={r.id === selectedId} onClick={() => onSelect(r.id)}
                 className={`cursor-pointer border-t border-line ${r.id === selectedId ? "bg-raise" : "hover:bg-panel"}`}>
@@ -71,7 +77,7 @@ export function RunsTable({ runs, selectedId, compareIds, onSelect, onToggleComp
                 <td className="px-2 py-1.5 font-medium">{r.model}</td>
                 <td className="px-2 py-1.5 text-dim">
                   <div className="flex flex-col">
-                    <span>{r.project_name}</span>
+                    <span>{runExportLabel}</span>
                     <span className="note font-cond text-dim">{r.export_id}</span>
                   </div>
                 </td>

@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
+import { api } from "../api/rest";
 import type { AugmentMode, AugParams, ExportInfo, GpuQueue, Run, StartRunsRequest, TrainParams, TrainStatus } from "../api/types";
+import { exportLabel } from "../lib/exportName";
 import { defaultGpu, startProblem, statusText } from "../lib/train";
 import { AugmentPanel } from "./AugmentPanel";
 
@@ -65,6 +67,11 @@ export function TrainSidebar({ status, exports, runs, exportId, onExportChange, 
   const [params, setParams] = useState<TrainParams | null>(null);
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
+  const [draftName, setDraftName] = useState("");
+  const [renaming, setRenaming] = useState(false);
+  const [renameError, setRenameError] = useState<string | null>(null);
+
+  const selectedExport = exports.find((e) => e.id === exportId) ?? null;
 
   useEffect(() => {
     if (status === null || Object.keys(picks).length > 0) return;
@@ -72,6 +79,11 @@ export function TrainSidebar({ status, exports, runs, exportId, onExportChange, 
     setPicks(Object.fromEntries(status.models.map((m) => [m, { checked: status.default_models.includes(m), gpu }])));
     setParams(status.defaults);
   }, [status, picks]);
+
+  // Resets whenever a different export is selected, or that export's own name changes (e.g. after a rename).
+  useEffect(() => {
+    setDraftName(selectedExport?.name ?? "");
+  }, [selectedExport?.id, selectedExport?.name]);
 
   if (status === null || params === null) return <aside className="note p-3">Loading…</aside>;
 
@@ -82,7 +94,6 @@ export function TrainSidebar({ status, exports, runs, exportId, onExportChange, 
 
   const visible = showAll ? status.models : status.models.filter((m) => status.default_models.includes(m) || picks[m]?.checked);
   const chosen = status.models.filter((m) => picks[m]?.checked);
-  const selectedExport = exports.find((e) => e.id === exportId) ?? null;
   const onSam3 = status.sam3_gpu !== null && chosen.some((m) => picks[m].gpu === status.sam3_gpu);
   const problem = startProblem({ available: status.available, error: status.error, exportId, picked: chosen.length });
   const byId = new Map(runs.map((r) => [r.id, r]));
@@ -100,6 +111,20 @@ export function TrainSidebar({ status, exports, runs, exportId, onExportChange, 
     }
   };
 
+  const rename = async () => {
+    if (selectedExport === null) return;
+    setRenaming(true);
+    setRenameError(null);
+    try {
+      await api.renameExport(selectedExport.id, draftName.trim() === "" ? null : draftName.trim());
+      onExportsChanged();
+    } catch (e) {
+      setRenameError(message(e));
+    } finally {
+      setRenaming(false);
+    }
+  };
+
   return (
     <aside className="flex shrink-0 flex-col gap-5 border-t border-line bg-panel p-3 md:w-96 md:overflow-y-auto md:border-l md:border-t-0">
       <section className="flex flex-col gap-2">
@@ -110,11 +135,24 @@ export function TrainSidebar({ status, exports, runs, exportId, onExportChange, 
             {exports.length === 0 && <option value="">No yolo_seg export yet</option>}
             {exports.map((e) => (
               <option key={e.id} value={e.id}>
-                {e.project_name} · {e.id} · {e.train_images} train / {e.val_images} val
+                {e.name !== null ? exportLabel(e) : e.project_name} · {e.id} ·{" "}
+                {e.train_images} train / {e.val_images} val
               </option>
             ))}
           </select>
         </label>
+        {selectedExport !== null && (
+          <>
+            <form className="flex gap-1" onSubmit={(ev) => { ev.preventDefault(); void rename(); }}>
+              <input aria-label="Rename export" className="field flex-1" maxLength={80} placeholder="Name"
+                value={draftName} onChange={(e) => setDraftName(e.target.value)} />
+              <button type="submit" className="btn" disabled={renaming || draftName.trim() === (selectedExport.name ?? "")}>
+                Save
+              </button>
+            </form>
+            {renameError !== null && <p role="alert" className="text-xs text-danger">{renameError}</p>}
+          </>
+        )}
         <AugmentPanel exportInfo={selectedExport}
           onCreated={(id) => {
             onExportsChanged();
