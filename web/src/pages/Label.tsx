@@ -48,6 +48,7 @@ export function Label() {
   const [follow, setFollow] = useState(true);
   const [propagateError, setPropagateError] = useState<string | null>(null);
   const [cleanupError, setCleanupError] = useState<string | null>(null);
+  const [classColorError, setClassColorError] = useState<string | null>(null);
   const [mode, setMode] = useState<"prompt" | "brush">("prompt");
   const [propagateScope, setPropagateScope] = useState<PropagateScope>("all");
   const [clearScope, setClearScope] = useState<ClearScope>("active");
@@ -369,6 +370,17 @@ export function Label() {
     },
     [activeId, clipId, apply, setNewClass],
   );
+  const saveClassColor = useCallback(
+    (color: string) => {
+      if (detail === null || objects.classId === null) return;
+      setClassColorError(null);
+      api
+        .setClassColor(detail.clip.project_id, objects.classId, color)
+        .then(() => reload())
+        .catch((e: unknown) => setClassColorError(message(e)));
+    },
+    [detail, objects.classId, reload],
+  );
   const deleteObject = useCallback(() => {
     const target = objects.active;
     if (detail === null || target === null) return;
@@ -527,7 +539,8 @@ export function Label() {
             onStop={stopPropagation}
             onFollow={setFollow}
           />
-          <OverlayPanel style={overlayStyle} classColor={color} onStyle={changeStyle} />
+          <OverlayPanel style={overlayStyle} classColor={color} activeClassName={newClass} classColorError={classColorError}
+            onStyle={changeStyle} onClassColor={saveClassColor} />
           <CleanupPanel
             frame={frame}
             states={detail.states}

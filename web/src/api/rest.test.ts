@@ -118,6 +118,14 @@ describe("api", () => {
     expect(fetchMock.mock.calls[1][1].method).toBe("DELETE");
   });
 
+  it("sets a class's colour", async () => {
+    const fetchMock = mockFetch(jsonResponse({ id: 5, name: "connector", color: "#abcdef" }));
+    expect(await api.setClassColor("p1", 5, "#abcdef")).toEqual({ id: 5, name: "connector", color: "#abcdef" });
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/projects/p1/classes/5");
+    expect(fetchMock.mock.calls[0][1].method).toBe("PATCH");
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ color: "#abcdef" });
+  });
+
   it("versions per-object mask URLs", () => {
     expect(objectMaskUrl("c1", 2, 4, "2.1")).toBe("/api/clips/c1/objects/2/masks/4?v=2.1");
   });

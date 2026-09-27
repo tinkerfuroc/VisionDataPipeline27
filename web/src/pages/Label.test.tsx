@@ -16,6 +16,7 @@ vi.mock("../api/rest", async (original) => ({
     prompt: vi.fn(),
     accept: vi.fn(),
     addClass: vi.fn(),
+    setClassColor: vi.fn(),
     relabelObject: vi.fn(),
     deleteObject: vi.fn(),
     propagate: vi.fn(),
@@ -141,6 +142,46 @@ describe("Label page (viewer)", () => {
     expect(overlay.checked).toBe(true);
     fireEvent.click(overlay);
     expect(overlay.checked).toBe(false);
+  });
+  it("previews a class colour change at once, saves it debounced, and reloads the clip", async () => {
+    vi.mocked(api.getClip).mockResolvedValueOnce(detail);
+    vi.mocked(api.setClassColor).mockResolvedValue({ ...detail.classes[0], color: "#123456" });
+    renderLabel();
+    await screen.findByText("bench.mp4");
+    const input = screen.getByLabelText("Class colour") as HTMLInputElement;
+    expect(input.value).toBe("#e6194b");
+
+    const recolored: ClipDetail = { ...detail, classes: [{ ...detail.classes[0], color: "#123456" }] };
+    vi.mocked(api.getClip).mockResolvedValue(recolored); // what reload() fetches once the save lands
+
+    vi.useFakeTimers();
+    fireEvent.change(input, { target: { value: "#111111" } });
+    fireEvent.change(input, { target: { value: "#123456" } });
+    expect(input.value).toBe("#123456"); // shown locally at once, before the debounce fires
+    expect(api.setClassColor).not.toHaveBeenCalled();
+    await act(async () => vi.advanceTimersByTime(300));
+    vi.useRealTimers();
+    expect(api.setClassColor).toHaveBeenCalledTimes(1);
+    expect(api.setClassColor).toHaveBeenCalledWith("p", 0, "#123456");
+    await waitFor(() => expect(api.getClip).toHaveBeenCalledTimes(2)); // reload, so fills/lanes/previews repaint
+  });
+  it("shows a class colour save error the way the page already shows errors", async () => {
+    vi.mocked(api.getClip).mockResolvedValue(detail);
+    vi.mocked(api.setClassColor).mockRejectedValue(new Error("disk full"));
+    renderLabel();
+    await screen.findByText("bench.mp4");
+    vi.useFakeTimers();
+    fireEvent.change(screen.getByLabelText("Class colour"), { target: { value: "#123456" } });
+    await act(async () => vi.advanceTimersByTime(300));
+    vi.useRealTimers();
+    expect(await screen.findByText("disk full")).toBeTruthy();
+  });
+  it("disables the class colour row when there is no class to colour", async () => {
+    const noClasses: ClipDetail = { ...detail, clip: { ...detail.clip, objects: [] }, classes: [], object_states: {} };
+    vi.mocked(api.getClip).mockResolvedValue(noClasses);
+    renderLabel();
+    await screen.findByText("bench.mp4");
+    expect((screen.getByLabelText("Class colour") as HTMLInputElement).disabled).toBe(true);
   });
   it("shows a load error with a way back", async () => {
     vi.mocked(api.getClip).mockRejectedValue(new ApiError(404, "clip c1 not found"));

@@ -53,6 +53,15 @@ then open `http://127.0.0.1:28000/` locally; uploads travel through the tunnel. 
 exposes an unauthenticated labeling server, which is why the CLI warns about it. `-o Compression=no` is
 usually faster for already-compressed footage, and `-o ServerAliveInterval=30` keeps a NAT'd tunnel alive.
 
+### Classes
+
+The Clips page's Classes section lists the project's classes, each with a swatch and an "Add class" form. The
+swatch is a colour picker: changing it saves the class's colour to the project (all of its clips) a moment after
+you stop dragging, and new exports' mask images pick it up too — an export already on disk keeps the colours it
+was made with. The same picker is on the Label page's right sidebar (see "Mask colours" below).
+`PATCH /api/projects/{id}/classes/{class_id}` (body `{"color": "#rrggbb"}`) does the save; an unknown class or
+project is a 404, a malformed colour a 422.
+
 ### Uploading footage
 
 The Clips page uploads a video file or a `.zip` of images and imports it in one step. The browser sends the
@@ -131,7 +140,7 @@ created by its first accepted or painted mask. A text prompt that finds several 
 **Accept all as new objects**, one object per candidate. **Delete object** asks first, naming how many frames lose
 their mask; it is refused while a propagation or an export runs.
 
-The frame shows every visible object in its class colour; only the active object gets the Mask outline. The timeline
+The frame shows every visible object in its class colour; only the active object gets the outline. The timeline
 has one lane per object (the active lane tall), a name gutter on the left, and the playhead across all lanes; past six
 lanes the lanes scroll with the mouse wheel. Hovering a frame lists every object's state on it. The Propagate panel
 runs **All objects** (every object with a mask on the current frame; the others are named as skipped) or **Selected**
@@ -270,9 +279,13 @@ middle-drag pan · right click = negative point. `Enter`, `Esc` and `Z` act on t
     the transport, the other tools, Propagate and Cleanup are disabled until you Save (Enter) or Discard (Esc). After
     Save the frame shows a keyframe diamond; propagate from it and check the run stops at the next keyframe. Erase the
     whole mask on another frame and Save: the frame becomes empty. The brush works with the engine unloaded.
-17. Mask outline (right sidebar): untick "Class colour" and pick a contrasting colour, drag Thickness from 0 (no
-    outline) to 12; the stored mask, the frames arriving during a propagation and text-prompt candidates all follow it,
-    with no white halo outside the mask. Reload the page: the setting is kept. Reset restores the class colour at 5 px.
+17. Mask colours (right sidebar): pick a new Class colour for the active object's class — the fill on this frame,
+    the timeline lane and text-prompt candidates all repaint; reopen the clip (or the project's other clips) and
+    the colour stuck. Then, under Outline, untick "Outline follows class colour" and pick a contrasting colour, drag
+    Thickness from 0 (no outline) to 12; the stored mask, the frames arriving during a propagation and text-prompt
+    candidates all follow it, with no white halo outside the mask. Reload the page: the outline setting is kept
+    (it is this browser only). Reset restores the outline to the class colour at 5 px, without touching the class
+    colour itself.
 18. Named datasets: export twice with the name "Cups v2"; the folders are `cups-v2` and `cups-v2-2`; rename one on the
     Train page; the Runs table shows the new name.
 19. (server) With two objects on a clip, `POST /propagate` with `objects: "all"` writes both objects' masks in one
@@ -287,7 +300,7 @@ middle-drag pan · right click = negative point. `Enter`, `Esc` and `Z` act on t
 21. Several objects: on one clip label a cup (#1), press `N`, choose another class and label it (#2). The Objects
     panel lists both with frame counts; the timeline shows two lanes, the active one tall; clicking a lane or its name
     selects that object, and `O` / `Shift+O` cycle. Hide #1 with its eye: it leaves the frame and its lane dims.
-    Only the active object carries the Mask outline; brushing #2 keeps #1 visible underneath.
+    Only the active object carries the outline; brushing #2 keeps #1 visible underneath.
 22. Propagate "All objects" from a frame where both have masks: both lanes fill in one run. Then "Selected: #2" from
     another of its keyframes: only lane 2 changes. Let one object leave the frame: the panel names it as lost while
     the other continues; start from a frame where only #1 has a mask with "All objects": #2 is named as skipped.

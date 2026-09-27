@@ -164,6 +164,8 @@ export const api = {
   createProject: (name: string) => request<Project>("/api/projects", post({ name })),
   getProject: (id: string) => request<Project>(`/api/projects/${id}`),
   addClass: (projectId: string, name: string) => request<ClassDef>(`/api/projects/${projectId}/classes`, post({ name })),
+  setClassColor: (projectId: string, classId: number, color: string) =>
+    request<ClassDef>(`/api/projects/${projectId}/classes/${classId}`, patch({ color })),
   listClips: (projectId: string) => request<ClipSummary[]>(`/api/projects/${projectId}/clips`),
 
   importFrames: (projectId: string, body: { path: string; fps: number; stride: number }) =>

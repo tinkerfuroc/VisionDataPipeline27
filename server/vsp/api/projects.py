@@ -13,6 +13,10 @@ class NameBody(BaseModel):
     name: str = Field(min_length=1, max_length=80)
 
 
+class ColorBody(BaseModel):
+    color: str = Field(pattern=r"^#[0-9a-fA-F]{6}$")
+
+
 @router.get("")
 def list_projects(state: State) -> list[dict]:
     return [p.model_dump(mode="json") for p in state.store.list_projects()]
@@ -31,6 +35,11 @@ def get_project(project_id: str, state: State) -> dict:
 @router.post("/{project_id}/classes", status_code=201)
 def add_class(project_id: str, body: NameBody, state: State) -> dict:
     return state.store.add_class(project_id, body.name).model_dump(mode="json")
+
+
+@router.patch("/{project_id}/classes/{class_id}")
+def set_class_color(project_id: str, class_id: int, body: ColorBody, state: State) -> dict:
+    return state.store.set_class_color(project_id, class_id, body.color).model_dump(mode="json")
 
 
 @router.get("/{project_id}/clips")

@@ -76,6 +76,35 @@ def test_add_class_is_atomic_under_concurrent_writers(store):
     assert sorted(c.name for c in classes) == sorted(names)
 
 
+def test_set_class_color_persists_and_lower_cases(store):
+    p = store.create_project("p")
+    c = store.add_class(p.id, "connector")
+    updated = store.set_class_color(p.id, c.id, "#ABCDEF")
+    assert updated.color == "#abcdef"
+    again = store.read_project(p.id)
+    assert again.classes[0].color == "#abcdef"
+    # a colour change only reaches NEW exports' mask PNG palette (mask_png.py reads c.color from the live
+    # project); an export already on disk carries its own export.json classes and is untouched by this.
+
+
+def test_set_class_color_rejects_a_bad_hex_string(store):
+    p = store.create_project("p")
+    c = store.add_class(p.id, "connector")
+    with pytest.raises(StoreError, match="invalid colour"):
+        store.set_class_color(p.id, c.id, "red")
+    with pytest.raises(StoreError, match="invalid colour"):
+        store.set_class_color(p.id, c.id, "#abc")
+
+
+def test_set_class_color_unknown_class_or_project(store):
+    p = store.create_project("p")
+    c = store.add_class(p.id, "connector")
+    with pytest.raises(NotFound):
+        store.set_class_color(p.id, c.id + 1, "#ffffff")
+    with pytest.raises(NotFound):
+        store.set_class_color("nope-000000", c.id, "#ffffff")
+
+
 def test_clip_roundtrip_preserves_int_keys(store):
     p = store.create_project("p")
     clip = _clip(store, p.id)

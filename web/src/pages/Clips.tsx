@@ -34,6 +34,10 @@ export function Clips() {
   const [dirPath, setDirPath] = useState("");
   const [dirFps, setDirFps] = useState(30);
   const [dirStride, setDirStride] = useState(1);
+  // A class colour is shown at once (the native picker fires onChange continuously while dragging) and saved
+  // ~300 ms after the last change; keyed by class id, and reset on a project switch (ids restart at 0 per project).
+  const [colorPreview, setColorPreview] = useState<Record<number, string>>({});
+  const colorTimers = useRef<Map<number, number>>(new Map());
 
   const fail = useCallback((e: unknown) => setError(e instanceof Error ? e.message : String(e)), []);
 
@@ -69,6 +73,14 @@ export function Clips() {
       .catch(fail);
   }, [projectId, loadClips, fail]);
 
+  // A class id from the previous project must never be read as this project's preview.
+  useEffect(() => {
+    colorTimers.current.forEach((t) => window.clearTimeout(t));
+    colorTimers.current.clear();
+    setColorPreview({});
+  }, [projectId]);
+  useEffect(() => () => colorTimers.current.forEach((t) => window.clearTimeout(t)), []);
+
   const project = projects.find((p) => p.id === projectId) ?? null;
 
   // F2: a single in-flight flag stops a double click (or click-while-pending) from starting a second request.
@@ -98,6 +110,23 @@ export function Clips() {
     setClassName("");
     await loadProjects();
   });
+
+  // Not `guarded`: several swatches can be mid-debounce at once, and none of them should disable Add class.
+  const changeClassColor = (projectId: string, classId: number, color: string) => {
+    setColorPreview((p) => ({ ...p, [classId]: color }));
+    const existing = colorTimers.current.get(classId);
+    if (existing !== undefined) window.clearTimeout(existing);
+    colorTimers.current.set(
+      classId,
+      window.setTimeout(() => {
+        colorTimers.current.delete(classId);
+        api
+          .setClassColor(projectId, classId, color)
+          .then(() => loadProjects())
+          .catch(fail);
+      }, 300),
+    );
+  };
 
   // Not `guarded`: an upload lasts minutes, and the in-flight lock would disable the rest of the page for its
   // whole duration. One upload at a time is enough, so `uploadRef` is the guard instead of `pending`.
@@ -259,7 +288,13 @@ export function Clips() {
                 <ul className="flex flex-wrap gap-x-3 gap-y-1 text-sm">
                   {project.classes.map((c) => (
                     <li key={c.id} className="flex items-center gap-1.5">
-                      <span aria-hidden className="inline-block h-3 w-3 rounded-sm" style={{ background: c.color }} />
+                      <input
+                        aria-label={`Colour of ${c.name}`}
+                        type="color"
+                        value={colorPreview[c.id] ?? c.color}
+                        className="h-7 w-12 cursor-pointer rounded-sm"
+                        onChange={(e) => changeClassColor(project.id, c.id, e.target.value)}
+                      />
                       {c.name}
                     </li>
                   ))}

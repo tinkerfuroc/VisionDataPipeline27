@@ -18,6 +18,7 @@ from .models import ClassDef, Clip, LabelObject, Project
 
 _ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 _PALETTE = ["#e6194b", "#3cb44b", "#4363d8", "#f58231", "#911eb4", "#42d4f4", "#f032e6", "#bfef45"]
+_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 
 
 class StoreError(Exception):
@@ -105,6 +106,20 @@ class ProjectStore:
             project.classes.append(cls)
             self.write_project(project)
             return cls
+
+    def set_class_color(self, project_id: str, class_id: int, color: str) -> ClassDef:
+        self.read_project(project_id)  # raises NotFound before the lock table grows an entry for a bogus id
+        if not _COLOR_RE.match(color):
+            raise StoreError(f"invalid colour: {color!r}; expected #rrggbb")
+        color = color.lower()
+        with self.lock(project_id):
+            project = self.read_project(project_id)
+            for cls in project.classes:
+                if cls.id == class_id:
+                    cls.color = color
+                    self.write_project(project)
+                    return cls
+            raise NotFound(f"class {class_id} not found in project {project_id!r}")
 
     # --------------------------------------------------------------- clips
     def new_clip_dir(self, project_id: str) -> tuple[str, Path]:

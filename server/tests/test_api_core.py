@@ -90,6 +90,22 @@ def test_projects_and_classes(client):
     assert client.get("/api/projects/..%2Fx").status_code in (400, 404)
 
 
+def test_set_class_color(client):
+    pid = _project(client, classes=("connector",))
+    class_id = client.get(f"/api/projects/{pid}").json()["classes"][0]["id"]
+
+    ok = client.patch(f"/api/projects/{pid}/classes/{class_id}", json={"color": "#ABCDEF"})
+    assert ok.status_code == 200 and ok.json()["color"] == "#abcdef"
+    got = client.get(f"/api/projects/{pid}").json()
+    assert got["classes"][0]["color"] == "#abcdef"
+
+    bad = client.patch(f"/api/projects/{pid}/classes/{class_id}", json={"color": "not-a-colour"})
+    assert bad.status_code == 422
+
+    assert client.patch(f"/api/projects/{pid}/classes/{class_id + 1}", json={"color": "#111111"}).status_code == 404
+    assert client.patch(f"/api/projects/nope-000000/classes/{class_id}", json={"color": "#111111"}).status_code == 404
+
+
 def test_import_frames_then_browse_the_clip(client, tmp_path):
     pid = _project(client)
     src = _frames_dir(tmp_path)
