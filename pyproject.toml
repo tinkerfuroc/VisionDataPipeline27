@@ -7,7 +7,8 @@ name = "visiondatapipeline27"
 version = "0.1.0"
 description = "SAM3 video labeling pipeline with an interactive web GUI."
 requires-python = ">=3.11,<3.12"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
 dependencies = [
     "fastapi>=0.115",
     "numpy>=1.26",
