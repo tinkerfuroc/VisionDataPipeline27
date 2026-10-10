@@ -1,7 +1,6 @@
 # vision-sampler-pipeline
 
 SAM3-driven video labeling for any number of user-chosen objects per clip.
-Design: `docs/superpowers/specs/2026-09-20-vision-sampler-design.md`.
 
 ## Setup
 
