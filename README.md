@@ -1,407 +1,105 @@
 # VisionDataPipeline27
 
-SAM3-driven video labeling for any number of user-chosen objects per clip.
+Turn raw video into instance-segmentation datasets and trained YOLO models from one browser tab.
 
-## Setup
+1. **Import** videos, zips of images or frame directories.
+2. **Label** any number of objects per clip with [SAM3](https://huggingface.co/facebook/sam3): click, drag a box or
+   type a phrase on one frame, then let SAM3 propagate the masks through the clip. Fix any frame with the brush.
+3. **Export** YOLO-seg, YOLO-det, COCO and mask-PNG datasets, with leak-free train/val splits (whole clips or clip
+   tails, never random frames) and optional synthetic copy-paste augmentation.
+4. **Train** YOLO26 / YOLO11 segmentation models on your GPUs, compare runs, browse validation predictions and export
+   ONNX.
 
-    uv sync
-    uv run vdp doctor          # torch build, GPU selection, bfloat16
-    uv run vdp verify-weights  # converted SAM3 checkpoint is complete
-    uv run pytest              # GPU tests skip themselves without CUDA + checkpoint
+The server is FastAPI + PyTorch; the GUI is React + Vite. Everything runs locally: a project lives in `data/`.
 
-Python, torch (`2.14.0+cu126`) and transformers (`5.17.0`) are pinned in `pyproject.toml`.
-Do not install torch from PyPI: its default build needs an NVIDIA driver >= 580.
+## Requirements
 
-Relative paths in the config (`project.data_root`, `sam3.model_dir`) are resolved against the
-repository root, not the current working directory, so `vdp` can be run from any directory.
+- Linux x86_64 with an NVIDIA GPU of compute capability 8.0 or newer (Ampere+, for bfloat16). Importing, browsing
+  and exporting also work without a GPU; labeling and training need one.
+- [uv](https://docs.astral.sh/uv/) (it installs Python 3.11 and the pinned torch `2.14.0+cu126` itself). Do not
+  install torch from PyPI: its default build needs an NVIDIA driver >= 580. Tested with driver 535.
+- Node.js 22 to build the web GUI.
+- A Hugging Face account with access to the gated [`facebook/sam3`](https://huggingface.co/facebook/sam3) model.
 
-## Verified on this machine
+## Quickstart
 
-- Date: 2026-09-20
-- GPU: NVIDIA GeForce RTX 3080 Ti, driver 535.183.01, torch 2.14.0+cu126, transformers 5.17.0
-- GPU smoke tests: 12 passed
-- Peak VRAM, 24-frame propagate at 640x480: 2.47 GiB
-- Text prompt "red circle" on the synthetic scene: 1 detection(s)
+```bash
+git clone https://github.com/tinkerfuroc/VisionDataPipeline27.git
+cd VisionDataPipeline27
+uv sync
+uv run vdp doctor               # torch build, GPU selection, bfloat16
 
-## Run the server
+cd web && npm ci && npm run build && cd ..   # writes web/dist, which the server serves
+```
 
-    HF_HUB_OFFLINE=1 uv run vdp serve        # http://127.0.0.1:28000 ; the model loads in the background
-    curl -s --noproxy '*' http://127.0.0.1:28000/api/health
+### Get the SAM3 weights
 
-`/api/health` shows `engine.loaded` and, if loading failed, the reason. It also reports `upload.max_bytes`, the
-size cap the GUI checks before it starts an upload. Interactive API docs: `/docs`.
-Importing, browsing and frame cleanup work without a GPU; prompting and propagation return 503 until the
-engine is loaded, and 409 (with the running `job_id`) while a propagation job holds the GPU. A propagate
-request also returns 409 with `job_id: "interactive"` if a prompt/accept/clear-range call is in flight;
-retry. Deleting a clip also returns 409 (with the running `job_id`) while a GPU job runs, so a delete can
-never race a propagation's writes. Cancelling an import job removes the partial clip it had started.
+SAM3 is released under Meta's SAM License; request access on its Hugging Face page first. The labeling engine needs
+the *video* model in Hugging Face format, which is converted once from Meta's `sam3.pt`:
 
-`POST /api/projects/{id}/export` starts an export job; body `{clips, formats, options, name}` → `202
-{job_id}`. `options.classes` is a list of project class ids to export (null or absent = every class); an
-empty list, a repeated id or an unknown class id is a 400. It returns 400 for an invalid request (unknown
-format, no clips, a bad option) and 409 (with the running `job_id`) while a propagation job runs, since
-propagation rewrites the very masks an export reads.
+```bash
+uv run hf auth login
+uv run hf download facebook/sam3 --local-dir vision_train/sam3_checkpoint
+curl -L -o vision_train/convert_sam3_video_to_hf.py \
+  https://raw.githubusercontent.com/huggingface/transformers/main/src/transformers/models/sam3_video/convert_sam3_video_to_hf.py
 
-### Reaching the GUI from another machine
+uv run vdp convert-weights \
+  --checkpoint vision_train/sam3_checkpoint/sam3.pt \
+  --converter vision_train/convert_sam3_video_to_hf.py \
+  --official-files-from vision_train/sam3_checkpoint \
+  --out vision_train/sam3_checkpoint_hf
+uv run vdp verify-weights       # checks sam3.model_dir (configs/default.yaml)
+```
 
-`vdp serve` binds `127.0.0.1` by default. Forward the port instead of binding the server to the network:
+`vision_train/` and `data/` are git-ignored.
+
+### Run
+
+```bash
+HF_HUB_OFFLINE=1 uv run vdp serve      # http://127.0.0.1:28000 — the model loads in the background
+uv run python scripts/seed_demo.py     # optional: a demo project with a synthetic clip
+```
+
+Open http://127.0.0.1:28000/. `/api/health` reports whether the engine loaded (and why not); `/docs` has the
+interactive API docs.
+
+### Using a remote GPU machine
+
+`vdp serve` binds `127.0.0.1` by default and has no authentication, so forward the port rather than binding the
+server to the network:
 
     ssh -N -L 28000:127.0.0.1:28000 user@gpu-host
 
-then open `http://127.0.0.1:28000/` locally; uploads travel through the tunnel. Binding a public interface
-exposes an unauthenticated labeling server, which is why the CLI warns about it. `-o Compression=no` is
-usually faster for already-compressed footage, and `-o ServerAliveInterval=30` keeps a NAT'd tunnel alive.
+then open `http://127.0.0.1:28000/` locally; uploads travel through the tunnel. `-o Compression=no` is usually
+faster for already-compressed footage, and `-o ServerAliveInterval=30` keeps a NAT'd tunnel alive.
 
-### Classes
+## Configuration
 
-The Clips page's Classes section lists the project's classes, each with a swatch and an "Add class" form. The
-swatch is a colour picker: changing it saves the class's colour to the project (all of its clips) a moment after
-you stop dragging, and new exports' mask images pick it up too — an export already on disk keeps the colours it
-was made with. The same picker is on the Label page's right sidebar (see "Mask colours" below).
-`PATCH /api/projects/{id}/classes/{class_id}` (body `{"color": "#rrggbb"}`) does the save; an unknown class or
-project is a 404, a malformed colour a 422.
+Settings live in [`configs/default.yaml`](configs/default.yaml) (server address, data root, SAM3 model directory
+and thresholds, upload limits, export defaults); pass another file with `vdp --config <file> ...`. Relative paths
+are resolved against the repository root, so `vdp` can be run from any directory.
 
-### Uploading footage
+## Documentation
 
-The Clips page uploads a video file or a `.zip` of images and imports it in one step. The browser sends each
-file as the raw request body (not multipart), one request per file, to
-`POST /api/projects/{p}/clips/upload?name=<file>&stride=<n>&fps=<n>` → `202 {job_id}`. `stride` applies to
-both kinds; `fps` only to a zip, because a video's frame rate comes from its container. A name is accepted if
-it ends in one of the video extensions in `vdp.api.clips.VIDEO_SUFFIXES` or in `.zip`; a zip may hold
-`.jpg/.jpeg/.png` entries in nested folders (natural order; `__MACOSX` and dotfiles are skipped). The upload
-is streamed once into `data/uploads/` and deleted when the import job ends, and a server killed mid-upload
-sweeps that directory at its next start. A body over `ingest.max_upload_bytes` (8 GiB by default) is refused
-with 413; the GUI refuses a file before its transfer begins, using the cap from `/api/health`.
+- [docs/usage.md](docs/usage.md): the GUI workflow (uploading, labeling several objects, exporting, training,
+  augmentation, keyboard shortcuts) and the `vdp train` CLI.
+- [docs/api.md](docs/api.md): server API behaviour beyond the OpenAPI schema.
+- [docs/manual-qa.md](docs/manual-qa.md): the manual QA checklist to run on real footage.
 
-The file picker and the drop zone both take several videos and/or zips at once, and "Keep every Nth frame" and
-"Frames per second (zip only)" sit above the picker because uploading starts as soon as files are chosen or
-dropped — there is no separate upload button. Each file is validated and snapshots those two settings at the
-moment it is chosen, so changing them afterwards only affects files chosen later; an invalid file (wrong type,
-a bad setting, or over the size cap) is skipped with a note naming it and why, while the rest of the same
-selection still queue. Queued files upload one at a time, in the order chosen, through a small queue shown in
-the sidebar: the running file with its progress, the waiting files by name (each removable with its own ×
-button), and any failed file with its error and a Dismiss button. A failure never stops the queue — it moves on
-to the next file. "Cancel upload" cancels the running file and moves on; "Cancel all" (once more than one file
-is queued or running) aborts the running file and clears the rest. Each transfer is a single request, so it
-needs the page to stay open: reloading or closing the tab cancels it and leaves nothing behind. Resumable
-uploads are not implemented yet. Peak disk use during an import is the upload plus the JPEG frames and
-thumbnails it writes.
+## Development
 
-### Several objects per clip (server API)
+```bash
+uv run pytest                   # GPU tests skip themselves without CUDA + the converted checkpoint
+uv run ruff check server scripts
+cd web && npm run dev           # hot-reloading GUI on :5173, proxying /api and /ws to :28000
+cd web && npm test && npm run typecheck
+```
 
-A clip can hold more than one labelled object (`clip.objects`, each with its own `id`, `class_id`, keyframes and
-`propagated_ranges`; ids are never reused). The web Label page edits them one active object at a time (see "Label
-page: several objects" below).
+See [CONTRIBUTING.md](CONTRIBUTING.md).
 
-`/prompt`, `/accept` and `/mask` require an `object_id` key (a body without it is a 422): `null` means a new object
-(`/accept` and `/mask` then need `class_id`; `/prompt` derives no click box from an existing mask), an id targets
-that object.
+## License
 
-- `POST /api/clips/{id}/prompt` and `POST /api/clips/{id}/accept` take the required `object_id`. `/accept` also
-  takes `candidates` (a list of candidate indices from a text prompt that found several detections) as an
-  alternative to the single `candidate` index; `candidates` requires `object_id` to be `null`, since each accepted
-  candidate becomes its own new object (with `class_id`), and their ids come back in `object_ids`. An existing
-  `object_id` cannot be combined with `class_id` (relabel with the `PATCH` route below instead).
-- `POST /api/clips/{id}/mask` (the brush) takes the same required `object_id` and optional `class_id` and returns
-  the object id it wrote to as `object_id`.
-- `POST /api/clips/{id}/propagate` and `POST /api/clips/{id}/clear-range` take an `objects` field: `"all"`
-  (default) or a non-empty list of object ids. Propagate resolves and validates the objects up front, so an
-  unknown id is a 404 and a listed object with no mask on `from_frame` is a 400, both before the job starts, not
-  a failed job.
-  The job result keeps `processed`/`written`/`cleared`/`lost_at`/`cancelled`/`oom_retries` and adds
-  `lost_by_direction` (per direction, object id → the frame it was first empty on), `lost` (merged over both
-  directions, object id → frame), `skipped` (object ids the job itself left out when it re-read the clip —
-  deleted, or with no seed mask on `from_frame`) and `objects` (the ids that actually ran). Each `"frame"`
-  progress event's `objects` list carries `{"id", "has_mask"}` per object that covered that frame. There is no
-  clip-level `has_mask`: a frame's overall state follows from the objects' lanes.
-- `PATCH /api/clips/{id}/objects/{object_id}` (body `{"class_id": ...}`) relabels an object;
-  `DELETE /api/clips/{id}/objects/{object_id}` removes it and its mask files (409 while any export or GPU job
-  is running, server-wide, as for deleting a clip).
-- `GET /api/clips/{id}/objects/{object_id}/masks/{idx}` serves one object's mask PNG (404 for an unknown object).
-- Clip detail responses (`GET /api/clips/{id}` and every route that returns one) add `object_states`: a map from
-  each object's id (as a string key) to its own per-frame state list (`empty`/`masked`/`keyframe`/`deleted`),
-  alongside the `states` field, which keeps reporting the whole clip (any object).
-
-## Web GUI
-
-Node 22 is installed with nvm (`source ~/.nvm/nvm.sh` in a fresh shell).
-
-    cd web && npm ci            # once
-    npm run build               # writes web/dist, which `vdp serve` serves at http://127.0.0.1:28000/
-    npm run dev                 # or: hot-reloading dev server on http://127.0.0.1:5173 (proxies /api and /ws to :28000)
-    npm test                    # vitest
-
-### Demo data
-
-With the server running, `uv run python scripts/seed_demo.py` creates a project "demo" with a synthetic 40-frame clip
-(a disc moving across the frame), labels frame 0 with one click and propagates forward, then prints the URL to open.
-`--no-label` imports only.
-
-### Label page: several objects
-
-A clip can hold any number of objects, each with its own class (two cups and a bowl are three objects). The
-**Objects** panel in the right sidebar lists them as `#id class` with the number of frames each has a mask on; the
-highlighted row is the **active object**, which every prompt, accept, brush save, "Selected" propagation and
-"Active object" clear acts on. Click a row (or press `O` / `Shift+O`) to change it. The eye hides an object from the
-frame (display only, for this page session). Picking a class from the select **always starts a new object** of it
-("New object (class)"), whether or not one is already active — it never relabels, even if that class already has an
-object. To relabel the active object instead, use the separate "Change class of #id" row: choose a class there and
-press **Change** (disabled until you pick a class other than its own); this applies at once, also during a
-propagation. **+ New object** (`N`) starts the same "New object (class)" row: the object is created by its first
-accepted or painted mask. A text prompt that finds several candidates on a New object row offers **Accept all as new
-objects**, one object per candidate. **Delete object** asks first, naming how many frames lose their mask; it is
-refused while a propagation or an export runs.
-
-The frame shows every visible object in its class colour; only the active object gets the outline. The timeline has
-one lane per project class (the active object's class tall), including a class with no object in this clip (an
-empty lane, its name with no count suffix); a class with more than one object gets one lane summarising all of them,
-named "Class ×n". A name gutter sits on the left, and the playhead spans all lanes; past six lanes the lanes scroll
-with the mouse wheel. Clicking a lane (or its name) selects that class: its lowest-id object if it has one, else it
-starts a new object of it, same as the class select — clicking the class already active does nothing. Hovering a
-frame lists every class's state on it. The Propagate panel runs **All objects** (every object with a mask on the
-current frame; the others are named as skipped) or **Selected** only; lost objects are named one by one. Cleanup's
-"Clear masks" acts on the **Active object** (default) or **All objects**. `K`, `G` and "has a mask here" follow the
-active object's own lane, not its class's.
-
-### Exporting
-
-An export lands under `data/exports/<export_id>/`: an `images/` directory holding one copy of every
-exported frame, plus one directory per requested format — `yolo_seg/`, `yolo_det/`, `coco/` and/or
-`masks/` — and an `export.json` manifest recording the resolved options, the clips exported (with their
-per-split frame counts), the class map (per exported class: `id`/`yolo_id` = export id, `coco_id`/`mask_value`
-= export id + 1, and `project_class_id`, the project's own class id) and the train/val image counts. The
-train/val split is always either per clip (whole clips held out for validation) or contiguous (the tail of
-every clip held out), never random per frame: neighbouring video frames are nearly identical, so a random
-per-frame split would leak validation frames into training. A cancelled or failed export removes its
-directory rather than leaving a partial dataset behind.
-
-The Export page's right sidebar has a Classes section: one checkbox per class with its swatch and its object
-count over the included clips, all ticked by default. Deleted frames and the "every Nth frame" stride apply
-first; objects of unticked classes are left out before the empty-frame rule, so a frame left without objects
-is kept or dropped by "Include frames without a mask", and the split is taken after that. The exported classes are renumbered 0..k-1 in project class order (YOLO ids;
-COCO category ids and mask values are one higher); `options.class_ids` in `export.json` records the chosen
-project class ids (null = every class). Where objects overlap, the mask image holds one value per pixel:
-objects are painted largest first, so a smaller object lying on a larger one stays visible. The `masks`
-entry of `export.json`'s `formats` reports `overlap_px`, the pixels claimed by more than one object (the
-other formats keep every object whole).
-
-When you create an export, the Export page's right sidebar has a "Dataset name" field (optional, up to 80
-characters). If you provide a name, the export folder is named using that name, lowercased, with any
-characters outside `a-z 0-9 . _ -` converted to `-`, and truncated to 48 characters at most. If that folder
-name already exists, the system appends `-2`, `-3`, etc. to avoid collision. If you leave the field empty or
-the name contains no usable characters, the folder is named with a timestamp ID instead. The name is stored in
-`export.json` under the `name` field and is displayed on the Train page (in the export list and Runs table)
-alongside the folder ID. You can rename an export on the Train page using the "Rename export" field below
-the export list, or via the API with `PATCH /api/exports/{id}` passing `{"name": ...}`. The folder ID never
-changes when you rename, so existing training runs continue to work. Augmented copies are named
-"`<source name or id> ×N augmented`".
-
-Noise is removed once, the same way for every format: connected blobs of a mask smaller than `min_area_px`
-(64 by default) are dropped, what is left is the object for the polygon, the box, the area and the mask image alike,
-and an object with nothing left counts as absent. With "include frames without a mask" off, the validation tail of
-the contiguous split is taken from the frames that are actually exported.
-
-Polygon and box coordinates share one convention in every format: continuous image coordinates, where pixel
-`i` covers `[i, i + 1)`. An export refuses to start while a propagation is running (409), a clip cannot be
-deleted while an export is reading it (409), and a request that turns out to have no usable mask at all is
-reported as a failed job ("nothing to export"), because finding that out means reading the masks.
-
-### Training
-
-`uv sync` installs Ultralytics (YOLO26 and YOLO11 segmentation). Train from the Train page (header → Train) or from
-the terminal:
-
-    uv run vdp train --list                                  # exports that have a yolo_seg dataset (shows each export's folder id, name, project, image counts and classes)
-    uv run vdp train --export <folder_id> --gpu 1            # yolo26s/m-seg and yolo11s/m-seg, one after another
-    uv run vdp train --export <folder_id> --model yolo26s-seg --epochs 150 --imgsz 960 --batch 8
-
-Each run lives in `data/runs/<run_id>/`: `run.json` (request and status), `worker.log`, Ultralytics' own output under
-`train/` (`weights/best.pt`, `last.pt`, `results.csv`, plots) and `predictions.json` (best.pt on every val image, conf
-≥ 0.25). Pretrained checkpoints are cached in `data/train_weights/`. A run is a separate process
-(`python -m vdp.train.worker`) with `CUDA_VISIBLE_DEVICES` set to its GPU, so a crash or out-of-memory error ends
-that run only.
-
-The server keeps one queue per GPU: one run at a time per GPU, GPUs in parallel. GPUs are ranked fastest first by
-estimated compute throughput — SM count × cores per SM (from compute capability) × max SM clock (from NVML), not a
-real benchmark but a much better speed proxy than compute capability or VRAM alone; VRAM only breaks a throughput
-tie. The default GPU is the fastest one that is not already training — SAM3 sharing it does not disqualify it, and
-the GUI's "shares memory with SAM3" warning still applies when it is chosen. The Train page's New-runs form has one
-GPU choice for every model started together (listed best first, each labelled with its estimated TFLOPS and free
-VRAM from NVML, and the default marked), plus a "Different GPU per model" checkbox that reveals a per-model override
-seeded from that choice. `vdp train` without `--gpu` picks the same way and prints which GPU it chose and why;
-`--gpu` overrides it, as before. Cancel stops a run after SIGTERM (SIGKILL after 30 s) and keeps `last.pt`. Resume
-continues a cancelled, interrupted or errored run from its last finished epoch, on a GPU you choose (default the
-fastest idle one): click "Resume" in the Runs table (or select the run) to open its "Stopped run" section in the
-right sidebar, pick a GPU there (same best-first list and labels as New-runs, with the SAM3 and busy notes) and
-click "Resume on cuda:N". The worker itself needs no GPU-specific change to move a resumed run: it always trains as
-device 0 under a fresh `CUDA_VISIBLE_DEVICES` set to the newly chosen GPU, and Ultralytics' checkpoint-saved device
-("0") is relative to that, not to any physical GPU. A run that was training when the server stopped is shown as
-"interrupted" and can be resumed; queued runs are queued again.
-
-"Mark complete" finishes a cancelled or interrupted run with its best epoch so far instead of training further: it
-needs `best.pt` on disk already (a run cancelled or interrupted before its first improving epoch has none, and is
-not eligible; neither is one that ended in `error`, since its `best.pt`, if any, is not trusted). Click "Mark
-complete" in the Runs table (or select the run) to open the same "Stopped run" section, pick a GPU there and click
-"Mark complete on cuda:N". It queues on that GPU like any run, so it shows in the GPU queues and can be cancelled;
-the worker then skips training entirely, strips `best.pt`'s optimizer state (`last.pt` is untouched -- the same
-finalising step Ultralytics itself does at the end of a normal run) and runs the validation-predictions gallery on
-that GPU, before marking the run `done` (`completed_early: true` in `run.json`, and ONNX export becomes available)
-with that best epoch's metrics. `POST /api/train/runs/{run_id}/complete` (optional `{"gpu": N}` body) does the same
-from the API; a 409 means the run is not eligible.
-
-`vdp train` runs in the foreground and owns its runs; Ctrl-C,
-SIGTERM and SIGHUP (a closed terminal, `kill`) all cancel them the same way. Do not start it on a GPU the server is
-also training on. Do not set `CUDA_VISIBLE_DEVICES` for the server process itself — GPU indexes (from `vdp doctor`,
-the Train page and `vdp train --gpu`) are passed to each worker as-is, so setting it on the server would remap or
-hide devices under it. A run started by `vdp train` shows on the Train page's GPU queues as "running in another
-process (vdp train)"; it can only be cancelled from the terminal it was started in.
-
-Defaults: 100 epochs, early stop after 30 epochs without improvement, 960 px, batch 8, COCO-pretrained weights,
-Ultralytics' default augmentation. Metrics come from `results.csv`; the comparison table ranks runs by the best mask
-mAP50-95 epoch. ONNX export (`best.onnx`, static, square at the run's image size, 960 × 960 by default) runs on the run's GPU queue.
-
-### Train from a previous run on new data
-
-Any run can be trained further on a *different* export, as long as that export has exactly the same classes (same
-names, same order) as the run being started from. This always creates a new run — the source run is never modified
-— in one of two modes:
-
-- **Continue** — a true resume on the new export: from the source run's own `last.pt`, keeping its epoch counter,
-  optimizer state, LR schedule and training hyper-parameters, and training the remaining epochs on the newly chosen
-  export. Only a run that stopped before finishing (cancelled, interrupted or errored, with a `last.pt` on disk —
-  the same rule as "Resume") is eligible; a finished run's `last.pt` has been stripped by Ultralytics and cannot be
-  resumed.
-- **Fine-tune** — a new training that starts from the source run's `best.pt` weights instead of the pretrained
-  `<model>.pt`, with a fresh epoch schedule and whatever params you set (epochs, image size, batch, patience,
-  workers, seed, augmentation…), exactly like starting a new run. Any run with a `best.pt` is eligible, finished ones
-  included.
-
-From the Train page: pick the source run from the New-runs form's "Start from" select (only continuable or
-fine-tunable runs are listed, newest first) — or click "Train on new data" next to a stopped run, or (any run with
-a `best.pt`) in the run detail header, which does the same thing and scrolls the New-runs form into view. Choose Continue or
-Fine-tune (whichever the source run is not eligible for is shown disabled, with the reason); pick the export to
-train on next — one whose classes do not match is disabled in the list, with " — different classes" appended, and
-the Start button itself is disabled with a note if the current choice mismatches. For Continue, the params fields
-are shown read-only (the source run's own settings are kept, not what is on screen); for Fine-tune they are editable
-as normal. Pick a GPU and click "Continue on new data" / "Fine-tune on new data". The Runs table marks the new run
-with a small note ("continued from …" / "fine-tuned from …"), and the run detail header names the epoch training
-switched to the new data at.
-
-From the API: `POST /api/train/runs/{run_id}/from-checkpoint` with `{"export_id": "<id>", "mode": "continue" |
-"finetune", "gpu": N, "params": {...}}` (`params` is honoured only for `"finetune"`; a `"continue"` run always keeps
-the source's own params) → `{"run_id": "<new id>"}` (201). 404 for an unknown run or export, 409 when the source run
-is not eligible for the chosen mode or the export's classes do not match, 400 for an unknown GPU.
-
-From the CLI: `uv run vdp train --export <new_export_id> --from-run <run_id> --mode continue|finetune [--gpu N]
-[params…]` trains one run (the source's own model) in the foreground exactly like `vdp train` does for a new run;
-`--model` cannot be combined with `--from-run`. As with the API, `[params…]` (`--epochs`, `--imgsz`, …) only affects
-`--mode finetune` — a `continue` run always keeps the source's own params.
-
-**Manual QA:** train a run to completion, cancel a second run partway through (so it has a `last.pt`), then
-Continue the cancelled run and Fine-tune the finished one onto a different export with the same classes; confirm
-both queue as new runs, the source runs are untouched on the Train page, and Continue's metrics chart carries over
-the source run's earlier epochs.
-
-### Augmentation
-
-**Presets:** `uv run vdp train --export <id> --augment strong` (or `default`, on the Train page select Default / Strong / Custom). The **Strong** preset raises geometric, photometric and copy-paste augmentation above Ultralytics' defaults: degrees 15, shear 5, perspective 0.0005, flip up 0.5, flip horizontal 0.5, scale 0.6, translate 0.2, HSV hue 0.02, saturation 0.7, value 0.5, mosaic 1.0, mixup 0.1, copy_paste 0.3, plus RandomBrightnessContrast, MotionBlur, GaussianBlur, GaussNoise, ImageCompression and CLAHE. The Custom preset on the GUI allows per-field adjustment.
-
-Installing `albumentations` (a dependency since this branch, `uv sync` pulls it in) also lets Ultralytics enable its own built-in low-probability Blur, MedianBlur, ToGray and CLAHE transforms, independent of the preset above — so a **Default** run on this branch is not pixel-identical to a default run from before it.
-
-**Background pools:** `uv run vdp backgrounds fetch dtd` (CLI, ~625 MB) or `POST /api/backgrounds/dtd/fetch` (web job) downloads the Describable Textures Dataset (5,640 images, one category per folder) to `data/backgrounds/dtd/`. The `--force` flag redownloads even if images are present.
-
-**Augmented copies:** From the Train page, when an export has the `masks` format, an "Augmented copy" panel creates a new export with real train frames plus `per_image × (frame count)` synthetic composites named `syn_*`, seeded by a "Seed" field (0 by default, so two copies of the same export can differ). Each composite pastes `1–3` (user configurable) cutouts cut from real frames (one cutout per object, rasterised from the source's COCO train annotations when the source has the COCO format; without it, one cutout per class region of the mask images, so touching objects of one class are cut together — the panel says so) onto random background textures, scaled, rotated, positioned and colour-matched. With COCO, shared pixels are resolved per class (the smaller object wins within a class; across classes the mask image decides) and holes come from the mask image, except a holed object lying on a larger object of the same class (the mask image can't tell those two apart, so the hole still shows the host's pixels — a known remaining limit). `export.json`'s `augment.cutouts` records which (`per_object` / `per_class_region`); the same seed on an export made before this change may give different composites. Val frames are unchanged (images hard-linked, labels copied verbatim per format). The source export is never modified and cannot itself be augmented if it is already derived. The copy carries over whichever of `yolo_seg`, `yolo_det`, `coco` and `masks` the source export has — not always all four. The copy's `export.json` names its source in a `derived_from` field (`null` for an ordinary export).
-
-**Prediction strip:** On the Train page, when a run finishes, a "Validation predictions" gallery shows four images at a time, scrollable. Filter chips select All / Missed (ground truth present but no prediction) / Worst IoU. Click a card to enlarge it. Keyboard `←/→` pages the strip by four images at a time; once a card is enlarged, the same keys instead step one image at a time through the current filter, and `Esc` (or "Back to strip") returns to the strip positioned on that card. The overlay shows ground truth as a dashed outline and predictions filled blue with confidence scores. IoU values per image are computed with the export's polygon convention and cached in `<run_dir>/predictions_iou.json`, rebuilt when `predictions.json` changes.
-
-### Keyboard
-
-`Enter` accept · `Esc` clear · `Z` undo click · `←/→` step · `Shift+←/→` ±10 · `Space` play/pause · `K` / `Shift+K`
-next / previous keyframe of the active object · `G` its next empty frame · `O` / `Shift+O` next / previous object · `N` new object · `Del` delete or restore frame · `[` / `]` mark the first / last frame to clear · `-` / `=` shrink / grow the brush (Brush tool) · `M` mask overlay · mouse wheel zoom ·
-middle-drag pan · right click = negative point. `Enter`, `Esc` and `Z` act on the brush while it is selected (Save, Discard, Undo stroke) instead of accept / clear / undo click.
-
-### Manual QA checklist (run on real footage before trusting a dataset)
-
-1. Import a video and a frame directory (try a stride > 1); cancel one import midway and confirm no clip appears.
-2. Label by each method: clicks (add a negative click), a box dragged bottom-right → top-left plus a refining click,
-   and a text phrase with several candidates. Check the "no usable mask" message on an empty region.
-3. Propagate forward, backward and both from a mid-clip keyframe; press Stop during one and confirm the masks so far stay.
-4. Let the object leave the frame: propagation should stop early and seek to the "lost at" frame.
-5. Correct a bad frame mid-clip (it becomes a keyframe) and propagate again: the run must stop at the next keyframe.
-   Then Stop a run part-way and propagate again from the last masked frame: it continues from there, and the
-   buttons stay disabled on a frame that has no mask.
-6. Scrub the timeline and play at clip fps with the overlay on; delete a frame, restore it, prune the tail. Clear masks:
-   Shift-drag a stretch of the timeline (or press `[` and `]`), check the button names the frames and the note counts
-   the masks and keyframes, clear them, and confirm the keyframes inside the stretch are gone from the timeline too,
-   the mark disappears, and a new prompt lands on the active object with its class.
-7. Reload the page during a propagation: the panel should re-attach to the running job.
-8. Stop the server: the banner says it is unreachable; start it without weights: the banner shows the reason and
-   importing / cleanup still work.
-9. Propagate twice in one page session (let the first run finish, then start a second from a keyframe) and reload
-   the page partway through the second run: it must re-attach to the second job, not the first.
-10. Open the same clip in two tabs; start a propagation in tab A, then click to prompt in tab B on a different clip:
-    B must not move or show A's progress as its own.
-11. Delete a keyframe: its marker disappears from the timeline and propagation is blocked from it until it is restored.
-12. Read the timeline without relying on colour: masked runs are filled (in the class colour), frames without a mask
-    are hollow, deleted frames are hatched and keyframes carry an amber diamond. Hover it for a thumbnail with the
-    frame number and state. Zoom into the frame, then press Fit in the tool rail. Tab through the page: every control
-    shows a focus ring.
-13. Export (the "Export dataset" button on the Clips page): with two or more clips, move a clip between Training and
-    Validation by hand and export all four formats; with one clip selected, check the note says the tail of the clip
-    becomes the validation set. Cancel an export midway and confirm its folder under `data/exports/` is gone. Open
-    `export.json`, then load the result in the tool you train with: `yolo_seg/data.yaml` or `yolo_det/data.yaml` in
-    Ultralytics, `coco/annotations/instances_train.json` with pycocotools, and look at a few `masks/masks/` PNGs
-    (pixel value = `mask_value` from the manifest's class map).
-14. Upload footage from the Clips page over the SSH forward. Set stride/fps, then choose (or drop) several files
-    at once, mixing a video, a zip and an invalid file (e.g. a `.txt`): uploading must start immediately with no
-    button click, the invalid file must be skipped with a note naming it, and the rest must upload one at a time
-    in the order chosen, each finished one becoming a clip whose name, frame count and fps are right. Watch the
-    percentage move for the running file and the waiting files listed by name; remove a waiting file with its ×
-    button and confirm it never uploads. Let one file fail (e.g. by editing `ingest.max_upload_bytes` down) and
-    confirm it shows its error with a Dismiss button while the rest still upload. Press "Cancel upload" mid-transfer:
-    it must stop without an error message and the queue must move on to the next file. With several files still
-    queued, press "Cancel all": the running transfer and every waiting file must clear. Reload the page during an
-    upload and confirm the transfer stops, no partial clip appears, and `data/uploads/` is empty.
-15. Upload a file larger than `ingest.max_upload_bytes`: the GUI must refuse it before the transfer starts, and
-    `curl -X POST --data-binary @big.mp4 .../clips/upload?name=big.mp4` must answer 413.
-16. Brush: pick the Brush tool on a masked frame, paint a missing corner (left-drag) and erase a spill (right-drag);
-    the transport, the other tools, Propagate and Cleanup are disabled until you Save (Enter) or Discard (Esc). After
-    Save the frame shows a keyframe diamond; propagate from it and check the run stops at the next keyframe. Erase the
-    whole mask on another frame and Save: the frame becomes empty. The brush works with the engine unloaded.
-17. Mask colours (right sidebar): pick a new Class colour for the active object's class — the fill on this frame,
-    the timeline lane and text-prompt candidates all repaint; reopen the clip (or the project's other clips) and
-    the colour stuck. Then, under Outline, untick "Outline follows class colour" and pick a contrasting colour, drag
-    Thickness from 0 (no outline) to 12; the stored mask, the frames arriving during a propagation and text-prompt
-    candidates all follow it, with no white halo outside the mask. Reload the page: the outline setting is kept
-    (it is this browser only). Reset restores the outline to the class colour at 5 px, without touching the class
-    colour itself.
-18. Named datasets: export twice with the name "Cups v2"; the folders are `cups-v2` and `cups-v2-2`; rename one on the
-    Train page; the Runs table shows the new name.
-19. (server) With two objects on a clip, `POST /propagate` with `objects: "all"` writes both objects' masks in one
-    run; with `[2]` only object 2's; an object that disappears is reported under `lost` while the other continues.
-20. Class selection: on a project with three classes, untick one on the Export page (the counts follow the
-    included clips) and export all four formats; `yolo_seg/data.yaml` lists the remaining classes as 0 and 1,
-    COCO categories are 1 and 2, the mask PNG values are 1 and 2, and `export.json` maps them back with
-    `project_class_id`. Untick every class: Start says "Choose at least one class." Put a small object on a
-    large one: the mask PNG shows the small one, and `overlap_px` is non-zero. Make an augmented copy of an
-    export with COCO: `augment.cutouts` is `per_object`; of one without COCO: the panel notes the fallback and
-    it is `per_class_region`.
-21. Several objects: on one clip label a cup (#1), press `N`, choose another class and label it (#2). The Objects
-    panel lists both with frame counts; the timeline shows one lane per project class (a third, unused
-    class shows an empty lane too), the active object's class tall; clicking a lane or its name selects that class's
-    object, and `O` / `Shift+O` cycle. Hide #1 with its eye: it leaves the frame and its lane dims once every object
-    of its class is hidden. Only the active object carries the outline; brushing #2 keeps #1 visible underneath. With
-    #1 active, pick #2's class from the Class select: it starts a new object of that class (a third object) rather
-    than relabelling #1 — use "Change class of #1" and **Change** instead to actually relabel it.
-22. Propagate "All objects" from a frame where both have masks: both classes' lanes fill in one run. Then
-    "Selected: #2" from another of its keyframes: only #2's class lane changes. Let one object leave the frame: the
-    panel names it as lost while the other continues; start from a frame where only #1 has a mask with "All
-    objects": #2 is named as skipped.
-23. Shift-drag a stretch and clear it with "Active object", then again with "All objects"; check the note counts the
-    right masks each time. Relabel #2 during a propagation with "Change class of #2" and **Change** (allowed); try to
-    delete #1 during a propagation and during an export (refused), then delete it (the dialog names its frame count)
-    and check #2 becomes active.
-24. Text-prompt "cup" on a New object row with several cups in view: "Accept all as new objects" creates one object
-    per candidate, all in the New object row's class — the timeline keeps showing a single lane for it, labelled
-    "cup ×n". Add classes until the project has seven, labelling one object in each: the timeline stops growing at
-    six lanes and scrolls with the wheel, and `O` onto an off-screen object's class scrolls its lane into view.
+[MIT](LICENSE). Parts of the SAM3 engine are ported from
+[tinkerfuroc/tk25_vision_train](https://github.com/tinkerfuroc/tk25_vision_train); see
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). The SAM3 weights are not part of this repository and are governed
+by Meta's SAM License.
