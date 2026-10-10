@@ -187,8 +187,8 @@ describe("Train page", () => {
     renderPage();
 
     // The batch default (cuda:0, the fastest idle GPU by this server's own bookkeeping) is busy
-    // with a foreign `vsp train` process's run that this server does not own.
-    expect(await screen.findByText(/cuda:0 is busy with a vsp train run in another process/)).toBeTruthy();
+    // with a foreign `vdp train` process's run that this server does not own.
+    expect(await screen.findByText(/cuda:0 is busy with a vdp train run in another process/)).toBeTruthy();
 
     // Switching to cuda:1 instead shows this server's own queue-behind note (it is training r1).
     fireEvent.change(screen.getByLabelText("GPU"), { target: { value: "1" } });
@@ -200,7 +200,7 @@ describe("Train page", () => {
     const panel = queue.closest("section")!;
     const gpu0 = within(panel).getByText(/cuda:0 NVIDIA GeForce RTX 3080 Ti/).parentElement!.parentElement!;
     expect(
-      within(gpu0).getByText("yolo11m-seg · Epoch 5/100 · running in another process (vsp train)"),
+      within(gpu0).getByText("yolo11m-seg · Epoch 5/100 · running in another process (vdp train)"),
     ).toBeTruthy();
     expect(within(gpu0).queryByText("Idle")).toBeNull();
     expect(within(gpu0).queryByRole("button", { name: "Cancel" })).toBeNull();

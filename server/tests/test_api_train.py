@@ -5,11 +5,11 @@ import sys
 import pytest
 from fastapi.testclient import TestClient
 from train_fixtures import EXPORT_ID, FAKE_WORKER, make_export, wait_for
-from vsp.api.app import create_app
-from vsp.config import Settings
-from vsp.engine.fake import FakeEngine
-from vsp.train import scheduler as scheduler_mod
-from vsp.train.scheduler import Gpu, TrainScheduler
+from vdp.api.app import create_app
+from vdp.config import Settings
+from vdp.engine.fake import FakeEngine
+from vdp.train import scheduler as scheduler_mod
+from vdp.train.scheduler import Gpu, TrainScheduler
 
 
 class _FakeNvml:
@@ -303,7 +303,7 @@ def test_bad_requests(client):
 
 
 def test_unavailable_without_ultralytics(client, monkeypatch):
-    import vsp.api.train as train_api
+    import vdp.api.train as train_api
 
     monkeypatch.setattr(train_api, "find_spec", lambda name: None)
     st = client.get("/api/train/status").json()

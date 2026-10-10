@@ -1,19 +1,19 @@
-# vision-sampler-pipeline
+# VisionDataPipeline27
 
 SAM3-driven video labeling for any number of user-chosen objects per clip.
 
 ## Setup
 
     uv sync
-    uv run vsp doctor          # torch build, GPU selection, bfloat16
-    uv run vsp verify-weights  # converted SAM3 checkpoint is complete
+    uv run vdp doctor          # torch build, GPU selection, bfloat16
+    uv run vdp verify-weights  # converted SAM3 checkpoint is complete
     uv run pytest              # GPU tests skip themselves without CUDA + checkpoint
 
 Python, torch (`2.14.0+cu126`) and transformers (`5.17.0`) are pinned in `pyproject.toml`.
 Do not install torch from PyPI: its default build needs an NVIDIA driver >= 580.
 
 Relative paths in the config (`project.data_root`, `sam3.model_dir`) are resolved against the
-repository root, not the current working directory, so `vsp` can be run from any directory.
+repository root, not the current working directory, so `vdp` can be run from any directory.
 
 ## Verified on this machine
 
@@ -25,7 +25,7 @@ repository root, not the current working directory, so `vsp` can be run from any
 
 ## Run the server
 
-    HF_HUB_OFFLINE=1 uv run vsp serve        # http://127.0.0.1:28000 ; the model loads in the background
+    HF_HUB_OFFLINE=1 uv run vdp serve        # http://127.0.0.1:28000 ; the model loads in the background
     curl -s --noproxy '*' http://127.0.0.1:28000/api/health
 
 `/api/health` shows `engine.loaded` and, if loading failed, the reason. It also reports `upload.max_bytes`, the
@@ -44,7 +44,7 @@ propagation rewrites the very masks an export reads.
 
 ### Reaching the GUI from another machine
 
-`vsp serve` binds `127.0.0.1` by default. Forward the port instead of binding the server to the network:
+`vdp serve` binds `127.0.0.1` by default. Forward the port instead of binding the server to the network:
 
     ssh -N -L 28000:127.0.0.1:28000 user@gpu-host
 
@@ -67,7 +67,7 @@ The Clips page uploads a video file or a `.zip` of images and imports it in one 
 file as the raw request body (not multipart), one request per file, to
 `POST /api/projects/{p}/clips/upload?name=<file>&stride=<n>&fps=<n>` → `202 {job_id}`. `stride` applies to
 both kinds; `fps` only to a zip, because a video's frame rate comes from its container. A name is accepted if
-it ends in one of the video extensions in `vsp.api.clips.VIDEO_SUFFIXES` or in `.zip`; a zip may hold
+it ends in one of the video extensions in `vdp.api.clips.VIDEO_SUFFIXES` or in `.zip`; a zip may hold
 `.jpg/.jpeg/.png` entries in nested folders (natural order; `__MACOSX` and dotfiles are skipped). The upload
 is streamed once into `data/uploads/` and deleted when the import job ends, and a server killed mid-upload
 sweeps that directory at its next start. A body over `ingest.max_upload_bytes` (8 GiB by default) is refused
@@ -127,7 +127,7 @@ that object.
 Node 22 is installed with nvm (`source ~/.nvm/nvm.sh` in a fresh shell).
 
     cd web && npm ci            # once
-    npm run build               # writes web/dist, which `vsp serve` serves at http://127.0.0.1:28000/
+    npm run build               # writes web/dist, which `vdp serve` serves at http://127.0.0.1:28000/
     npm run dev                 # or: hot-reloading dev server on http://127.0.0.1:5173 (proxies /api and /ws to :28000)
     npm test                    # vitest
 
@@ -211,14 +211,14 @@ reported as a failed job ("nothing to export"), because finding that out means r
 `uv sync` installs Ultralytics (YOLO26 and YOLO11 segmentation). Train from the Train page (header → Train) or from
 the terminal:
 
-    uv run vsp train --list                                  # exports that have a yolo_seg dataset (shows each export's folder id, name, project, image counts and classes)
-    uv run vsp train --export <folder_id> --gpu 1            # yolo26s/m-seg and yolo11s/m-seg, one after another
-    uv run vsp train --export <folder_id> --model yolo26s-seg --epochs 150 --imgsz 960 --batch 8
+    uv run vdp train --list                                  # exports that have a yolo_seg dataset (shows each export's folder id, name, project, image counts and classes)
+    uv run vdp train --export <folder_id> --gpu 1            # yolo26s/m-seg and yolo11s/m-seg, one after another
+    uv run vdp train --export <folder_id> --model yolo26s-seg --epochs 150 --imgsz 960 --batch 8
 
 Each run lives in `data/runs/<run_id>/`: `run.json` (request and status), `worker.log`, Ultralytics' own output under
 `train/` (`weights/best.pt`, `last.pt`, `results.csv`, plots) and `predictions.json` (best.pt on every val image, conf
 ≥ 0.25). Pretrained checkpoints are cached in `data/train_weights/`. A run is a separate process
-(`python -m vsp.train.worker`) with `CUDA_VISIBLE_DEVICES` set to its GPU, so a crash or out-of-memory error ends
+(`python -m vdp.train.worker`) with `CUDA_VISIBLE_DEVICES` set to its GPU, so a crash or out-of-memory error ends
 that run only.
 
 The server keeps one queue per GPU: one run at a time per GPU, GPUs in parallel. GPUs are ranked fastest first by
@@ -228,7 +228,7 @@ tie. The default GPU is the fastest one that is not already training — SAM3 sh
 the GUI's "shares memory with SAM3" warning still applies when it is chosen. The Train page's New-runs form has one
 GPU choice for every model started together (listed best first, each labelled with its estimated TFLOPS and free
 VRAM from NVML, and the default marked), plus a "Different GPU per model" checkbox that reveals a per-model override
-seeded from that choice. `vsp train` without `--gpu` picks the same way and prints which GPU it chose and why;
+seeded from that choice. `vdp train` without `--gpu` picks the same way and prints which GPU it chose and why;
 `--gpu` overrides it, as before. Cancel stops a run after SIGTERM (SIGKILL after 30 s) and keeps `last.pt`. Resume
 continues a cancelled, interrupted or errored run from its last finished epoch, on a GPU you choose (default the
 fastest idle one): click "Resume" in the Runs table (or select the run) to open its "Stopped run" section in the
@@ -249,12 +249,12 @@ that GPU, before marking the run `done` (`completed_early: true` in `run.json`, 
 with that best epoch's metrics. `POST /api/train/runs/{run_id}/complete` (optional `{"gpu": N}` body) does the same
 from the API; a 409 means the run is not eligible.
 
-`vsp train` runs in the foreground and owns its runs; Ctrl-C,
+`vdp train` runs in the foreground and owns its runs; Ctrl-C,
 SIGTERM and SIGHUP (a closed terminal, `kill`) all cancel them the same way. Do not start it on a GPU the server is
-also training on. Do not set `CUDA_VISIBLE_DEVICES` for the server process itself — GPU indexes (from `vsp doctor`,
-the Train page and `vsp train --gpu`) are passed to each worker as-is, so setting it on the server would remap or
-hide devices under it. A run started by `vsp train` shows on the Train page's GPU queues as "running in another
-process (vsp train)"; it can only be cancelled from the terminal it was started in.
+also training on. Do not set `CUDA_VISIBLE_DEVICES` for the server process itself — GPU indexes (from `vdp doctor`,
+the Train page and `vdp train --gpu`) are passed to each worker as-is, so setting it on the server would remap or
+hide devices under it. A run started by `vdp train` shows on the Train page's GPU queues as "running in another
+process (vdp train)"; it can only be cancelled from the terminal it was started in.
 
 Defaults: 100 epochs, early stop after 30 epochs without improvement, 960 px, batch 8, COCO-pretrained weights,
 Ultralytics' default augmentation. Metrics come from `results.csv`; the comparison table ranks runs by the best mask
@@ -292,8 +292,8 @@ From the API: `POST /api/train/runs/{run_id}/from-checkpoint` with `{"export_id"
 the source's own params) → `{"run_id": "<new id>"}` (201). 404 for an unknown run or export, 409 when the source run
 is not eligible for the chosen mode or the export's classes do not match, 400 for an unknown GPU.
 
-From the CLI: `uv run vsp train --export <new_export_id> --from-run <run_id> --mode continue|finetune [--gpu N]
-[params…]` trains one run (the source's own model) in the foreground exactly like `vsp train` does for a new run;
+From the CLI: `uv run vdp train --export <new_export_id> --from-run <run_id> --mode continue|finetune [--gpu N]
+[params…]` trains one run (the source's own model) in the foreground exactly like `vdp train` does for a new run;
 `--model` cannot be combined with `--from-run`. As with the API, `[params…]` (`--epochs`, `--imgsz`, …) only affects
 `--mode finetune` — a `continue` run always keeps the source's own params.
 
@@ -304,11 +304,11 @@ the source run's earlier epochs.
 
 ### Augmentation
 
-**Presets:** `uv run vsp train --export <id> --augment strong` (or `default`, on the Train page select Default / Strong / Custom). The **Strong** preset raises geometric, photometric and copy-paste augmentation above Ultralytics' defaults: degrees 15, shear 5, perspective 0.0005, flip up 0.5, flip horizontal 0.5, scale 0.6, translate 0.2, HSV hue 0.02, saturation 0.7, value 0.5, mosaic 1.0, mixup 0.1, copy_paste 0.3, plus RandomBrightnessContrast, MotionBlur, GaussianBlur, GaussNoise, ImageCompression and CLAHE. The Custom preset on the GUI allows per-field adjustment.
+**Presets:** `uv run vdp train --export <id> --augment strong` (or `default`, on the Train page select Default / Strong / Custom). The **Strong** preset raises geometric, photometric and copy-paste augmentation above Ultralytics' defaults: degrees 15, shear 5, perspective 0.0005, flip up 0.5, flip horizontal 0.5, scale 0.6, translate 0.2, HSV hue 0.02, saturation 0.7, value 0.5, mosaic 1.0, mixup 0.1, copy_paste 0.3, plus RandomBrightnessContrast, MotionBlur, GaussianBlur, GaussNoise, ImageCompression and CLAHE. The Custom preset on the GUI allows per-field adjustment.
 
 Installing `albumentations` (a dependency since this branch, `uv sync` pulls it in) also lets Ultralytics enable its own built-in low-probability Blur, MedianBlur, ToGray and CLAHE transforms, independent of the preset above — so a **Default** run on this branch is not pixel-identical to a default run from before it.
 
-**Background pools:** `uv run vsp backgrounds fetch dtd` (CLI, ~625 MB) or `POST /api/backgrounds/dtd/fetch` (web job) downloads the Describable Textures Dataset (5,640 images, one category per folder) to `data/backgrounds/dtd/`. The `--force` flag redownloads even if images are present.
+**Background pools:** `uv run vdp backgrounds fetch dtd` (CLI, ~625 MB) or `POST /api/backgrounds/dtd/fetch` (web job) downloads the Describable Textures Dataset (5,640 images, one category per folder) to `data/backgrounds/dtd/`. The `--force` flag redownloads even if images are present.
 
 **Augmented copies:** From the Train page, when an export has the `masks` format, an "Augmented copy" panel creates a new export with real train frames plus `per_image × (frame count)` synthetic composites named `syn_*`, seeded by a "Seed" field (0 by default, so two copies of the same export can differ). Each composite pastes `1–3` (user configurable) cutouts cut from real frames (one cutout per object, rasterised from the source's COCO train annotations when the source has the COCO format; without it, one cutout per class region of the mask images, so touching objects of one class are cut together — the panel says so) onto random background textures, scaled, rotated, positioned and colour-matched. With COCO, shared pixels are resolved per class (the smaller object wins within a class; across classes the mask image decides) and holes come from the mask image, except a holed object lying on a larger object of the same class (the mask image can't tell those two apart, so the hole still shows the host's pixels — a known remaining limit). `export.json`'s `augment.cutouts` records which (`per_object` / `per_class_region`); the same seed on an export made before this change may give different composites. Val frames are unchanged (images hard-linked, labels copied verbatim per format). The source export is never modified and cannot itself be augmented if it is already derived. The copy carries over whichever of `yolo_seg`, `yolo_det`, `coco` and `masks` the source export has — not always all four. The copy's `export.json` names its source in a `derived_from` field (`null` for an ordinary export).
 

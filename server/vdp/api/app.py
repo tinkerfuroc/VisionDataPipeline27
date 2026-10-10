@@ -1,4 +1,4 @@
-"""FastAPI application factory. Tests inject FakeEngine; `vsp serve` builds the real Sam3Engine."""
+"""FastAPI application factory. Tests inject FakeEngine; `vdp serve` builds the real Sam3Engine."""
 
 from __future__ import annotations
 
@@ -64,8 +64,8 @@ def create_app(settings: Settings, *, engine=None, load_engine: bool = True, tra
         yield
         state.train.shutdown()
 
-    app = FastAPI(title="vision-sampler", version=__version__, lifespan=lifespan)
-    app.state.vsp = state
+    app = FastAPI(title="VisionDataPipeline27", version=__version__, lifespan=lifespan)
+    app.state.vdp = state
 
     def _handler(status: int):
         async def handle(request: Request, exc: Exception) -> JSONResponse:

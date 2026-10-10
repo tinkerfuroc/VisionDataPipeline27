@@ -9,8 +9,8 @@ from types import SimpleNamespace
 import numpy as np
 import yaml
 from train_fixtures import make_export
-from vsp.train import worker
-from vsp.train.worker import (
+from vdp.train import worker
+from vdp.train.worker import (
     ProgressWriter,
     instances_from_result,
     photometric_transforms,

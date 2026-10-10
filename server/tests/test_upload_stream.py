@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 from starlette.requests import ClientDisconnect
-from vsp.ingest import IngestError, UploadTooLarge, clear_uploads, save_stream
+from vdp.ingest import IngestError, UploadTooLarge, clear_uploads, save_stream
 
 
 def _chunks(*parts: bytes):

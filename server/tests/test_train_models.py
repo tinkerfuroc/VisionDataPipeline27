@@ -5,9 +5,9 @@ import json
 import pytest
 from pydantic import ValidationError
 from train_fixtures import EXPORT_ID, make_export
-from vsp.labeling.errors import BadRequest
-from vsp.store import NotFound
-from vsp.train.models import (
+from vdp.labeling.errors import BadRequest
+from vdp.store import NotFound
+from vdp.train.models import (
     DEFAULT_MODELS,
     MODELS,
     STRONG_AUG,

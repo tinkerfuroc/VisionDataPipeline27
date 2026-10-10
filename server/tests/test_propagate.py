@@ -2,16 +2,16 @@ import threading
 
 import numpy as np
 import pytest
-import vsp.labeling.prefetch as prefetch_mod
+import vdp.labeling.prefetch as prefetch_mod
 from conftest import OBJ, is_white
-from vsp.engine.fake import FakeEngine
-from vsp.engine.types import ChunkOOMError
-from vsp.labeling.errors import BadRequest, PropagationFailed
-from vsp.labeling.frames import restore_frame
-from vsp.labeling.paint import set_mask
-from vsp.labeling.prompts import PromptSpec, accept, create_object
-from vsp.labeling.propagate import plan_indices, resolve_participants, run_propagation
-from vsp.store import Keyframe, NotFound, Prompt, now_iso
+from vdp.engine.fake import FakeEngine
+from vdp.engine.types import ChunkOOMError
+from vdp.labeling.errors import BadRequest, PropagationFailed
+from vdp.labeling.frames import restore_frame
+from vdp.labeling.paint import set_mask
+from vdp.labeling.prompts import PromptSpec, accept, create_object
+from vdp.labeling.propagate import plan_indices, resolve_participants, run_propagation
+from vdp.store import Keyframe, NotFound, Prompt, now_iso
 
 CLICK = PromptSpec(type="clicks", points=[(30, 30, 1)])  # seed rect x 20:40; FakeEngine shifts +2 px per offset
 KW = {"chunk_size": 8, "min_chunk_size": 4, "lost_after": 3}
@@ -473,13 +473,13 @@ def test_no_prefetch_thread_survives_the_run(store, make_clip):
         return len(seen) >= 3
 
     run_propagation(store, eng, clip.id, 0, "forward", emit=seen.append, cancel=cancel, **KW)
-    assert not [t for t in threading.enumerate() if t.name.startswith("vsp-prefetch")]
+    assert not [t for t in threading.enumerate() if t.name.startswith("vdp-prefetch")]
 
     eng = FakeEngine(oom_if_more_than=2)
     clip = _seeded(store, make_clip, eng)
     with pytest.raises(PropagationFailed):
         run_propagation(store, eng, clip.id, 0, "forward", **KW)
-    assert not [t for t in threading.enumerate() if t.name.startswith("vsp-prefetch")]
+    assert not [t for t in threading.enumerate() if t.name.startswith("vdp-prefetch")]
 
 
 def test_propagation_seeds_from_a_painted_keyframe_and_stops_at_it(store, make_clip):

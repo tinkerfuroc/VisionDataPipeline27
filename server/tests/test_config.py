@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
-from vsp.config import DEFAULT_CONFIG_PATH, REPO_ROOT, Settings
+from vdp.config import DEFAULT_CONFIG_PATH, REPO_ROOT, Settings
 
 
 def test_defaults():

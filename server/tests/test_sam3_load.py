@@ -4,14 +4,14 @@ directory instead."""
 
 import numpy as np
 import pytest
-import vsp.engine.sam3
-from vsp.engine.sam3 import Sam3Engine
-from vsp.engine.types import EngineNotLoaded
+import vdp.engine.sam3
+from vdp.engine.sam3 import Sam3Engine
+from vdp.engine.types import EngineNotLoaded
 
 
 def test_load_wraps_unexpected_exceptions_as_engine_not_loaded(tmp_path, monkeypatch):
-    monkeypatch.setattr(vsp.engine.sam3, "pick_device", lambda *a, **k: "cuda:0")
-    monkeypatch.setattr(vsp.engine.sam3, "cuda_capabilities", lambda: [(8, 6)])
+    monkeypatch.setattr(vdp.engine.sam3, "pick_device", lambda *a, **k: "cuda:0")
+    monkeypatch.setattr(vdp.engine.sam3, "cuda_capabilities", lambda: [(8, 6)])
     engine = Sam3Engine(tmp_path / "nope")
 
     with pytest.raises(EngineNotLoaded):

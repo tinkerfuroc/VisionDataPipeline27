@@ -5,16 +5,16 @@ import uuid
 import cv2
 import numpy as np
 import pytest
-from vsp.export.plan import (
+from vdp.export.plan import (
     ExportOptions,
     build_plan,
     check_request,
     classes_from_manifest,
     options_from_manifest,
 )
-from vsp.ingest import FrameDirSource, import_clip
-from vsp.labeling.errors import BadRequest
-from vsp.store.models import LabelObject
+from vdp.ingest import FrameDirSource, import_clip
+from vdp.labeling.errors import BadRequest
+from vdp.store.models import LabelObject
 
 
 def _mask(x0=10, size=20):

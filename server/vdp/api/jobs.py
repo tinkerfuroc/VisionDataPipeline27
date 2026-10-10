@@ -27,7 +27,7 @@ def cancel_job(job_id: str, state: State) -> dict:
 async def stream_job(websocket: WebSocket, job_id: str) -> None:
     await websocket.accept()
     try:
-        job = websocket.app.state.vsp.jobs.get(job_id)
+        job = websocket.app.state.vdp.jobs.get(job_id)
     except JobNotFound:
         await websocket.close(code=4404, reason="unknown job")
         return

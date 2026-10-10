@@ -21,7 +21,7 @@ import {
   type UploadQueueState,
 } from "../lib/uploadQueue";
 
-const PROJECT_KEY = "vsp.project";
+const PROJECT_KEY = "vdp.project";
 
 export function Clips() {
   const [projects, setProjects] = useState<Project[]>([]);

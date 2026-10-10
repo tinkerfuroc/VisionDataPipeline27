@@ -2,7 +2,7 @@
 
 ## tinkerfuroc/tk25_vision_train
 
-Portions of `server/vsp/engine/sam3.py` and `server/vsp/engine/masks.py` are ported from
+Portions of `server/vdp/engine/sam3.py` and `server/vdp/engine/masks.py` are ported from
 https://github.com/tinkerfuroc/tk25_vision_train at commit 5874ba0.
 
 MIT License

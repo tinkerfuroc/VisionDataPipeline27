@@ -19,7 +19,7 @@ TERMINAL = frozenset({"done", "error", "cancelled", "interrupted"})
 _RUN_ID_RE = re.compile(r"^\d{8}-\d{6}-[a-z0-9-]+-[0-9a-f]{4}$")
 _REQUIRED_KEYS = frozenset({"id", "created_at", "status", "gpu", "model", "params"})
 
-# Re-export for callers (later tasks import now_iso from vsp.train.runs)
+# Re-export for callers (later tasks import now_iso from vdp.train.runs)
 __all__ = ["now_iso"]
 
 

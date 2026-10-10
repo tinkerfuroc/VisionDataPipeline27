@@ -57,7 +57,7 @@ def summarize(rows: list[dict]) -> dict | None:
 
 
 def read_ground_truth(label_path: Path) -> list[dict]:
-    """YOLO-seg label lines (one contour per line, as vsp exports them) as preview instances."""
+    """YOLO-seg label lines (one contour per line, as vdp exports them) as preview instances."""
     try:
         text = Path(label_path).read_text()
     except FileNotFoundError:

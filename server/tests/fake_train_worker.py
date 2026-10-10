@@ -1,4 +1,4 @@
-"""Stands in for `python -m vsp.train.worker` in the scheduler, API and CLI tests.
+"""Stands in for `python -m vdp.train.worker` in the scheduler, API and CLI tests.
 
 Behaviour is chosen by run.json's params.epochs:
   1..12  write that many results.csv rows, last.pt, best.pt and predictions.json; exit 0

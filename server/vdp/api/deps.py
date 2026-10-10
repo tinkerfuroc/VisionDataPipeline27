@@ -25,7 +25,7 @@ class AppState:
 
 
 def get_state(request: Request) -> AppState:
-    return request.app.state.vsp
+    return request.app.state.vdp
 
 
 State = Annotated[AppState, Depends(get_state)]

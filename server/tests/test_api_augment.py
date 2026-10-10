@@ -6,11 +6,11 @@ import cv2
 import numpy as np
 import pytest
 from fastapi.testclient import TestClient
-from vsp.api.app import create_app
-from vsp.config import Settings
-from vsp.engine.fake import FakeEngine
-from vsp.export import ExportOptions, run_export
-from vsp.store.models import LabelObject
+from vdp.api.app import create_app
+from vdp.config import Settings
+from vdp.engine.fake import FakeEngine
+from vdp.export import ExportOptions, run_export
+from vdp.store.models import LabelObject
 
 
 def _settings(tmp_path):
@@ -37,10 +37,10 @@ def wait_job(client, job_id, timeout=10.0):
 
 
 def test_list_fetch_and_unknown_pool(client, server, monkeypatch):
-    from vsp.augment import backgrounds
+    from vdp.augment import backgrounds
 
-    # POOLS["dtd"] is the same dict object imported into both vsp.augment.backgrounds and
-    # vsp.api.augment, so mutating one key on it (auto-reverted by monkeypatch) is visible to both,
+    # POOLS["dtd"] is the same dict object imported into both vdp.augment.backgrounds and
+    # vdp.api.augment, so mutating one key on it (auto-reverted by monkeypatch) is visible to both,
     # unlike replacing the whole POOLS mapping (which would only rebind this module's local name).
     monkeypatch.setitem(backgrounds.POOLS["dtd"], "url", server)
 
@@ -127,7 +127,7 @@ def test_augment_unknown_pool_is_bad_request(client, store, make_clip, tmp_path)
 
 
 def test_augment_and_fetch_share_one_exclusive_key(client, store, make_clip, server, tmp_path, monkeypatch):
-    from vsp.augment import backgrounds
+    from vdp.augment import backgrounds
 
     monkeypatch.setitem(backgrounds.POOLS["dtd"], "url", server)
     project, clip = _labelled(store, make_clip)

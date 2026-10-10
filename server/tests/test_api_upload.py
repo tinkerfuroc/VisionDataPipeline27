@@ -8,9 +8,9 @@ import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 from test_api_core import _project, wait_job
-from vsp.api.app import create_app
-from vsp.config import Settings
-from vsp.engine.fake import FakeEngine
+from vdp.api.app import create_app
+from vdp.config import Settings
+from vdp.engine.fake import FakeEngine
 
 
 def _settings(tmp_path, **ingest):

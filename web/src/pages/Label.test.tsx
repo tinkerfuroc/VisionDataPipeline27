@@ -288,7 +288,7 @@ describe("Label page (propagation, cleanup, keyboard)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Forward ▶" }));
     await waitFor(() => expect(api.propagate).toHaveBeenCalledWith("c1", 0, "forward", "all"));
     await waitFor(() => expect(FakeSocket.last?.url).toMatch(/j1$/));
-    expect(sessionStorage.getItem("vsp.job.c1")).toBe("j1");
+    expect(sessionStorage.getItem("vdp.job.c1")).toBe("j1");
     FakeSocket.last!.emit({ seq: 0, type: "progress", done: 0, total: 39 });
     FakeSocket.last!.emit({ seq: 1, type: "frame", frame: 20, objects: [{ id: 1, has_mask: true }], done: 1, total: 39 });
     // F3: frame events are buffered and applied on the next animation frame, not synchronously
@@ -300,7 +300,7 @@ describe("Label page (propagation, cleanup, keyboard)", () => {
     await waitFor(() => expect(vi.mocked(api.getClip).mock.calls.length).toBe(loads + 1));
     expect(await screen.findByText("frame 33 / 39")).toBeTruthy();
     expect(screen.getByText(/lost #1 connector at frame 33/i)).toBeTruthy();
-    expect(sessionStorage.getItem("vsp.job.c1")).toBeNull();
+    expect(sessionStorage.getItem("vdp.job.c1")).toBeNull();
   });
 
   it("follows the furthest frame of a run, not an earlier frame a lagging object re-emits", async () => {
@@ -355,7 +355,7 @@ describe("Label page (propagation, cleanup, keyboard)", () => {
     await screen.findByText("bench.mp4");
     fireEvent.click(screen.getByRole("button", { name: "◀ Backward" }));
     await waitFor(() => expect(FakeSocket.last?.url).toMatch(/j7$/));
-    expect(sessionStorage.getItem("vsp.job.c1")).toBeNull();
+    expect(sessionStorage.getItem("vdp.job.c1")).toBeNull();
     expect(screen.getByText(/GPU is busy with a propagation that was not started from this page/i)).toBeTruthy();
     FakeSocket.last!.emit({ seq: 0, type: "frame", frame: 20, objects: [{ id: 1, has_mask: true }], done: 1, total: 39 });
     expect(screen.getByText("frame 0 / 39")).toBeTruthy();
@@ -390,7 +390,7 @@ describe("Label page (propagation, cleanup, keyboard)", () => {
   });
 
   it("re-attaches to its own job from sessionStorage and applies its frame events", async () => {
-    sessionStorage.setItem("vsp.job.c1", "j5");
+    sessionStorage.setItem("vdp.job.c1", "j5");
     vi.mocked(api.getClip).mockResolvedValue(detail);
     renderLabel();
     await screen.findByText("bench.mp4");
@@ -409,13 +409,13 @@ describe("Label page (propagation, cleanup, keyboard)", () => {
     await waitFor(() => expect(FakeSocket.last?.url).toMatch(/j1$/));
     FakeSocket.last!.emit({ seq: 0, type: "done", processed: 39, written: 38, lost_at: 33, cancelled: false });
     expect(await screen.findByText("frame 33 / 39")).toBeTruthy();
-    expect(sessionStorage.getItem("vsp.job.c1")).toBeNull();
+    expect(sessionStorage.getItem("vdp.job.c1")).toBeNull();
 
     fireEvent.keyDown(window, { key: "K", shiftKey: true }); // back to frame 0, a keyframe
     expect(screen.getByText("frame 0 / 39")).toBeTruthy();
     const loads = vi.mocked(api.getClip).mock.calls.length;
     fireEvent.click(screen.getByRole("button", { name: "Forward ▶" }));
-    await waitFor(() => expect(sessionStorage.getItem("vsp.job.c1")).toBe("j2"));
+    await waitFor(() => expect(sessionStorage.getItem("vdp.job.c1")).toBe("j2"));
     expect(screen.getByText("frame 0 / 39")).toBeTruthy(); // no jump to the first job's lost_at (33)
     expect(vi.mocked(api.getClip).mock.calls.length).toBe(loads); // no extra reload at the moment j2 started
   });

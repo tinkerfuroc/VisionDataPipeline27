@@ -7,8 +7,8 @@ import uuid
 import cv2
 import numpy as np
 import pytest
-from vsp.ingest import FrameDirSource, import_clip
-from vsp.store import ProjectStore
+from vdp.ingest import FrameDirSource, import_clip
+from vdp.store import ProjectStore
 
 # Registers train_fixtures.py's fixtures (e.g. `server`) for every test module without an explicit
 # `from train_fixtures import server` -- that import trips ruff's F811 in tests that also take

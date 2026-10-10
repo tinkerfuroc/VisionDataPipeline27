@@ -1,4 +1,4 @@
-"""Training subprocess: `python -m vsp.train.worker <run_dir> [--onnx]` (spec: worker.py).
+"""Training subprocess: `python -m vdp.train.worker <run_dir> [--onnx]` (spec: worker.py).
 
 Started by the scheduler with CUDA_VISIBLE_DEVICES set to one GPU (so Ultralytics always uses
 device=0) and with cwd = data/train_weights/, where Ultralytics downloads and caches the
@@ -264,7 +264,7 @@ def export_onnx(run_dir: Path) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="python -m vsp.train.worker")
+    parser = argparse.ArgumentParser(prog="python -m vdp.train.worker")
     parser.add_argument("run_dir")
     parser.add_argument(
         "--onnx", action="store_true", help="export best.pt to ONNX instead of training"

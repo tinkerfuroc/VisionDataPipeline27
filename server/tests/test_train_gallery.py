@@ -4,8 +4,8 @@ import json
 import os
 
 import pytest
-from vsp.store import NotFound
-from vsp.train.gallery import filter_items, load_gallery
+from vdp.store import NotFound
+from vdp.train.gallery import filter_items, load_gallery
 
 FULL = [0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0]
 LEFT = [0.0, 0.0, 0.5, 0.0, 0.5, 1.0, 0.0, 1.0]

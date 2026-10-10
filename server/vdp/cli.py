@@ -1,4 +1,4 @@
-"""`vsp` command line. Subcommands are added by later tasks/plans."""
+"""`vdp` command line. Subcommands are added by later tasks/plans."""
 
 from __future__ import annotations
 
@@ -104,7 +104,7 @@ def _train(settings: Settings, args, *, gpus=None, worker_cmd=None, poll: float 
                   f"classes: {', '.join(e.classes)}")
         return 0
     if not args.export:
-        print("error: --export is required (see `vsp train --list`)")
+        print("error: --export is required (see `vdp train --list`)")
         return 2
     if args.from_run is not None:
         if args.model:
@@ -236,7 +236,7 @@ def _backgrounds(settings: Settings, args) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="vsp")
+    parser = argparse.ArgumentParser(prog="vdp")
     parser.add_argument("--config", default=None, help="path to a YAML config (default: configs/default.yaml)")
     sub = parser.add_subparsers(dest="cmd", required=True)
     sub.add_parser("doctor", help="check the torch build, GPU selection and bfloat16 support")

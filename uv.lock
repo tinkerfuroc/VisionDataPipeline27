@@ -1229,7 +1229,7 @@ wheels = [
 ]
 
 [[package]]
-name = "vsp"
+name = "visiondatapipeline27"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

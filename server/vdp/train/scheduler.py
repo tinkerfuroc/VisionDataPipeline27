@@ -28,7 +28,7 @@ from .worker import CANCELLED_EXIT
 
 log = logging.getLogger(__name__)
 
-WORKER_CMD = (sys.executable, "-m", "vsp.train.worker")
+WORKER_CMD = (sys.executable, "-m", "vdp.train.worker")
 
 
 @dataclass(frozen=True)
@@ -271,7 +271,7 @@ class TrainScheduler:
             for run in sorted(self.runs.list(), key=lambda r: (r["created_at"], r["id"])):
                 owner = run.get("owner_pid")
                 if owner not in (None, me) and _alive(owner):
-                    continue  # another live scheduler (a `vsp train` in a terminal) owns this run
+                    continue  # another live scheduler (a `vdp train` in a terminal) owns this run
                 changes: dict = {}
                 if run["status"] == "running":
                     pid = run.get("pid")
@@ -503,7 +503,7 @@ class TrainScheduler:
 
     def busy_gpus(self) -> set[int]:
         """GPU indexes this scheduler should not default new runs onto: one with a run queued or
-        running here, or with a foreign process's run.json (a `vsp train` elsewhere) reporting
+        running here, or with a foreign process's run.json (a `vdp train` elsewhere) reporting
         status "running" on it."""
         with self._cv:
             busy = {g for g, q in self._queues.items() if q} | set(self._running)

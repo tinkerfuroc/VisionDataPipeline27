@@ -4,8 +4,8 @@ import json
 
 import numpy as np
 import pytest
-from vsp.export import ExportCancelled, ExportOptions, run_export
-from vsp.store.models import LabelObject
+from vdp.export import ExportCancelled, ExportOptions, run_export
+from vdp.store.models import LabelObject
 
 
 def _labelled(store, make_clip, n=6):

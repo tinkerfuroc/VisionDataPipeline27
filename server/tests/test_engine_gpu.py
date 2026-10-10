@@ -10,10 +10,10 @@ from pathlib import Path
 import cv2
 import numpy as np
 import pytest
-from vsp.engine.device import cuda_capabilities, pick_device
-from vsp.ingest import FrameDirSource, import_clip
-from vsp.store import Keyframe, LabelObject, ProjectStore, Prompt, now_iso
-from vsp.weights import verify_checkpoint
+from vdp.engine.device import cuda_capabilities, pick_device
+from vdp.ingest import FrameDirSource, import_clip
+from vdp.store import Keyframe, LabelObject, ProjectStore, Prompt, now_iso
+from vdp.weights import verify_checkpoint
 
 MODEL_DIR = Path(__file__).resolve().parents[2] / "vision_train" / "sam3_checkpoint_hf"
 
@@ -44,7 +44,7 @@ def _iou(a, b):
 
 @pytest.fixture(scope="module")
 def engine():
-    from vsp.engine.sam3 import Sam3Engine
+    from vdp.engine.sam3 import Sam3Engine
 
     eng = Sam3Engine(MODEL_DIR)
     eng.load()

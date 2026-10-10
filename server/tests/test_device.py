@@ -1,5 +1,5 @@
 import pytest
-from vsp.engine.device import pick_device
+from vdp.engine.device import pick_device
 
 
 def test_auto_picks_first_bf16_capable():

@@ -24,8 +24,8 @@ describe("EngineBanner", () => {
     render(<EngineBanner health={health({ loaded: false, device: null, error: "no CUDA device" })} unreachable={false} />);
     const text = screen.getByRole("alert").textContent ?? "";
     expect(text).toContain("no CUDA device");
-    expect(text).toContain("uv run vsp verify-weights");
-    expect(text).toContain("uv run vsp convert-weights");
+    expect(text).toContain("uv run vdp verify-weights");
+    expect(text).toContain("uv run vdp convert-weights");
   });
   it("says when the server cannot be reached", () => {
     render(<EngineBanner health={null} unreachable={true} />);

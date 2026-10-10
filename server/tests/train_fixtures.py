@@ -27,7 +27,7 @@ def make_export(
     created_at: str = "2026-01-01T00:00:00+00:00", name: str | None = None,
     classes: tuple[str, ...] = ("Module",),
 ) -> Path:
-    """An export directory shaped like vsp's exporter output, with one class (or `classes`, for
+    """An export directory shaped like vdp's exporter output, with one class (or `classes`, for
     testing the same-classes rule) and a square on every image (always labelled class 0)."""
     d = data_root / "exports" / export_id
     y = d / "yolo_seg"

@@ -10,10 +10,10 @@ from pathlib import Path
 import pytest
 from fake_train_worker import HEADER, row
 from train_fixtures import FAKE_WORKER, make_export, wait_for
-from vsp.labeling.errors import BadRequest, Conflict
-from vsp.train.models import TrainParams, find_export
-from vsp.train.runs import best_weights
-from vsp.train.scheduler import (
+from vdp.labeling.errors import BadRequest, Conflict
+from vdp.train.models import TrainParams, find_export
+from vdp.train.runs import best_weights
+from vdp.train.scheduler import (
     Gpu,
     TrainScheduler,
     _is_worker_of,
@@ -81,7 +81,7 @@ class FakeNvml:
 def _reset_nvml_lazy_init(monkeypatch):
     """`_nvml_init()` memoises success across calls; force it to re-run `nvmlInit()` against
     whatever fake (or absent) `pynvml` each test installs, instead of leaking state between tests."""
-    monkeypatch.setattr("vsp.train.scheduler._nvml_ready", False)
+    monkeypatch.setattr("vdp.train.scheduler._nvml_ready", False)
 
 
 @pytest.fixture
@@ -184,7 +184,7 @@ def test_gpu_free_memory_none_on_nvml_failure():
 def test_gpu_free_memory_none_when_nvml_is_entirely_unavailable(monkeypatch):
     """`nvmlInit()` itself failing (no driver, no NVML library, ...) must never raise; every GPU
     simply gets no free-memory reading."""
-    monkeypatch.setattr("vsp.train.scheduler._nvml_init", lambda: False)
+    monkeypatch.setattr("vdp.train.scheduler._nvml_init", lambda: False)
     free = gpu_free_memory([GPU_3080TI, GPU_2080TI])
     assert free == {0: None, 1: None}
 
@@ -667,7 +667,7 @@ def test_busy_gpus_from_in_memory_queue_and_running(env):
 
 
 def test_busy_gpus_from_a_foreign_live_process(env):
-    """A `vsp train` CLI in another terminal, sharing this data root, counts as busy even though
+    """A `vdp train` CLI in another terminal, sharing this data root, counts as busy even though
     this scheduler never queued or launched anything for it."""
     sched, export = env
     run = sched.runs.create(export, "yolo26s-seg", 0, TrainParams(epochs=2), owner_pid=os.getppid())

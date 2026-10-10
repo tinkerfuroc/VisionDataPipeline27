@@ -3,14 +3,14 @@ import base64
 import numpy as np
 import pytest
 from conftest import OBJ
-from vsp.engine.fake import FakeEngine
-from vsp.labeling.errors import BadRequest
-from vsp.labeling.frames import delete_frame
-from vsp.labeling.objects import relabel_object
-from vsp.labeling.paint import decode_mask_png, set_mask
-from vsp.labeling.prompts import PromptSpec, accept
-from vsp.labeling.propagate import run_propagation
-from vsp.store.project import encode_mask_png
+from vdp.engine.fake import FakeEngine
+from vdp.labeling.errors import BadRequest
+from vdp.labeling.frames import delete_frame
+from vdp.labeling.objects import relabel_object
+from vdp.labeling.paint import decode_mask_png, set_mask
+from vdp.labeling.prompts import PromptSpec, accept
+from vdp.labeling.propagate import run_propagation
+from vdp.store.project import encode_mask_png
 
 CLICK = PromptSpec(type="clicks", points=[(30, 30, 1)])
 KW = {"chunk_size": 8, "min_chunk_size": 4, "lost_after": 3}

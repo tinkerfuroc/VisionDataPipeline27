@@ -1,8 +1,8 @@
 import threading
 
 import pytest
-from vsp.export.naming import clean_name, reserve_export_dir, slug
-from vsp.labeling.errors import BadRequest
+from vdp.export.naming import clean_name, reserve_export_dir, slug
+from vdp.labeling.errors import BadRequest
 
 
 @pytest.mark.parametrize("name, expected", [

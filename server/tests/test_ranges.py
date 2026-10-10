@@ -1,4 +1,4 @@
-from vsp.labeling.ranges import add_range, subtract_range
+from vdp.labeling.ranges import add_range, subtract_range
 
 
 def test_add_to_empty():

@@ -8,9 +8,9 @@ import cv2
 import numpy as np
 import pytest
 from fastapi.testclient import TestClient
-from vsp.api.app import create_app
-from vsp.config import Settings
-from vsp.engine.fake import FakeEngine
+from vdp.api.app import create_app
+from vdp.config import Settings
+from vdp.engine.fake import FakeEngine
 
 # Helpers copied from test_api_core.py rather than imported: importing `client` (a fixture) alongside test
 # functions that take `client` as a parameter trips ruff's F811 (redefinition) in this repo's configuration.
@@ -143,7 +143,7 @@ def test_a_failed_export_is_a_job_error_and_leaves_no_directory(client, tmp_path
     def boom(self, plan, out_dir, tick):
         raise RuntimeError("disk full")
 
-    monkeypatch.setattr("vsp.export.coco.Coco.write", boom)
+    monkeypatch.setattr("vdp.export.coco.Coco.write", boom)
     started = client.post(f"/api/projects/{project_id}/export", json={"clips": [clip_id], "formats": ["yolo_det", "coco"]})
     snap = wait_job(client, started.json()["job_id"])
     assert snap["status"] == "error" and "disk full" in snap["error"]
@@ -156,7 +156,7 @@ def test_a_clip_cannot_be_deleted_while_an_export_reads_it(client, tmp_path, mon
     project_id = _project(client)
     clip_id = _clip_with_masks(client, tmp_path, project_id)
     entered, release = threading.Event(), threading.Event()
-    from vsp.export.coco import Coco
+    from vdp.export.coco import Coco
 
     real = Coco.write
 

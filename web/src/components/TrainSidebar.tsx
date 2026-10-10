@@ -37,7 +37,7 @@ const gib = (bytes: number) => `${Math.round(bytes / 2 ** 30)} GiB`;
 const gbFree = (bytes: number) => `${(bytes / 2 ** 30).toFixed(1)} GiB free`;
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
-/** Runs training on `g` that this server process is not itself running (e.g. a `vsp train` CLI
+/** Runs training on `g` that this server process is not itself running (e.g. a `vdp train` CLI
  * process sharing the same data root): present in the `runs` prop but not `g`'s own `running` slot. */
 const foreignRunning = (g: GpuQueue, runs: Run[]) =>
   runs.filter((r) => r.status === "running" && r.gpu === g.index && r.id !== g.running);
@@ -52,7 +52,7 @@ function gpuBusyNote(status: TrainStatus, runs: Run[], gpu: number): string | nu
     return `cuda:${gpu} is already training ${model}; this run will queue behind it.`;
   }
   if (foreignRunning(g, runs).length > 0) {
-    return `cuda:${gpu} is busy with a vsp train run in another process; two runs on one GPU may run out of memory.`;
+    return `cuda:${gpu} is busy with a vdp train run in another process; two runs on one GPU may run out of memory.`;
   }
   return null;
 }
@@ -488,7 +488,7 @@ export function TrainSidebar({
               )}
               {foreign.map((r) => (
                 <div key={r.id} className="flex flex-col gap-1">
-                  <span>{r.model} · {statusText(r)} · running in another process (vsp train)</span>
+                  <span>{r.model} · {statusText(r)} · running in another process (vdp train)</span>
                   {r.progress !== null && r.progress.batches > 0 && (
                     <progress value={r.progress.batch} max={r.progress.batches} />
                   )}

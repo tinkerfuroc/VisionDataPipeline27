@@ -6,12 +6,12 @@ import os
 import sys
 import time
 
-import vsp.cli
-import vsp.train.scheduler
+import vdp.cli
+import vdp.train.scheduler
 from train_fixtures import EXPORT_ID, FAKE_WORKER, make_export, wait_for
-from vsp.config import Settings
-from vsp.train.models import TrainParams, find_export
-from vsp.train.scheduler import Gpu, TrainScheduler
+from vdp.config import Settings
+from vdp.train.models import TrainParams, find_export
+from vdp.train.scheduler import Gpu, TrainScheduler
 
 
 class _EmptyNvml:
@@ -27,7 +27,7 @@ class _EmptyNvml:
 
 def _no_nvml(monkeypatch) -> None:
     monkeypatch.setitem(sys.modules, "pynvml", _EmptyNvml())
-    monkeypatch.setattr(vsp.train.scheduler, "_nvml_ready", False)
+    monkeypatch.setattr(vdp.train.scheduler, "_nvml_ready", False)
 
 
 def _settings(tmp_path):
@@ -44,7 +44,7 @@ def _args(**kw):
 
 
 def test_list_exports(tmp_path, capsys):
-    rc = vsp.cli._train(_settings(tmp_path), _args(list=True), gpus=[Gpu(0, "A", 1)], worker_cmd=FAKE_WORKER)
+    rc = vdp.cli._train(_settings(tmp_path), _args(list=True), gpus=[Gpu(0, "A", 1)], worker_cmd=FAKE_WORKER)
     out = capsys.readouterr().out
     assert rc == 0 and EXPORT_ID in out
     assert f"{EXPORT_ID}  -  Bench" in out
@@ -54,7 +54,7 @@ def test_list_exports_shows_the_name(tmp_path, capsys):
     s = Settings.load(None)
     s.project.data_root = tmp_path / "data"
     make_export(s.project.data_root, name="Cups v2")
-    rc = vsp.cli._train(s, _args(list=True), gpus=[Gpu(0, "A", 1)], worker_cmd=FAKE_WORKER)
+    rc = vdp.cli._train(s, _args(list=True), gpus=[Gpu(0, "A", 1)], worker_cmd=FAKE_WORKER)
     out = capsys.readouterr().out
     assert rc == 0
     assert f"{EXPORT_ID}  Cups v2  Bench" in out
@@ -62,7 +62,7 @@ def test_list_exports_shows_the_name(tmp_path, capsys):
 
 def test_trains_models_in_order_and_prints_table(tmp_path, capsys):
     s = _settings(tmp_path)
-    rc = vsp.cli._train(s, _args(model=["yolo26s-seg", "yolo11s-seg"]), gpus=[Gpu(0, "A", 1), Gpu(1, "B", 1)],
+    rc = vdp.cli._train(s, _args(model=["yolo26s-seg", "yolo11s-seg"]), gpus=[Gpu(0, "A", 1), Gpu(1, "B", 1)],
                         worker_cmd=FAKE_WORKER, poll=0.05)
     out = capsys.readouterr().out
     assert rc == 0
@@ -73,7 +73,7 @@ def test_trains_models_in_order_and_prints_table(tmp_path, capsys):
 
 
 def test_failed_run_returns_nonzero(tmp_path, capsys):
-    rc = vsp.cli._train(_settings(tmp_path), _args(model=["yolo26s-seg"], epochs=13), gpus=[Gpu(1, "B", 1)],
+    rc = vdp.cli._train(_settings(tmp_path), _args(model=["yolo26s-seg"], epochs=13), gpus=[Gpu(1, "B", 1)],
                         worker_cmd=FAKE_WORKER, poll=0.05)
     assert rc == 1 and "OutOfMemoryError" in capsys.readouterr().out
 
@@ -85,7 +85,7 @@ def test_default_gpu_picks_the_fastest_gpu_even_though_its_index_is_0(tmp_path, 
     fast = Gpu(0, "RTX 3080 Ti", 12 * 2**30, capability=(8, 6), sm_count=80)
     slow = Gpu(1, "RTX 2080 Ti", 11 * 2**30, capability=(7, 5), sm_count=68)
     s = _settings(tmp_path)
-    rc = vsp.cli._train(s, _args(gpu=None, model=["yolo26s-seg"]), gpus=[fast, slow],
+    rc = vdp.cli._train(s, _args(gpu=None, model=["yolo26s-seg"]), gpus=[fast, slow],
                         worker_cmd=FAKE_WORKER, poll=0.05)
     out = capsys.readouterr().out
     assert rc == 0
@@ -101,11 +101,11 @@ def test_default_gpu_skips_a_gpu_busy_in_another_process(tmp_path, capsys, monke
     slow = Gpu(1, "RTX 2080 Ti", 11 * 2**30, capability=(7, 5), sm_count=68)
     s = _settings(tmp_path)
     export = find_export(s.project.data_root, EXPORT_ID)
-    # A `vsp train` in another terminal is already training on the fastest GPU.
+    # A `vdp train` in another terminal is already training on the fastest GPU.
     pre = TrainScheduler(s.project.data_root, [fast, slow])
     foreign = pre.runs.create(export, "yolo11s-seg", 0, TrainParams(epochs=2), owner_pid=os.getppid())
     pre.runs.update(foreign["id"], status="running")
-    rc = vsp.cli._train(s, _args(gpu=None, model=["yolo26s-seg"]), gpus=[fast, slow],
+    rc = vdp.cli._train(s, _args(gpu=None, model=["yolo26s-seg"]), gpus=[fast, slow],
                         worker_cmd=FAKE_WORKER, poll=0.05)
     out = capsys.readouterr().out
     assert rc == 0
@@ -118,7 +118,7 @@ def test_default_gpu_skips_a_gpu_busy_in_another_process(tmp_path, capsys, monke
 
 def test_augment_strong(tmp_path, capsys):
     s = _settings(tmp_path)
-    rc = vsp.cli._train(s, _args(model=["yolo26s-seg"], augment="strong"), gpus=[Gpu(1, "B", 1)],
+    rc = vdp.cli._train(s, _args(model=["yolo26s-seg"], augment="strong"), gpus=[Gpu(1, "B", 1)],
                         worker_cmd=FAKE_WORKER, poll=0.05)
     assert rc == 0
     (run_dir,) = (s.project.data_root / "runs").iterdir()
@@ -136,7 +136,7 @@ def test_default_gpu_all_busy_falls_back_to_the_fastest_gpu(tmp_path, capsys, mo
     for gpu in (0, 1):
         r = pre.runs.create(export, "yolo11s-seg", gpu, TrainParams(epochs=2), owner_pid=os.getppid())
         pre.runs.update(r["id"], status="running")
-    rc = vsp.cli._train(s, _args(gpu=None, model=["yolo26s-seg"]), gpus=[fast, slow],
+    rc = vdp.cli._train(s, _args(gpu=None, model=["yolo26s-seg"]), gpus=[fast, slow],
                         worker_cmd=FAKE_WORKER, poll=0.05)
     out = capsys.readouterr().out
     assert rc == 0
@@ -167,7 +167,7 @@ def test_terminating_signal_cancels_the_run(tmp_path, capsys, monkeypatch):
         real_sleep(seconds)
 
     monkeypatch.setattr(time, "sleep", fake_sleep)
-    rc = vsp.cli._train(s, _args(model=["yolo26s-seg"], epochs=99, gpu=0), gpus=[Gpu(0, "A", 1)],
+    rc = vdp.cli._train(s, _args(model=["yolo26s-seg"], epochs=99, gpu=0), gpus=[Gpu(0, "A", 1)],
                         worker_cmd=FAKE_WORKER, poll=0.02)
     assert rc == 1
     assert raised["done"] is True
@@ -177,21 +177,21 @@ def test_terminating_signal_cancels_the_run(tmp_path, capsys, monkeypatch):
 
 def test_bad_input(tmp_path, capsys):
     s = _settings(tmp_path)
-    assert vsp.cli._train(s, _args(export=None), gpus=[Gpu(0, "A", 1)], worker_cmd=FAKE_WORKER) == 2
-    assert vsp.cli._train(s, _args(imgsz=1000), gpus=[Gpu(0, "A", 1)], worker_cmd=FAKE_WORKER) == 2
-    assert vsp.cli._train(s, _args(), gpus=[], worker_cmd=FAKE_WORKER) == 1
+    assert vdp.cli._train(s, _args(export=None), gpus=[Gpu(0, "A", 1)], worker_cmd=FAKE_WORKER) == 2
+    assert vdp.cli._train(s, _args(imgsz=1000), gpus=[Gpu(0, "A", 1)], worker_cmd=FAKE_WORKER) == 2
+    assert vdp.cli._train(s, _args(), gpus=[], worker_cmd=FAKE_WORKER) == 1
 
 
 def test_from_run_model_is_invalid(tmp_path, capsys):
     s = _settings(tmp_path)
-    rc = vsp.cli._train(s, _args(from_run="some-id", mode="continue", model=["yolo26s-seg"]),
+    rc = vdp.cli._train(s, _args(from_run="some-id", mode="continue", model=["yolo26s-seg"]),
                         gpus=[Gpu(0, "A", 1)], worker_cmd=FAKE_WORKER)
     assert rc == 2 and "--model is invalid with --from-run" in capsys.readouterr().out
 
 
 def test_from_run_needs_mode(tmp_path, capsys):
     s = _settings(tmp_path)
-    rc = vsp.cli._train(s, _args(from_run="some-id"), gpus=[Gpu(0, "A", 1)], worker_cmd=FAKE_WORKER)
+    rc = vdp.cli._train(s, _args(from_run="some-id"), gpus=[Gpu(0, "A", 1)], worker_cmd=FAKE_WORKER)
     assert rc == 2 and "--mode is required" in capsys.readouterr().out
 
 
@@ -225,7 +225,7 @@ def test_from_run_continue_trains_one_run_from_the_source(tmp_path, capsys, monk
         real_sleep(seconds)
 
     monkeypatch.setattr(time, "sleep", fake_sleep)
-    rc = vsp.cli._train(s, _args(from_run=rid, mode="continue", gpu=1), gpus=[Gpu(1, "B", 1)],
+    rc = vdp.cli._train(s, _args(from_run=rid, mode="continue", gpu=1), gpus=[Gpu(1, "B", 1)],
                         worker_cmd=FAKE_WORKER, poll=0.02)
     out = capsys.readouterr().out
     assert rc == 1 and raised["done"] is True
@@ -237,13 +237,13 @@ def test_from_run_continue_trains_one_run_from_the_source(tmp_path, capsys, monk
 
 def test_from_run_finetune_trains_one_run_from_the_source(tmp_path, capsys):
     s = _settings(tmp_path)
-    rc = vsp.cli._train(s, _args(model=["yolo26s-seg"], epochs=2), gpus=[Gpu(1, "B", 1)],
+    rc = vdp.cli._train(s, _args(model=["yolo26s-seg"], epochs=2), gpus=[Gpu(1, "B", 1)],
                         worker_cmd=FAKE_WORKER, poll=0.05)
     assert rc == 0
     (run_dir,) = (s.project.data_root / "runs").iterdir()
     rid = run_dir.name
 
-    rc = vsp.cli._train(s, _args(from_run=rid, mode="finetune", gpu=1, epochs=3), gpus=[Gpu(1, "B", 1)],
+    rc = vdp.cli._train(s, _args(from_run=rid, mode="finetune", gpu=1, epochs=3), gpus=[Gpu(1, "B", 1)],
                         worker_cmd=FAKE_WORKER, poll=0.05)
     out = capsys.readouterr().out
     assert rc == 0

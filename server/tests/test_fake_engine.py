@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
-from vsp.engine.fake import FakeEngine
-from vsp.engine.types import ChunkOOMError, Engine
+from vdp.engine.fake import FakeEngine
+from vdp.engine.types import ChunkOOMError, Engine
 
 
 def _frames(n, h=60, w=120):

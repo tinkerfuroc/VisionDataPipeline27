@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 from train_fixtures import make_export, wait_for
-from vsp.train.models import TrainParams, find_export
-from vsp.train.scheduler import TrainScheduler, detect_gpus
+from vdp.train.models import TrainParams, find_export
+from vdp.train.scheduler import TrainScheduler, detect_gpus
 
 pytestmark = pytest.mark.gpu
 

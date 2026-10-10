@@ -6,9 +6,9 @@ from datetime import datetime
 
 import pytest
 from train_fixtures import EXPORT_ID, make_export
-from vsp.store import NotFound
-from vsp.train.models import TrainParams, find_export
-from vsp.train.runs import RunStore, atomic_write_json, new_run_id, read_json
+from vdp.store import NotFound
+from vdp.train.models import TrainParams, find_export
+from vdp.train.runs import RunStore, atomic_write_json, new_run_id, read_json
 
 
 def test_new_run_id_shape():
@@ -27,12 +27,12 @@ def test_atomic_json_roundtrip(tmp_path):
 
 def test_atomic_write_json_cleanup_on_os_replace_error(tmp_path, monkeypatch):
     """atomic_write_json cleans up .tmp file when os.replace raises."""
-    import vsp.train.runs
+    import vdp.train.runs
 
     def raise_os_error(*args, **kwargs):
         raise OSError("simulated replace failure")
 
-    monkeypatch.setattr(vsp.train.runs.os, "replace", raise_os_error)
+    monkeypatch.setattr(vdp.train.runs.os, "replace", raise_os_error)
     with pytest.raises(OSError, match="simulated replace failure"):
         atomic_write_json(tmp_path / "test.json", {"x": 1})
     assert not list(tmp_path.glob("*.tmp"))

@@ -3,8 +3,8 @@ import threading
 
 import numpy as np
 import pytest
-from vsp.labeling.prompts import create_object
-from vsp.store import (
+from vdp.labeling.prompts import create_object
+from vdp.store import (
     Clip,
     ClipSource,
     Keyframe,

@@ -1,5 +1,5 @@
 import numpy as np
-from vsp.engine.masks import bbox_of, is_degenerate_mask
+from vdp.engine.masks import bbox_of, is_degenerate_mask
 
 
 def _m(h=100, w=100):

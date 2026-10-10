@@ -10,12 +10,12 @@ import numpy as np
 import pytest
 import yaml as yaml_lib
 from PIL import Image
-from vsp.export import EXPORTERS
-from vsp.export import base as export_base
-from vsp.export.mask_png import paint
-from vsp.export.plan import ExportOptions, build_plan
-from vsp.export.polygons import polygons_to_mask
-from vsp.store.models import LabelObject
+from vdp.export import EXPORTERS
+from vdp.export import base as export_base
+from vdp.export.mask_png import paint
+from vdp.export.plan import ExportOptions, build_plan
+from vdp.export.polygons import polygons_to_mask
+from vdp.store.models import LabelObject
 
 W, H = 120, 60
 

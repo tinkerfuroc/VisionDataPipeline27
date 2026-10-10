@@ -3,7 +3,7 @@ from __future__ import annotations
 import tarfile
 
 import pytest
-from vsp.augment.backgrounds import FetchCancelled, fetch_pool, list_images, safe_member_name
+from vdp.augment.backgrounds import FetchCancelled, fetch_pool, list_images, safe_member_name
 
 
 def test_only_safe_images_are_extracted(tmp_path, server):

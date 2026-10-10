@@ -33,7 +33,7 @@ class ChunkPrefetcher:
 
     def __init__(self, store: ProjectStore, clip: Clip, engine: Engine) -> None:
         self._store, self._clip, self._engine = store, clip, engine
-        self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="vsp-prefetch")
+        self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="vdp-prefetch")
         self._lock = threading.Lock()  # guards _frames and reads; the worker writes both
         self._frames: dict[int, np.ndarray] = {}
         self._taken: Key | None = None

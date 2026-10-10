@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 import pytest
-from vsp.ingest import (
+from vdp.ingest import (
     FrameDirSource,
     ImportCancelled,
     IngestError,
@@ -10,7 +10,7 @@ from vsp.ingest import (
     natural_key,
     resolve_allowed,
 )
-from vsp.store import ProjectStore
+from vdp.store import ProjectStore
 
 
 @pytest.fixture
@@ -162,7 +162,7 @@ def test_cancel_mid_import_raises_import_cancelled_and_removes_the_partial_clip(
 
 
 def test_thumbnail_write_failure_raises_and_cleans_up(store, tmp_path, monkeypatch):
-    import vsp.ingest.importer as importer_mod
+    import vdp.ingest.importer as importer_mod
 
     src = tmp_path / "frames"
     src.mkdir()

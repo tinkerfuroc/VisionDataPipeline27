@@ -9,9 +9,9 @@ from fastapi.testclient import TestClient
 from PIL import Image
 from starlette.websockets import WebSocketDisconnect
 from test_api_core import _frames_dir, _project, _settings, wait_job
-from vsp.api.app import create_app
-from vsp.engine.fake import FakeEngine
-from vsp.store.project import encode_mask_png
+from vdp.api.app import create_app
+from vdp.engine.fake import FakeEngine
+from vdp.store.project import encode_mask_png
 
 CLICK = {"type": "clicks", "points": [[30, 30, 1]]}
 
@@ -368,7 +368,7 @@ def test_delete_object_is_refused_while_a_propagation_or_an_export_runs(tmp_path
 
         project_id = client.get(f"/api/clips/{cid}").json()["clip"]["project_id"]
         entered, release = threading.Event(), threading.Event()
-        from vsp.export.coco import Coco
+        from vdp.export.coco import Coco
 
         real = Coco.write
 

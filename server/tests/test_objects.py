@@ -1,13 +1,13 @@
 import numpy as np
 import pytest
 from conftest import OBJ
-from vsp.engine.fake import FakeEngine
-from vsp.labeling.errors import BadRequest
-from vsp.labeling.frames import clear_range
-from vsp.labeling.objects import delete_object, relabel_object
-from vsp.labeling.paint import set_mask
-from vsp.labeling.prompts import PromptSpec, accept, preview
-from vsp.store import LabelObject, NotFound
+from vdp.engine.fake import FakeEngine
+from vdp.labeling.errors import BadRequest
+from vdp.labeling.frames import clear_range
+from vdp.labeling.objects import delete_object, relabel_object
+from vdp.labeling.paint import set_mask
+from vdp.labeling.prompts import PromptSpec, accept, preview
+from vdp.store import LabelObject, NotFound
 
 CLICK = PromptSpec(type="clicks", points=[(30, 30, 1)])
 TEXT = PromptSpec(type="text", phrase="part")

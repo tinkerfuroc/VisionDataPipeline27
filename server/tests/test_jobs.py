@@ -1,7 +1,7 @@
 import threading
 
 import pytest
-from vsp.jobs import INTERACTIVE, TERMINAL, JobBusy, JobManager, JobNotFound
+from vdp.jobs import INTERACTIVE, TERMINAL, JobBusy, JobManager, JobNotFound
 
 
 def test_job_runs_and_finishes_with_result_and_events():

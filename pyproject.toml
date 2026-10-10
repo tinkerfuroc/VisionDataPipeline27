@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "vsp"
+name = "visiondatapipeline27"
 version = "0.1.0"
 description = "SAM3 video labeling pipeline with an interactive web GUI."
 requires-python = ">=3.11,<3.12"
@@ -38,10 +38,10 @@ dev = [
 ]
 
 [project.scripts]
-vsp = "vsp.cli:main"
+vdp = "vdp.cli:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["server/vsp"]
+packages = ["server/vdp"]
 
 [tool.uv]
 # torch "+cu126" wheels do not exist for macOS; restrict the lock to this platform.

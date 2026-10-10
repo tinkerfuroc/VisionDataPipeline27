@@ -1,11 +1,11 @@
 import pytest
 from conftest import OBJ
-from vsp.engine.fake import FakeEngine
-from vsp.labeling.errors import BadRequest
-from vsp.labeling.frames import clear_range, delete_frame, prune_from, restore_frame
-from vsp.labeling.prompts import PromptSpec, accept
-from vsp.labeling.propagate import run_propagation
-from vsp.store import NotFound
+from vdp.engine.fake import FakeEngine
+from vdp.labeling.errors import BadRequest
+from vdp.labeling.frames import clear_range, delete_frame, prune_from, restore_frame
+from vdp.labeling.prompts import PromptSpec, accept
+from vdp.labeling.propagate import run_propagation
+from vdp.store import NotFound
 
 CLICK = PromptSpec(type="clicks", points=[(30, 30, 1)])
 

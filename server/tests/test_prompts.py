@@ -2,12 +2,12 @@ import numpy as np
 import pytest
 from conftest import OBJ
 from pydantic import ValidationError
-from vsp.engine.fake import FakeEngine
-from vsp.engine.masks import bbox_of
-from vsp.labeling.errors import BadRequest
-from vsp.labeling.objects import relabel_object
-from vsp.labeling.prompts import PromptSpec, accept, create_object, padded_box, preview
-from vsp.store import LabelObject
+from vdp.engine.fake import FakeEngine
+from vdp.engine.masks import bbox_of
+from vdp.labeling.errors import BadRequest
+from vdp.labeling.objects import relabel_object
+from vdp.labeling.prompts import PromptSpec, accept, create_object, padded_box, preview
+from vdp.store import LabelObject
 
 CLICK = PromptSpec(type="clicks", points=[(30, 30, 1)])  # FakeEngine -> rect x 20:40, y 20:40 (400 px)
 

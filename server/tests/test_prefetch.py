@@ -1,9 +1,9 @@
 import threading
 
 import pytest
-from vsp.engine.fake import FakeEngine
-from vsp.labeling.prefetch import ChunkPrefetcher
-from vsp.store import NotFound
+from vdp.engine.fake import FakeEngine
+from vdp.labeling.prefetch import ChunkPrefetcher
+from vdp.store import NotFound
 
 
 def _white(frame) -> bool:
@@ -68,4 +68,4 @@ def test_close_stops_the_worker_thread(store, make_clip):
     _, clip = make_clip(n_frames=6)
     with ChunkPrefetcher(store, clip, FakeEngine()) as pf:
         pf.schedule(0, [1, 2, 3])
-    assert not [t for t in threading.enumerate() if t.name.startswith("vsp-prefetch")]
+    assert not [t for t in threading.enumerate() if t.name.startswith("vdp-prefetch")]

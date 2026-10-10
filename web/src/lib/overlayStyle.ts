@@ -11,7 +11,7 @@ export type OverlayStyle = {
 export const MAX_THICKNESS = 12;
 export const DEFAULT_STYLE: OverlayStyle = { color: null, thickness: 5 };
 
-const KEY = "vsp.overlayStyle";
+const KEY = "vdp.overlayStyle";
 const HEX = /^#[0-9a-f]{6}$/i;
 
 export function clampThickness(v: number): number {

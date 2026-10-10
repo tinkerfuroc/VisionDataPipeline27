@@ -4,14 +4,14 @@ import time
 import cv2
 import numpy as np
 import pytest
-import vsp.api.clips as clips_mod
+import vdp.api.clips as clips_mod
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
-from vsp.api.app import create_app
-from vsp.config import Settings
-from vsp.engine.fake import FakeEngine
-from vsp.engine.types import EngineNotLoaded
-from vsp.ingest import FrameDirSource
+from vdp.api.app import create_app
+from vdp.config import Settings
+from vdp.engine.fake import FakeEngine
+from vdp.engine.types import EngineNotLoaded
+from vdp.ingest import FrameDirSource
 
 
 def _settings(tmp_path):

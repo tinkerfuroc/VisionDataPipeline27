@@ -7,7 +7,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 import pytest
-from vsp.ingest import IngestError, ZipFrameSource, import_clip
+from vdp.ingest import IngestError, ZipFrameSource, import_clip
 
 
 def _png(value: int = 90) -> bytes:

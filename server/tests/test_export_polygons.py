@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import cv2
 import numpy as np
-from vsp.export.polygons import clean_mask, mask_bbox, mask_to_polygons, polygons_to_mask
+from vdp.export.polygons import clean_mask, mask_bbox, mask_to_polygons, polygons_to_mask
 
 
 def _iou(a: np.ndarray, b: np.ndarray) -> float:

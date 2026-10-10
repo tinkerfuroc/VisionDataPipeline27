@@ -30,7 +30,7 @@ import { FALLBACK_COLOR, className, classColor, isLabeled, labeledCount, laneOf,
 import { loadStyle, outlineFor, saveStyle, type OverlayStyle } from "../lib/overlayStyle";
 import { clampFrame, findNext } from "../lib/timeline";
 
-const jobKey = (clipId: string) => `vsp.job.${clipId}`;
+const jobKey = (clipId: string) => `vdp.job.${clipId}`;
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 export function Label() {

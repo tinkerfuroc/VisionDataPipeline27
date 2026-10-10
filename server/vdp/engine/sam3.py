@@ -5,7 +5,7 @@ server/tk_vision/annotate/sam3.py @ 5874ba0. Changes from the template:
   * device auto-selection; torch.autocast always gets device_type "cuda";
   * tracker_neck weights are synced from whichever key layout the checkpoint uses;
   * propagate() tracks several objects (one per seed) in a single tracker session; predict_prompt()
-    and predict_text() remain single-object previews, matching vsp.engine.types.Engine;
+    and predict_text() remain single-object previews, matching vdp.engine.types.Engine;
   * predict_prompt(): real point/box prompts through the tracker's prompt encoder
     (the template collapsed clicks into a padded box on the detector).
 """
@@ -101,7 +101,7 @@ class Sam3Engine:
         if synced != expected:
             raise EngineNotLoaded(
                 f"tracker_neck: synced {synced}/{expected} weights from {self.model_dir}/model.safetensors; "
-                "run `vsp verify-weights`"
+                "run `vdp verify-weights`"
             )
         # The checkpoint ships tracker_config.multimask_max_pt_num=1, so the mask head only
         # runs its "best of 3 candidates" selection (multimask_output_in_sam) when there is at

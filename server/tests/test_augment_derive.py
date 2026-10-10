@@ -7,20 +7,20 @@ from pathlib import Path
 import cv2
 import numpy as np
 import pytest
-from vsp.augment.derive import (
+from vdp.augment.derive import (
     AugmentOptions,
     _cutouts_and_sizes,
     _merged_format_summaries,
     check_augment,
     run_augment,
 )
-from vsp.export import ExportCancelled, ExportOptions, run_export
-from vsp.export.base import ExportSummary
-from vsp.export.mask_png import MaskSummary
-from vsp.labeling.errors import BadRequest
-from vsp.store import NotFound
-from vsp.store.models import LabelObject
-from vsp.train.models import list_exports
+from vdp.export import ExportCancelled, ExportOptions, run_export
+from vdp.export.base import ExportSummary
+from vdp.export.mask_png import MaskSummary
+from vdp.labeling.errors import BadRequest
+from vdp.store import NotFound
+from vdp.store.models import LabelObject
+from vdp.train.models import list_exports
 
 
 def _labelled(store, make_clip, n=6):

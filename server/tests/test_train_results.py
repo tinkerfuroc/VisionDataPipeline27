@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import pytest
-from vsp.train.results import best_row, read_ground_truth, read_metrics, summarize, tail
+from vdp.train.results import best_row, read_ground_truth, read_metrics, summarize, tail
 
 # Ultralytics right-aligns header names with spaces; YOLO26 adds l1/sem losses.
 CSV = (
@@ -67,7 +67,7 @@ def test_tail(tmp_path):
     assert tail(tmp_path / "missing", 3) == ""
 
 
-from vsp.train.results import mask_iou
+from vdp.train.results import mask_iou
 
 SQ = {"class_id": 0, "polygons": [[0.0, 0.0, 0.5, 0.0, 0.5, 1.0, 0.0, 1.0]]}      # left half
 FULL = {"class_id": 0, "polygons": [[0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0]]}    # whole image

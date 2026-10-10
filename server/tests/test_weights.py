@@ -2,7 +2,7 @@ import json
 
 import numpy as np
 from safetensors.numpy import save_file
-from vsp.weights import (
+from vdp.weights import (
     EXPECTED_TRACKER_NECK_TENSORS,
     rename_public_prefixes,
     verify_checkpoint,
