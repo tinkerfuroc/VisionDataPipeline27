@@ -1,5 +1,7 @@
 # VisionDataPipeline27
 
+[![CI](https://github.com/tinkerfuroc/VisionDataPipeline27/actions/workflows/ci.yml/badge.svg)](https://github.com/tinkerfuroc/VisionDataPipeline27/actions/workflows/ci.yml)
+
 Turn raw video into instance-segmentation datasets and trained YOLO models from one browser tab.
 
 1. **Import** videos, zips of images or frame directories.
