@@ -37,6 +37,7 @@ export function AugmentPanel({ exportInfo, onCreated }: Props) {
   const [perImage, setPerImage] = useState(3);
   const [maxObjects, setMaxObjects] = useState(2);
   const [seed, setSeed] = useState(0);
+  const [lighting, setLighting] = useState(0);
 
   const loadPools = useCallback(() => {
     api.listBackgrounds().then(setPools, (e) => setPoolsError(message(e)));
@@ -95,6 +96,9 @@ export function AugmentPanel({ exportInfo, onCreated }: Props) {
   const fetchRunning = isBusy(fetchJob.status);
   const augmentRunning = isBusy(augmentJob.status);
   const augmentError = augmentErrors[exportInfo.id] ?? null;
+  const addsNothing = perImage === 0 && lighting === 0;
+  // only composites need the background textures; a lighting-only copy can be made without them
+  const canMake = !augmentRunning && !addsNothing && (perImage === 0 || poolReady);
 
   const onDownload = () => {
     setFetchError(null);
@@ -111,13 +115,13 @@ export function AugmentPanel({ exportInfo, onCreated }: Props) {
     if (augmentJobId !== null) void api.cancelJob(augmentJobId);
   };
   const onMake = () => {
-    if (!poolReady || augmentRunning) return;
+    if (!canMake) return;
     const exportId = exportInfo.id;
     setAugmentErrors((errs) => {
       const { [exportId]: _dropped, ...rest } = errs;
       return rest;
     });
-    api.augmentExport(exportId, { per_image: perImage, max_objects: maxObjects, seed, pool: POOL }).then(
+    api.augmentExport(exportId, { per_image: perImage, max_objects: maxObjects, seed, pool: POOL, lighting }).then(
       (r) => setAugmentJobs((j) => ({ ...j, [exportId]: r.job_id })),
       (e) => setAugmentErrors((errs) => ({ ...errs, [exportId]: message(e) })),
     );
@@ -159,14 +163,23 @@ export function AugmentPanel({ exportInfo, onCreated }: Props) {
 
       <label className="flex items-center justify-between gap-2 text-sm text-dim">
         Composites per image
-        <input aria-label="Composites per image" type="number" className="field w-20" min={1} max={10}
-          value={perImage} onChange={(e) => setPerImage(Math.min(10, Math.max(1, Number(e.target.value) || 1)))} />
+        <input aria-label="Composites per image" type="number" className="field w-20" min={0} max={10}
+          value={perImage} onChange={(e) => setPerImage(Math.min(10, Math.max(0, Number(e.target.value) || 0)))} />
       </label>
       <label className="flex items-center justify-between gap-2 text-sm text-dim">
         Objects per image
         <input aria-label="Objects per image" type="number" className="field w-20" min={1} max={3}
           value={maxObjects} onChange={(e) => setMaxObjects(Math.min(3, Math.max(1, Number(e.target.value) || 1)))} />
       </label>
+      <label className="flex items-center justify-between gap-2 text-sm text-dim">
+        Lighting variants per image
+        <input aria-label="Lighting variants per image" type="number" className="field w-20" min={0} max={3}
+          value={lighting} onChange={(e) => setLighting(Math.min(3, Math.max(0, Number(e.target.value) || 0)))} />
+      </label>
+      <p className="note">
+        Each lighting variant is a training frame redone as low light (darker, with sensor noise) or mildly
+        over-exposed, keeping its labels.
+      </p>
       <label className="flex items-center justify-between gap-2 text-sm text-dim">
         Seed
         <input aria-label="Seed" type="number" className="field w-20" min={0}
@@ -177,12 +190,13 @@ export function AugmentPanel({ exportInfo, onCreated }: Props) {
         <div className="flex flex-col gap-1">
           <progress value={augmentJob.done} max={augmentJob.total ?? 1} />
           <div className="flex items-center justify-between gap-2 text-sm text-dim">
-            <span>Making composites… {pct(augmentJob.done, augmentJob.total)} %</span>
+            <span>Making augmented copy… {pct(augmentJob.done, augmentJob.total)} %</span>
             <button type="button" className="btn" onClick={onCancelAugment}>Cancel</button>
           </div>
         </div>
       )}
-      <button type="button" className="btn btn-on" disabled={!poolReady || augmentRunning} onClick={onMake}>
+      {addsNothing && <p className="note text-ink">Choose at least one composite or lighting variant per image.</p>}
+      <button type="button" className="btn btn-on" disabled={!canMake} onClick={onMake}>
         Make augmented copy
       </button>
       {augmentError !== null && <p role="alert" className="alert">{augmentError}</p>}

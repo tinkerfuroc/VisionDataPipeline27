@@ -27,6 +27,10 @@ from .runs import atomic_write_json, best_weights, last_weights, onnx_weights, r
 # `photometric_transforms`, or its first import still reaches out to PyPI for the version check.
 os.environ.setdefault("NO_ALBUMENTATIONS_UPDATE", "1")
 
+# Imported here, not only where the transforms are built: it registers `Lighting` with albumentations, which
+# Ultralytics needs to rebuild the run's saved transforms with `A.from_dict`, on Resume too.
+from .lighting_aug import Lighting
+
 CANCELLED_EXIT = 2
 PREDICT_CONF = 0.25
 _IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png"}
@@ -115,6 +119,14 @@ def photometric_transforms() -> list:
         A.ImageCompression(quality_range=(60, 95), p=0.3),
         A.CLAHE(p=0.1),
     ]
+
+
+def augmentation_transforms(*, photometric: bool, lighting: bool) -> list | None:
+    """The run's custom albumentations list, or None to keep Ultralytics' own defaults."""
+    transforms = photometric_transforms() if photometric else []
+    if lighting:
+        transforms.append(Lighting())
+    return transforms or None
 
 
 def _quiet_ultralytics():
@@ -217,9 +229,10 @@ def train(run_dir: Path) -> int:
             weights = str(run_dir / "init.pt") if run.get("start_mode") == "finetune" else f"{run['model']}.pt"
             model = YOLO(weights)
             _attach_progress(model, progress)
-            overrides, photometric = train_overrides(p)
-            if photometric:
-                overrides["augmentations"] = photometric_transforms()
+            overrides, photometric, lighting = train_overrides(p)
+            transforms = augmentation_transforms(photometric=photometric, lighting=lighting)
+            if transforms is not None:
+                overrides["augmentations"] = transforms
             model.train(
                 data=str(data),
                 epochs=p["epochs"],

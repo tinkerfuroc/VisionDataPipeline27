@@ -108,7 +108,7 @@ describe("AugmentPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "Make augmented copy" }));
     await waitFor(() =>
       expect(m.augmentExport).toHaveBeenCalledWith("20260924-040124-8336a8", {
-        per_image: 5, max_objects: 2, seed: 0, pool: "dtd",
+        per_image: 5, max_objects: 2, seed: 0, pool: "dtd", lighting: 0,
       }),
     );
   });
@@ -160,20 +160,20 @@ describe("AugmentPanel", () => {
     await screen.findByText("DTD textures · 5,640 images");
     jobs.augA = { ...idle, status: "running", done: 3, total: 10 };
     fireEvent.click(screen.getByRole("button", { name: "Make augmented copy" }));
-    expect(await screen.findByText("Making composites… 30 %")).toBeTruthy();
+    expect(await screen.findByText("Making augmented copy… 30 %")).toBeTruthy();
 
     rerender(<AugmentPanel exportInfo={expB} onCreated={vi.fn()} />);
-    expect(screen.queryByText(/Making composites/)).toBeNull();
+    expect(screen.queryByText(/Making augmented copy/)).toBeNull();
     const makeB = screen.getByRole("button", { name: "Make augmented copy" }) as HTMLButtonElement;
     expect(makeB.disabled).toBe(false);
     m.augmentExport.mockResolvedValue({ job_id: "augB" });
     fireEvent.click(makeB);
     await waitFor(() =>
-      expect(m.augmentExport).toHaveBeenLastCalledWith("expB", { per_image: 3, max_objects: 2, seed: 0, pool: "dtd" }),
+      expect(m.augmentExport).toHaveBeenLastCalledWith("expB", { per_image: 3, max_objects: 2, seed: 0, pool: "dtd", lighting: 0 }),
     );
 
     rerender(<AugmentPanel exportInfo={expA} onCreated={vi.fn()} />);
-    expect(await screen.findByText("Making composites… 30 %")).toBeTruthy();
+    expect(await screen.findByText("Making augmented copy… 30 %")).toBeTruthy();
   });
 
   it("calls onCreated exactly once per job, keyed to its own export", async () => {
@@ -197,6 +197,30 @@ describe("AugmentPanel", () => {
     expect(onCreatedB).not.toHaveBeenCalled();
   });
 
+  it("makes a lighting-only copy without the texture pool", async () => {
+    m.listBackgrounds.mockResolvedValue([pool({ images: 0 })]);
+    m.augmentExport.mockResolvedValue({ job_id: "aug1" });
+    render(<AugmentPanel exportInfo={exp()} onCreated={vi.fn()} />);
+    await screen.findByRole("button", { name: "Download DTD textures (625 MB)" });
+    fireEvent.change(screen.getByLabelText("Composites per image"), { target: { value: "0" } });
+    fireEvent.change(screen.getByLabelText("Lighting variants per image"), { target: { value: "2" } });
+    fireEvent.click(screen.getByRole("button", { name: "Make augmented copy" }));
+    await waitFor(() =>
+      expect(m.augmentExport).toHaveBeenCalledWith("20260924-040124-8336a8", {
+        per_image: 0, max_objects: 2, seed: 0, pool: "dtd", lighting: 2,
+      }),
+    );
+  });
+
+  it("disables Make augmented copy when it would add nothing", async () => {
+    m.listBackgrounds.mockResolvedValue([pool({ images: 5640 })]);
+    render(<AugmentPanel exportInfo={exp()} onCreated={vi.fn()} />);
+    await screen.findByText("DTD textures · 5,640 images");
+    fireEvent.change(screen.getByLabelText("Composites per image"), { target: { value: "0" } });
+    expect((screen.getByRole("button", { name: "Make augmented copy" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText("Choose at least one composite or lighting variant per image.")).toBeTruthy();
+  });
+
   it("sends the chosen seed with the augment request", async () => {
     m.listBackgrounds.mockResolvedValue([pool({ images: 5640 })]);
     m.augmentExport.mockResolvedValue({ job_id: "aug1" });
@@ -206,7 +230,7 @@ describe("AugmentPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "Make augmented copy" }));
     await waitFor(() =>
       expect(m.augmentExport).toHaveBeenCalledWith("20260924-040124-8336a8", {
-        per_image: 3, max_objects: 2, seed: 7, pool: "dtd",
+        per_image: 3, max_objects: 2, seed: 7, pool: "dtd", lighting: 0,
       }),
     );
   });

@@ -41,11 +41,11 @@ const status: TrainStatus = {
   aug_presets: {
     default: {
       degrees: 0, shear: 0, perspective: 0, flipud: 0, fliplr: 0.5, scale: 0.5, translate: 0.1,
-      hsv_h: 0.015, hsv_s: 0.7, hsv_v: 0.4, mosaic: 1.0, mixup: 0, copy_paste: 0, photometric: false,
+      hsv_h: 0.015, hsv_s: 0.7, hsv_v: 0.4, mosaic: 1.0, mixup: 0, copy_paste: 0, photometric: false, lighting: false,
     },
     strong: {
       degrees: 15, shear: 5, perspective: 0.0005, flipud: 0.5, fliplr: 0.5, scale: 0.6, translate: 0.2,
-      hsv_h: 0.02, hsv_s: 0.7, hsv_v: 0.5, mosaic: 1.0, mixup: 0.1, copy_paste: 0.3, photometric: true,
+      hsv_h: 0.02, hsv_s: 0.7, hsv_v: 0.5, mosaic: 1.0, mixup: 0.1, copy_paste: 0.3, photometric: true, lighting: true,
     },
   },
 };
@@ -153,6 +153,18 @@ describe("Train page", () => {
     expect(body.params.aug?.mixup).toBe(0.1);
   });
 
+  it("sends the custom lighting choice, ticked from the strong preset", async () => {
+    renderPage();
+    const start = await screen.findByRole("button", { name: "Start 4 runs" });
+    fireEvent.change(screen.getByLabelText("Augmentation"), { target: { value: "custom" } });
+    const lighting = screen.getByLabelText("Low light, over-exposure") as HTMLInputElement;
+    expect(lighting.checked).toBe(true);
+    fireEvent.click(lighting);
+    fireEvent.click(start);
+    await waitFor(() => expect(m.startRuns).toHaveBeenCalled());
+    expect(m.startRuns.mock.calls[0][0].params.aug?.lighting).toBe(false);
+  });
+
   it("warns about SAM3 by default (its GPU is the fastest idle one), clearing when a different GPU is picked", async () => {
     renderPage();
     expect(await screen.findByText(/SAM3 runs on cuda:0/)).toBeTruthy();
@@ -256,9 +268,9 @@ describe("Train page", () => {
     m.exportSamples.mockResolvedValue([sample]);
     renderPage();
 
-    expect(screen.queryByText(/Composite samples/)).toBeNull();
+    expect(screen.queryByText(/Augmented samples/)).toBeNull();
     fireEvent.change(await screen.findByLabelText("Export"), { target: { value: derivedExp.id } });
-    expect(await screen.findByText(`Composite samples · ${derivedExp.id}`)).toBeTruthy();
+    expect(await screen.findByText(`Augmented samples · ${derivedExp.id}`)).toBeTruthy();
     expect(m.exportSamples).toHaveBeenCalledWith(derivedExp.id, 12, 0);
   });
 

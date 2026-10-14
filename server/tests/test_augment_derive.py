@@ -582,3 +582,121 @@ def test_the_derived_manifest_records_how_cutouts_were_made(store, make_clip, tm
     assert json.loads((Path(per_object["path"]) / "export.json").read_text())["augment"]["cutouts"] == "per_object"
     assert json.loads((Path(fallback["path"]) / "export.json").read_text())["augment"]["cutouts"] == \
         "per_class_region"
+
+
+def _lit_source(stem: str) -> str:
+    """`lit_<seed>_<source stem>_<k>` -> the source stem."""
+    return stem.split("_", 2)[2].rsplit("_", 1)[0]
+
+
+def test_lighting_variants_copy_each_train_frame_with_its_labels(store, make_clip, tmp_path):
+    project, clip = _multi(store, make_clip)
+    data_root = tmp_path / "data"
+    src = _export(store, project, clip, ["yolo_seg", "yolo_det", "coco", "masks"], data_root)
+    _make_pool(data_root)
+    src_dir = Path(src["path"])
+    before = _snapshot(src_dir)
+
+    result = run_augment(data_root, src["export_id"], AugmentOptions(per_image=1, seed=4, lighting=2))
+    new_dir = Path(result["path"])
+    manifest = json.loads((new_dir / "export.json").read_text())
+    src_manifest = json.loads((src_dir / "export.json").read_text())
+    real_train = sorted(p.stem for p in (src_dir / "yolo_seg" / "images" / "train").glob("*.jpg"))
+
+    lit = sorted(p.stem for p in (new_dir / "yolo_seg" / "images" / "train").glob("lit_*.jpg"))
+    assert len(lit) == 2 * len(real_train) == manifest["augment"]["lighting_images"]
+    assert manifest["augment"]["lighting_variants"] == 2
+    assert {_lit_source(s) for s in lit} == set(real_train)
+    for stem in lit:
+        source = _lit_source(stem)
+        for fmt in ("yolo_seg", "yolo_det"):
+            rel = Path(fmt) / "labels" / "train"
+            assert (new_dir / rel / f"{stem}.txt").read_bytes() == (src_dir / rel / f"{source}.txt").read_bytes()
+        rel = Path("masks") / "masks" / "train"
+        assert (new_dir / rel / f"{stem}.png").read_bytes() == (src_dir / rel / f"{source}.png").read_bytes()
+        relit = cv2.imread(str(new_dir / "images" / f"{stem}.jpg"))
+        original = cv2.imread(str(src_dir / "images" / f"{source}.jpg"))
+        assert relit.shape == original.shape and not np.array_equal(relit, original)
+        for fmt in ("yolo_seg", "yolo_det", "coco", "masks"):
+            assert (new_dir / fmt / "images" / "train" / f"{stem}.jpg").is_file()
+
+    from pycocotools.coco import COCO
+
+    coco = COCO(str(new_dir / "coco" / "annotations" / "instances_train.json"))
+    by_name = {Path(im["file_name"]).stem: im["id"] for im in coco.dataset["images"]}
+    assert len(by_name) == len(coco.dataset["images"])  # no duplicate file names
+    ids = [a["id"] for a in coco.dataset["annotations"]]
+    assert len(ids) == len(set(ids))
+    for stem in lit:
+        mine = coco.loadAnns(coco.getAnnIds(imgIds=[by_name[stem]]))
+        theirs = coco.loadAnns(coco.getAnnIds(imgIds=[by_name[_lit_source(stem)]]))
+        assert [(a["category_id"], a["segmentation"]) for a in mine] == \
+            [(a["category_id"], a["segmentation"]) for a in theirs]
+
+    syn = manifest["augment"]["synthetic_images"]
+    assert manifest["counts"]["train"]["images"] == len(real_train) + syn + len(lit)
+    assert manifest["counts"]["val"] == src_manifest["counts"]["val"]
+    for entry, src_entry in zip(manifest["formats"], src_manifest["formats"], strict=True):
+        assert entry["images"]["train"] == src_entry["images"]["train"] + syn + len(lit)
+        assert entry["images"]["val"] == src_entry["images"]["val"]
+        assert entry["annotations"]["val"] == src_entry["annotations"]["val"]
+    yolo = next(f for f in manifest["formats"] if f["name"] == "yolo_seg")
+    lines = sum(len(p.read_text().splitlines()) for p in (new_dir / "yolo_seg" / "labels" / "train").glob("*.txt"))
+    assert yolo["annotations"]["train"] == lines
+    coco_entry = next(f for f in manifest["formats"] if f["name"] == "coco")
+    assert coco_entry["annotations"]["train"] == len(coco.dataset["annotations"])
+    assert _snapshot(src_dir) == before
+
+
+def test_a_lighting_only_copy_needs_no_background_pool(store, make_clip, tmp_path):
+    project, clip = _labelled(store, make_clip)
+    data_root = tmp_path / "data"
+    src = _export(store, project, clip, ["yolo_seg", "coco", "masks"], data_root)
+
+    result = run_augment(data_root, src["export_id"], AugmentOptions(per_image=0, lighting=1))
+    new_dir = Path(result["path"])
+    names = sorted(p.name for p in (new_dir / "yolo_seg" / "images" / "train").glob("*.jpg"))
+    assert names and not any(n.startswith("syn_") for n in names)
+    assert sum(n.startswith("lit_") for n in names) == len(names) // 2
+    manifest = json.loads((new_dir / "export.json").read_text())
+    assert manifest["augment"]["synthetic_images"] == 0 and manifest["augment"]["pool"] is None
+    assert manifest["name"] == f"{src['export_id']} +1 lighting"
+    assert "-lit1-" in result["export_id"] and "-aug" not in result["export_id"]
+
+
+def test_lighting_variants_are_reproducible_per_seed(store, make_clip, tmp_path):
+    project, clip = _labelled(store, make_clip)
+    data_root = tmp_path / "data"
+    src = _export(store, project, clip, ["yolo_seg", "masks"], data_root)
+    opts = AugmentOptions(per_image=0, lighting=1, seed=5)
+
+    def lit_images(path):
+        return {p.name: p.read_bytes() for p in (Path(path) / "images").glob("lit_*.jpg")}
+
+    a = lit_images(run_augment(data_root, src["export_id"], opts)["path"])
+    b = lit_images(run_augment(data_root, src["export_id"], opts)["path"])
+    c = lit_images(run_augment(data_root, src["export_id"], AugmentOptions(per_image=0, lighting=1, seed=6))["path"])
+    assert a and a == b and list(a.values()) != list(c.values())
+
+
+def test_check_augment_lighting_errors(store, make_clip, tmp_path):
+    project, clip = _labelled(store, make_clip)
+    data_root = tmp_path / "data"
+    src = _export(store, project, clip, ["yolo_seg", "masks"], data_root)
+    with pytest.raises(BadRequest, match="at least one"):
+        check_augment(data_root, src["export_id"], AugmentOptions(per_image=0, lighting=0))
+    with pytest.raises(BadRequest, match="lighting"):
+        check_augment(data_root, src["export_id"], AugmentOptions(per_image=0, lighting=4))
+    with pytest.raises(BadRequest, match="pool"):
+        check_augment(data_root, src["export_id"], AugmentOptions(per_image=1, lighting=1))  # composites need it
+    check_augment(data_root, src["export_id"], AugmentOptions(per_image=0, lighting=3))
+
+
+def test_a_copy_with_composites_and_lighting_names_both(store, make_clip, tmp_path):
+    project, clip = _labelled(store, make_clip)
+    data_root = tmp_path / "data"
+    src = _export(store, project, clip, ["yolo_seg", "masks"], data_root)
+    _make_pool(data_root)
+    result = run_augment(data_root, src["export_id"], AugmentOptions(per_image=2, lighting=1))
+    assert result["name"] == f"{src['export_id']} ×2 augmented +1 lighting"
+    assert "-aug2x-lit1-" in result["export_id"]

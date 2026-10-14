@@ -42,11 +42,12 @@ class AugParams(BaseModel):
     mixup: float = Field(default=0.0, ge=0, le=1)
     copy_paste: float = Field(default=0.0, ge=0, le=1)
     photometric: bool = False
+    lighting: bool = False  # low light / mild over-exposure (vdp.augment.lighting)
 
 
 STRONG_AUG = AugParams(degrees=15, shear=5, perspective=0.0005, flipud=0.5, scale=0.6,
                        translate=0.2, hsv_h=0.02, hsv_v=0.5, mixup=0.1, copy_paste=0.3,
-                       photometric=True)
+                       photometric=True, lighting=True)
 AUG_PRESETS = {"default": AugParams(), "strong": STRONG_AUG}
 
 
@@ -184,16 +185,18 @@ def rename_export(data_root: Path, export_id: str, name: str | None) -> ExportIn
     return find_export(data_root, export_id)
 
 
-def train_overrides(params: dict) -> tuple[dict, bool]:
+def train_overrides(params: dict) -> tuple[dict, bool, bool]:
     """Ultralytics keyword arguments for a run's params (a run.json dict; older runs have no
-    augment keys)."""
+    augment keys, and custom ones from before lighting have no `lighting`), plus whether to add the
+    photometric and the lighting albumentations transforms."""
     mode = params.get("augment", "default")
     if mode == "strong":
         aug = STRONG_AUG
     elif mode == "custom":
         aug = AugParams(**params["aug"])
     else:
-        return {}, False
+        return {}, False, False
     values = aug.model_dump()
     photometric = values.pop("photometric")
-    return {**values, "copy_paste_mode": "flip"}, photometric
+    lighting = values.pop("lighting")
+    return {**values, "copy_paste_mode": "flip"}, photometric, lighting

@@ -18,7 +18,7 @@ const PARAM_FIELDS: { key: "epochs" | "imgsz" | "batch" | "patience"; label: str
   { key: "batch", label: "Batch", min: 1, max: 64, step: 1 },
   { key: "patience", label: "Early-stop patience", min: 0, max: 1000, step: 1 },
 ];
-const AUG_FIELDS: { key: keyof Omit<AugParams, "photometric">; min: number; max: number; step: number }[] = [
+const AUG_FIELDS: { key: keyof Omit<AugParams, "photometric" | "lighting">; min: number; max: number; step: number }[] = [
   { key: "degrees", min: 0, max: 180, step: 1 },
   { key: "shear", min: 0, max: 45, step: 1 },
   { key: "perspective", min: 0, max: 0.001, step: 0.0001 },
@@ -443,6 +443,11 @@ export function TrainSidebar({
               <input type="checkbox" checked={displayParams.aug.photometric} disabled={paramsLocked}
                 onChange={(e) => setAug({ photometric: e.target.checked })} />
               Blur, noise, JPEG, contrast
+            </label>
+            <label className="col-span-2 flex items-center gap-2 text-sm text-dim">
+              <input type="checkbox" checked={displayParams.aug.lighting ?? false} disabled={paramsLocked}
+                onChange={(e) => setAug({ lighting: e.target.checked })} />
+              Low light, over-exposure
             </label>
           </fieldset>
         )}

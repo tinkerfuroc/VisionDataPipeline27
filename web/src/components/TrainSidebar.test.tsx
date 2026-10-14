@@ -8,7 +8,7 @@ afterEach(cleanup);
 
 const augDefaults: AugParams = {
   degrees: 0, shear: 0, perspective: 0, flipud: 0, fliplr: 0.5, scale: 0.5, translate: 0.1,
-  hsv_h: 0.015, hsv_s: 0.7, hsv_v: 0.4, mosaic: 1.0, mixup: 0, copy_paste: 0, photometric: false,
+  hsv_h: 0.015, hsv_s: 0.7, hsv_v: 0.4, mosaic: 1.0, mixup: 0, copy_paste: 0, photometric: false, lighting: false,
 };
 
 const status: TrainStatus = {

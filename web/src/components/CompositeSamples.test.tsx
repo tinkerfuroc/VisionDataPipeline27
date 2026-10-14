@@ -50,9 +50,9 @@ describe("CompositeSamples", () => {
 
   it("shows the export's name in the heading when set, else its id", async () => {
     const { rerender } = render(<CompositeSamples exportInfo={exp({ name: "Cups v2" })} />);
-    await screen.findByText("Composite samples · Cups v2");
+    await screen.findByText("Augmented samples · Cups v2");
 
     rerender(<CompositeSamples exportInfo={exp()} />);
-    await screen.findByText("Composite samples · expA");
+    await screen.findByText("Augmented samples · expA");
   });
 });

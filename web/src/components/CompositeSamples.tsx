@@ -50,13 +50,13 @@ export function CompositeSamples({ exportInfo }: { exportInfo: ExportInfo }) {
   return (
     <section className="flex flex-col gap-2">
       <div className="flex flex-wrap items-center gap-2">
-        <h2 className="heading">Composite samples · {exportLabel(exportInfo)}</h2>
+        <h2 className="heading">Augmented samples · {exportLabel(exportInfo)}</h2>
         <span className="flex-1" />
         <button type="button" className="btn" onClick={() => setSeed((s) => s + 1)}>Shuffle</button>
       </div>
       {error !== null && <p role="alert" className="alert">{error}</p>}
       {error === null && samples === null && <p className="note">Loading samples…</p>}
-      {samples !== null && samples.length === 0 && <p className="note">No synthetic train images yet.</p>}
+      {samples !== null && samples.length === 0 && <p className="note">No augmented train images yet.</p>}
       {samples !== null && samples.length > 0 && (
         <div className="flex items-center gap-2">
           <button type="button" className="btn self-center" aria-label="Previous four" disabled={first === 0}

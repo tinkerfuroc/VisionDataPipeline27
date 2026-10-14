@@ -10,7 +10,7 @@ from PIL import Image
 from pydantic import BaseModel, Field
 
 from ..augment.backgrounds import POOLS, FetchCancelled, fetch_pool, list_images, pool_dir
-from ..augment.derive import AugmentOptions, check_augment, run_augment
+from ..augment.derive import MAX_LIGHTING, AugmentOptions, check_augment, run_augment
 from ..export import ExportCancelled
 from ..jobs import Job
 from ..train.models import find_export
@@ -28,10 +28,11 @@ class FetchBody(BaseModel):
 
 
 class AugmentBody(BaseModel):
-    per_image: int = Field(default=3, ge=1, le=10)
+    per_image: int = Field(default=3, ge=0, le=10)
     max_objects: int = Field(default=2, ge=1, le=3)
     seed: int = Field(default=0, ge=0)
     pool: str = "dtd"
+    lighting: int = Field(default=0, ge=0, le=MAX_LIGHTING)
 
 
 @router.get("/api/backgrounds")
@@ -64,7 +65,9 @@ def fetch(name: str, state: State, body: FetchBody | None = None) -> dict:
 @router.post("/api/exports/{export_id}/augment", status_code=202)
 def augment(export_id: str, state: State, body: AugmentBody | None = None) -> dict:
     b = body or AugmentBody()
-    opts = AugmentOptions(per_image=b.per_image, max_objects=b.max_objects, seed=b.seed, pool=b.pool)
+    opts = AugmentOptions(
+        per_image=b.per_image, max_objects=b.max_objects, seed=b.seed, pool=b.pool, lighting=b.lighting,
+    )
     data_root = state.settings.project.data_root
     check_augment(data_root, export_id, opts)  # 400 / 404 now, not as a job error
 
@@ -88,7 +91,8 @@ def samples(
     export = find_export(state.settings.project.data_root, export_id)
     images_dir = export.yolo_dir / "images" / "train"
     labels_dir = export.yolo_dir / "labels" / "train"
-    names = sorted(p.name for p in images_dir.glob("syn_*.jpg"))
+    # an augmented copy shows what it added (composites, relit frames); any other export its own frames
+    names = sorted(p.name for p in images_dir.glob("*.jpg") if p.name.startswith(("syn_", "lit_")))
     if not names:
         names = sorted(p.name for p in images_dir.glob("*.jpg"))
     chosen = random.Random(seed).sample(names, min(limit, len(names)))

@@ -12,6 +12,7 @@ from train_fixtures import make_export
 from vdp.train import worker
 from vdp.train.worker import (
     ProgressWriter,
+    augmentation_transforms,
     instances_from_result,
     photometric_transforms,
     training_finished,
@@ -78,6 +79,40 @@ def test_photometric_transforms():
     assert [type(t) for t in ts] == [A.RandomBrightnessContrast, A.MotionBlur, A.GaussianBlur,
                                      A.GaussNoise, A.ImageCompression, A.CLAHE]
     assert [t.p for t in ts] == [0.5, 0.2, 0.1, 0.2, 0.3, 0.1]
+
+
+def test_augmentation_transforms_combine_photometric_and_lighting():
+    from vdp.train.lighting_aug import Lighting
+
+    assert augmentation_transforms(photometric=False, lighting=False) is None
+    assert [type(t) for t in augmentation_transforms(photometric=False, lighting=True)] == [Lighting]
+    both = augmentation_transforms(photometric=True, lighting=True)
+    assert len(both) == len(photometric_transforms()) + 1 and isinstance(both[-1], Lighting)
+
+
+def test_lighting_transform_round_trips_through_albumentations_serialization():
+    """Ultralytics stores custom transforms as `A.to_dict` dicts in the run args (and checkpoints) and
+    rebuilds them with `A.from_dict`, also on Resume; the transform must survive that unchanged."""
+    import albumentations as A
+    from vdp.train.lighting_aug import Lighting
+
+    t = Lighting(low_share=0.6, bgr=True, p=0.3)
+    back = A.from_dict(A.to_dict(t))
+    assert isinstance(back, Lighting)
+    assert (back.low_share, back.bgr, back.p) == (0.6, True, 0.3)
+
+
+def test_lighting_transform_changes_pixels_only():
+    import albumentations as A
+    from vdp.train.lighting_aug import Lighting
+
+    img = np.full((64, 64, 3), 128, np.uint8)
+    compose = A.Compose([Lighting(p=1.0)], seed=0)
+    outs = [compose(image=img)["image"] for _ in range(20)]
+    assert all(o.shape == img.shape and o.dtype == np.uint8 for o in outs)
+    means = [o.mean() for o in outs]
+    assert min(means) < 110 and max(means) > 150  # both kinds occur
+    assert issubclass(Lighting, A.ImageOnlyTransform)
 
 
 def _install_fake_ultralytics(monkeypatch, *, strip_optimizer):

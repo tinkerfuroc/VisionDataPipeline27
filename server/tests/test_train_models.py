@@ -108,17 +108,23 @@ def test_rename_export_rejects_an_overlong_name(tmp_path):
 
 
 def test_aug_presets_and_overrides():
-    assert train_overrides({"epochs": 5}) == ({}, False)  # old run.json
-    assert train_overrides(TrainParams().model_dump()) == ({}, False)
-    kw, photo = train_overrides(TrainParams(augment="strong").model_dump())
-    assert photo is True and kw["degrees"] == 15 and kw["copy_paste"] == 0.3
+    assert train_overrides({"epochs": 5}) == ({}, False, False)  # old run.json
+    assert train_overrides(TrainParams().model_dump()) == ({}, False, False)
+    kw, photo, lighting = train_overrides(TrainParams(augment="strong").model_dump())
+    assert photo is True and lighting is True and kw["degrees"] == 15 and kw["copy_paste"] == 0.3
     assert kw["copy_paste_mode"] == "flip"
-    expected = {**STRONG_AUG.model_dump(exclude={"photometric"}), "copy_paste_mode": "flip"}
-    assert "photometric" not in kw and kw == expected
+    expected = {**STRONG_AUG.model_dump(exclude={"photometric", "lighting"}), "copy_paste_mode": "flip"}
+    assert "photometric" not in kw and "lighting" not in kw and kw == expected
     custom = TrainParams(augment="custom",
-                         aug=AugParams(degrees=5, photometric=False)).model_dump()
-    kw, photo = train_overrides(custom)
-    assert kw["degrees"] == 5 and kw["fliplr"] == 0.5 and photo is False
+                         aug=AugParams(degrees=5, photometric=False, lighting=True)).model_dump()
+    kw, photo, lighting = train_overrides(custom)
+    assert kw["degrees"] == 5 and kw["fliplr"] == 0.5 and photo is False and lighting is True
+
+
+def test_custom_aug_from_before_lighting_reads_as_off():
+    old = TrainParams(augment="custom", aug=AugParams(degrees=5)).model_dump()
+    del old["aug"]["lighting"]
+    assert train_overrides(old)[2] is False
 
 
 def test_run_classes_from_data_yaml_dict_names_ordered_by_yolo_id(tmp_path):

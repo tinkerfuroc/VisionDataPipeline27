@@ -126,6 +126,8 @@ export type AugParams = {
   mixup: number;
   copy_paste: number;
   photometric: boolean;
+  /** Absent on runs started before lighting existed. */
+  lighting?: boolean;
 };
 export type TrainParams = {
   epochs: number;
@@ -179,7 +181,7 @@ export type ExportInfo = {
 };
 export type BackgroundPool = { name: string; label: string; images: number; size_bytes: number; fetching: string | null };
 export type ExportSample = { name: string; width: number; height: number; ground_truth: Instance[] };
-export type AugmentRequest = { per_image: number; max_objects: number; seed: number; pool: string };
+export type AugmentRequest = { per_image: number; max_objects: number; seed: number; pool: string; lighting: number };
 export type RunStatus = "queued" | "running" | "done" | "error" | "cancelled" | "interrupted";
 export type RunBest = {
   epoch: number;

@@ -109,6 +109,25 @@ def test_augment_route_creates_derived_export_and_serves_samples(client, store, 
     assert client.get(f"/api/exports/{new_id}/images/test/x.jpg").status_code == 404
 
 
+def test_augment_route_makes_a_lighting_only_copy_and_samples_its_relit_frames(client, store, make_clip, tmp_path):
+    project, clip = _labelled(store, make_clip)
+    data_root = tmp_path / "data"
+    src = run_export(store, project.id, [clip.id], ["yolo_seg", "masks"], ExportOptions(), data_root / "exports")
+
+    started = client.post(f"/api/exports/{src['export_id']}/augment", json={"per_image": 0, "lighting": 2})
+    assert started.status_code == 202, started.text
+    snap = wait_job(client, started.json()["job_id"])
+    assert snap["status"] == "done", snap
+    new_id = snap["result"]["export_id"]
+
+    listed = client.get(f"/api/exports/{new_id}/samples", params={"limit": 48}).json()
+    assert listed and all(item["name"].startswith("lit_") for item in listed)
+
+    bad = client.post(f"/api/exports/{src['export_id']}/augment", json={"per_image": 0, "lighting": 0})
+    assert bad.status_code == 400
+    assert client.post(f"/api/exports/{src['export_id']}/augment", json={"lighting": 4}).status_code == 422
+
+
 def test_augment_requires_masks_format(client, store, make_clip, tmp_path):
     project, clip = _labelled(store, make_clip)
     data_root = tmp_path / "data"
