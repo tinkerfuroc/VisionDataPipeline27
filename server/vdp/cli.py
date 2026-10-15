@@ -68,24 +68,27 @@ def _prompt_new_password(getpass_fn=None, tries: int = 3) -> str | None:
     """Ask for a new password twice; None after `tries` failed attempts (empty, or the two do not match).
     Shared by `vdp set-password` (one try) and `vdp serve`'s menus."""
     getpass_fn = getpass_fn or getpass.getpass
-    for _ in range(tries):
-        first = getpass_fn("New password: ")
-        if not first:
-            print("The password must not be empty.")
-            continue
-        if getpass_fn("Repeat it: ") != first:
-            print("The two passwords do not match.")
-            continue
-        return first
+    try:
+        for _ in range(tries):
+            first = getpass_fn("New password: ")
+            if not first:
+                print("The password must not be empty.")
+                continue
+            if getpass_fn("Repeat it: ") != first:
+                print("The two passwords do not match.")
+                continue
+            return first
+    except (KeyboardInterrupt, EOFError):
+        print("\nCancelled; no password set.")
     return None
 
 
 def _ask(prompt: str, *, stdin, ask) -> str:
-    """A one-letter menu answer, lowercased; "" when there is no terminal to ask or input ends."""
+    """A menu answer, lowercased (callers compare it whole); "" when there is no terminal to ask or input ends."""
     if not stdin.isatty():
         return ""
     try:
-        return ask(prompt).strip().lower()[:1]
+        return ask(prompt).strip().lower()
     except EOFError:
         return ""
 
@@ -233,7 +236,8 @@ def _serve(settings: Settings, host: str | None, port: int | None, https: bool =
         import uvicorn
 
         run = uvicorn.run
-    run(make_app(settings, auth_store=store), host=host, port=port, log_level="info", **ssl)
+    run(make_app(settings, auth_store=store), host=host, port=port, log_level="info",
+        proxy_headers=False, **ssl)  # X-Forwarded-* would let a local client spoof its address and scheme
     return 0
 
 

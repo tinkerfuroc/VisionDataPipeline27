@@ -79,12 +79,17 @@ def test_serve_locally_without_a_password_starts_without_asking(tmp_path):
     assert code == 0 and len(runs) == 1
 
 
+def test_serve_never_trusts_proxy_headers(tmp_path):
+    _, runs, _ = _serve(tmp_path, host="127.0.0.1")
+    assert runs[0]["proxy_headers"] is False
+
+
 def test_serve_on_the_network_without_a_password_offers_to_set_one(tmp_path):
     code, runs, store = _serve(tmp_path, answers=["s"], passwords=["pw", "pw"])
     assert code == 0 and len(runs) == 1 and verify_password("pw", store.load().password_hash)
 
 
-@pytest.mark.parametrize("answer", ["q", "", "x"])
+@pytest.mark.parametrize("answer", ["q", "", "x", "stop"])
 def test_serve_on_the_network_without_a_password_otherwise_exits_2(tmp_path, answer):
     code, runs, store = _serve(tmp_path, answers=[answer])
     assert code == 2 and runs == [] and store.load() is None
@@ -150,8 +155,19 @@ def test_corrupt_auth_wipe_on_the_network_then_offers_a_password(tmp_path):
     assert code == 2 and runs == [] and not p.exists()
 
 
-@pytest.mark.parametrize("answers, tty", [(["q"], True), ([""], True), (["z"], True), ([], False)])
+@pytest.mark.parametrize("answers, tty", [(["q"], True), ([""], True), (["z"], True), (["what?"], True), (["stop"], True), ([], False)])
 def test_corrupt_auth_otherwise_exits_2_and_leaves_the_file(tmp_path, answers, tty):
     p = _corrupt(tmp_path)
     code, runs, _ = _serve(tmp_path, host="127.0.0.1", answers=answers, tty=tty)
     assert code == 2 and runs == [] and p.read_text() == "{not json"
+
+
+@pytest.mark.parametrize("exc", [KeyboardInterrupt, EOFError])
+def test_set_password_cancelled_at_the_prompt_exits_1_and_writes_nothing(tmp_path, monkeypatch, capsys, exc):
+    def cancel(prompt=""):
+        raise exc
+
+    monkeypatch.setattr("getpass.getpass", cancel)
+    assert vdp.cli.main(["--config", _cfg(tmp_path), "set-password"]) == 1
+    assert "Cancelled; no password set." in capsys.readouterr().out
+    assert AuthStore(tmp_path / "data").load() is None

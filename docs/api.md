@@ -56,7 +56,7 @@ that object.
 ## Login
 
 When a team password is set (`vdp set-password`), every route needs the `vdp_session` cookie except `GET /login`,
-`POST /api/auth/login` and `POST /api/auth/logout`. Without it, `/api/*` and the docs answer
+`GET /favicon.ico`, `POST /api/auth/login` and `POST /api/auth/logout`. Without it, `/api/*` and the docs answer
 `401 {"detail": "login required"}`, pages redirect to `/login?next=…`, and WebSockets are accepted and closed with
 code 4401. `POST /api/auth/login` takes a form (`password`, `next`) and answers `303` (to `next` with the cookie,
 or back to `/login?error=wrong`); after 5 wrong passwords from one address in 5 minutes it answers `429` with
