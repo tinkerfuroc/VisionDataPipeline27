@@ -153,6 +153,107 @@ describe("startResumableUpload", () => {
   });
 });
 
+describe("cancel and already-complete uploads", () => {
+  const rem = { upload_id: "u1", project_id: "p1", name: "a.mp4", size: 10, lastModified: 111 };
+  const json = (body: unknown, status = 200) =>
+    new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+
+  it("abort while the create call is pending still deletes the upload once it exists", async () => {
+    let answer!: () => void;
+    const calls: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      const method = init?.method ?? "GET";
+      calls.push(`${method} ${url}`);
+      if (method === "POST") {
+        await new Promise<void>((resolve) => (answer = resolve));
+        return json({ upload_id: "u1", chunk_size: 4, received: 0 }, 201);
+      }
+      return new Response(null, { status: 204 });
+    }));
+    const handle = startResumableUpload("p1", file(), { stride: 1, fps: 30 });
+    await new Promise((r) => setTimeout(r, 10));
+    handle.abort();
+    answer();
+    await expect(handle.promise).rejects.toBeInstanceOf(UploadCancelled);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(calls).toContain("DELETE /api/uploads/u1");
+    expect(rememberedUploads()).toEqual([]);
+  });
+
+  it("abort cancels the chunk in flight and does not retry it", async () => {
+    let signal: AbortSignal | undefined;
+    let puts = 0;
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => {
+      const method = init?.method ?? "GET";
+      if (method === "POST") return json({ upload_id: "u1", chunk_size: 4, received: 0 }, 201);
+      if (method === "DELETE") return new Response(null, { status: 204 });
+      puts += 1;
+      signal = init?.signal ?? undefined;
+      return new Promise<Response>((_, reject) =>
+        signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError"))));
+    }));
+    const handle = startResumableUpload("p1", file(), { stride: 1, fps: 30 });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(signal?.aborted).toBe(false);
+    handle.abort();
+    await expect(handle.promise).rejects.toBeInstanceOf(UploadCancelled);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(signal?.aborted).toBe(true);
+    expect(puts).toBe(1);
+    expect(waits).toEqual([]);
+  });
+
+  it("abort while waiting offline rejects promptly", async () => {
+    uploaderEnv.online = () => new Promise<void>(() => {}); // never comes back
+    fakeServer();
+    const handle = startResumableUpload("p1", file(), { stride: 1, fps: 30 });
+    await new Promise((r) => setTimeout(r, 10));
+    handle.abort();
+    await expect(handle.promise).rejects.toBeInstanceOf(UploadCancelled);
+  });
+
+  it("a 409 that moves nothing waits before trying again", async () => {
+    const server = fakeServer({ received: 4, reportReceived: 4 });
+    let first = true;
+    const inner = globalThis.fetch as typeof fetch;
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      if (init?.method === "PUT" && first) {
+        first = false; // the server still says 4 at the offset the client has
+        return json({ detail: "resync", received: 4 }, 409);
+      }
+      return inner(url, init);
+    }));
+    await startResumableUpload("p1", file(), { stride: 1, fps: 30 }, undefined, rem).promise;
+    expect(waits).toEqual([1000]);
+    expect(server.puts()).toEqual(["4", "8"]);
+  });
+
+  it("a 409 that carries the job resolves with it", async () => {
+    const calls: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => {
+      const method = init?.method ?? "GET";
+      calls.push(method);
+      if (method === "POST") return json({ upload_id: "u1", chunk_size: 4, received: 0 }, 201);
+      return json({ detail: "done", received: 10, job_id: "j9" }, 409);
+    }));
+    expect(await startResumableUpload("p1", file(), { stride: 1, fps: 30 }).promise).toEqual({ job_id: "j9" });
+    expect(calls).toEqual(["POST", "PUT"]);
+    expect(rememberedUploads()).toEqual([]);
+  });
+
+  it("resuming an upload that already has its job resolves without sending", async () => {
+    const calls: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => {
+      calls.push(init?.method ?? "GET");
+      return json({ upload_id: "u1", project_id: "p1", name: "a.mp4", size: 10, received: 10, job_id: "j5" });
+    }));
+    localStorage.setItem("vdp.uploads", JSON.stringify([rem]));
+    expect(await startResumableUpload("p1", file(), { stride: 1, fps: 30 }, undefined, rem).promise).toEqual({ job_id: "j5" });
+    expect(calls).toEqual(["GET"]);
+    expect(rememberedUploads()).toEqual([]);
+  });
+});
+
 describe("remembered uploads", () => {
   it("matches a file by name, size and modified time", () => {
     const r = { upload_id: "u1", project_id: "p1", name: "a.mp4", size: 10, lastModified: 111 };

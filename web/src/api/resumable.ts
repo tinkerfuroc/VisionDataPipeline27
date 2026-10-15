@@ -11,10 +11,18 @@ const STORE_KEY = "vdp.uploads";
 export const uploaderEnv = {
   chunkSize: CHUNK_SIZE,
   /** Resolves once the browser is online (at once if it already is). */
-  online: (): Promise<void> =>
+  online: (signal?: AbortSignal): Promise<void> =>
     navigator.onLine
       ? Promise.resolve()
-      : new Promise<void>((resolve) => window.addEventListener("online", () => resolve(), { once: true })),
+      : new Promise<void>((resolve) => {
+          const done = () => {
+            window.removeEventListener("online", done);
+            signal?.removeEventListener("abort", done);
+            resolve();
+          };
+          window.addEventListener("online", done);
+          signal?.addEventListener("abort", done);
+        }),
   /** Resolves after `ms`, or earlier when the browser comes back online or the page becomes visible again. */
   waitToRetry: (ms: number): Promise<void> =>
     new Promise<void>((resolve) => {
@@ -66,11 +74,17 @@ export const sameFile = (r: RememberedUpload, file: File): boolean =>
   r.name === file.name && r.size === file.size && r.lastModified === file.lastModified;
 
 /** One chunk. A 409 is not an error: it carries the server's count, which the caller continues from. */
-async function putChunk(uploadId: string, offset: number, chunk: Blob): Promise<{ received: number; job_id?: string }> {
+async function putChunk(
+  uploadId: string,
+  offset: number,
+  chunk: Blob,
+  signal?: AbortSignal,
+): Promise<{ received: number; job_id?: string }> {
   const r = await fetch(`/api/uploads/${uploadId}?offset=${offset}`, {
     method: "PUT",
     headers: { "Content-Type": "application/octet-stream" },
     body: chunk,
+    signal,
   });
   let body: unknown = null;
   try {
@@ -83,7 +97,10 @@ async function putChunk(uploadId: string, offset: number, chunk: Blob): Promise<
     return new Promise(() => {}); // the page is leaving
   }
   const received = (body as { received?: unknown } | null)?.received;
-  if (r.status === 409 && typeof received === "number") return { received };
+  if (r.status === 409 && typeof received === "number") {
+    const job = (body as { job_id?: unknown }).job_id;
+    return typeof job === "string" ? { received, job_id: job } : { received };
+  }
   if (!r.ok) throw apiError(r.status, body, r.statusText);
   return body as { received: number; job_id?: string };
 }
@@ -103,16 +120,17 @@ export function startResumableUpload(
   resume?: RememberedUpload,
 ): UploadHandle {
   let cancelled = false;
+  const controller = new AbortController();
   let uploadId: string | null = null;
   let rejectCancelled!: (e: unknown) => void;
   const cancelledPromise = new Promise<never>((_, reject) => (rejectCancelled = reject));
 
-  const begin = async (): Promise<number> => {
+  const begin = async (): Promise<{ received: number; job_id: string | null }> => {
     if (resume !== undefined) {
       try {
         const info = await api.getUpload(resume.upload_id);
         uploadId = resume.upload_id;
-        return info.received;
+        return { received: info.received, job_id: info.job_id };
       } catch (e) {
         if (!(e instanceof ApiError && e.status === 404)) throw e;
         forgetUpload(resume.upload_id); // expired on the server: start over
@@ -121,33 +139,47 @@ export function startResumableUpload(
     const created = await api.createUpload(projectId, { name: file.name, size: file.size, ...options });
     uploadId = created.upload_id;
     rememberUpload({ upload_id: uploadId, project_id: projectId, name: file.name, size: file.size, lastModified: file.lastModified });
-    return created.received;
+    return { received: created.received, job_id: null };
   };
 
+  const waitAfterFailure = (failures: number) =>
+    uploaderEnv.waitToRetry(RETRY_DELAYS_MS[Math.min(failures, RETRY_DELAYS_MS.length - 1)]);
+
   const run = async (): Promise<{ job_id: string }> => {
-    let received = await begin();
+    const start = await begin();
+    let received = start.received;
     const id = uploadId as string;
-    if (cancelled) throw new UploadCancelled();
+    if (cancelled) {
+      forgetUpload(id);
+      void api.deleteUpload(id).catch(() => {});
+      throw new UploadCancelled();
+    }
+    if (start.job_id !== null) {
+      forgetUpload(id); // already complete on the server
+      onProgress?.(file.size, file.size);
+      return { job_id: start.job_id };
+    }
     onProgress?.(received, file.size);
     let failures = 0;
     for (;;) {
-      await uploaderEnv.online();
+      await Promise.race([uploaderEnv.online(controller.signal), cancelledPromise]);
       if (cancelled) throw new UploadCancelled();
       const end = Math.min(received + uploaderEnv.chunkSize, file.size);
       try {
-        const reply = await putChunk(id, received, file.slice(received, end));
-        failures = 0;
+        const reply = await putChunk(id, received, file.slice(received, end), controller.signal);
+        const progressed = reply.received !== received;
         received = reply.received;
         onProgress?.(received, file.size);
         if (reply.job_id !== undefined) {
           forgetUpload(id);
           return { job_id: reply.job_id };
         }
+        if (progressed) failures = 0;
+        else await waitAfterFailure(failures++); // a 409 that moved nothing: do not spin
       } catch (e) {
+        if (cancelled) throw new UploadCancelled(); // an aborted fetch is a cancel, not a failure
         if (!retryable(e)) throw e;
-        const delay = RETRY_DELAYS_MS[Math.min(failures, RETRY_DELAYS_MS.length - 1)];
-        failures += 1;
-        await uploaderEnv.waitToRetry(delay);
+        await waitAfterFailure(failures++);
       }
     }
   };
@@ -158,19 +190,12 @@ export function startResumableUpload(
     abort: () => {
       if (cancelled) return;
       cancelled = true;
+      controller.abort();
       rejectCancelled(new UploadCancelled());
       if (uploadId !== null) {
         forgetUpload(uploadId);
         void api.deleteUpload(uploadId).catch(() => {});
-      } else {
-        // not created yet: delete it as soon as the create call answers
-        void promise.catch(() => {
-          if (uploadId !== null) {
-            forgetUpload(uploadId);
-            void api.deleteUpload(uploadId).catch(() => {});
-          }
-        });
-      }
+      } // else run() deletes the upload as soon as the create call answers
     },
   };
 }
