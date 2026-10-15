@@ -71,14 +71,22 @@ class ResumableStore:
         self._locks: dict[str, threading.Lock] = {}
         self._locks_guard = threading.Lock()
 
+    def _check_id(self, upload_id: str) -> None:
+        """Validate that upload_id is exactly 32 lowercase hex chars; raise UploadNotFound otherwise."""
+        if len(upload_id) != 32 or not set(upload_id) <= _HEX:
+            raise UploadNotFound(f"no upload {upload_id!r}")
+
     def _lock(self, upload_id: str) -> threading.Lock:
+        self._check_id(upload_id)
         with self._locks_guard:
             return self._locks.setdefault(upload_id, threading.Lock())
 
     def part_path(self, upload_id: str) -> Path:
+        self._check_id(upload_id)
         return self.root / f"{upload_id}.part"
 
     def _record_path(self, upload_id: str) -> Path:
+        self._check_id(upload_id)
         return self.root / f"{upload_id}.json"
 
     def _save(self, rec: UploadRecord) -> None:
@@ -92,13 +100,12 @@ class ResumableStore:
 
     def _load(self, upload_id: str) -> UploadRecord:
         """The record, repaired to match its part file. Call with the upload's lock held."""
-        if len(upload_id) != 32 or not set(upload_id) <= _HEX:  # also keeps ids from naming paths
-            raise UploadNotFound(f"no upload {upload_id!r}")
+        self._check_id(upload_id)
         try:
             rec = UploadRecord(**json.loads(self._record_path(upload_id).read_text()))
         except FileNotFoundError as e:
             raise UploadNotFound(f"no upload {upload_id}") from e
-        except (json.JSONDecodeError, TypeError) as e:
+        except (ValueError, TypeError) as e:
             self._remove(upload_id)
             raise UploadNotFound(f"upload {upload_id} was unreadable and has been removed") from e
         if rec.job_id is None and self.clock() - rec.updated_at > self.ttl:

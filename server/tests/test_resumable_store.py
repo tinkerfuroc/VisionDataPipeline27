@@ -192,3 +192,33 @@ def test_state_survives_a_new_store_on_the_same_root(tmp_path, clock):
     again = ResumableStore(tmp_path / "r", max_bytes=100, clock=clock).get(rec.id)
     assert (again.received, again.stride, again.fps) == (3, 2, 25.0)
     assert json.loads((tmp_path / "r" / f"{rec.id}.json").read_text())["received"] == 3
+
+
+def test_discard_with_path_traversal_raises_and_touches_nothing_outside_root(store, tmp_path):
+    sentinel = tmp_path / "sentinel"
+    sentinel.touch()
+    with pytest.raises(UploadNotFound):
+        store.discard("../../x")
+    assert sentinel.exists()  # sentinel still exists; nothing was touched outside root
+
+
+def test_part_path_with_path_traversal_raises(store):
+    with pytest.raises(UploadNotFound):
+        store.part_path("../x")
+
+
+def test_write_chunk_with_path_traversal_raises_and_touches_nothing(store, tmp_path):
+    sentinel = tmp_path / "sentinel"
+    sentinel.touch()
+    with pytest.raises(UploadNotFound):
+        store.write_chunk("../../x", 0, b"a")
+    assert sentinel.exists()
+
+
+def test_record_file_with_invalid_utf8_bytes_is_not_found_and_removed(store):
+    rec = _new(store)
+    record_path = store.root / f"{rec.id}.json"
+    record_path.write_bytes(b"\x80\x81\x82")  # invalid UTF-8
+    with pytest.raises(UploadNotFound):
+        store.get(rec.id)
+    assert not store.part_path(rec.id).exists()
