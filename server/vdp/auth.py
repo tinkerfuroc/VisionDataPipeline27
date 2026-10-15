@@ -71,8 +71,10 @@ def make_token(secret: bytes, now: float | None = None) -> str:
 
 
 def check_token(secret: bytes, token: str, now: float | None = None) -> bool:
+    if not token.isascii():
+        return False
     parts = token.split(".")
-    if len(parts) != 3 or parts[0] != "v1" or not parts[1].isdigit():
+    if len(parts) != 3 or parts[0] != "v1" or not parts[1].isdecimal():
         return False
     if not hmac.compare_digest(_sign(secret, f"v1.{parts[1]}"), parts[2]):
         return False

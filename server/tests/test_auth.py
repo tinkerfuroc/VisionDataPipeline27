@@ -65,6 +65,25 @@ def test_tampered_foreign_and_junk_tokens_are_rejected():
         assert not check_token(SECRET, junk, now=1_000_000)
 
 
+@pytest.mark.parametrize("bad_token", [
+    "v1.5.é",
+    "v1.5.\udc80",
+    "v1.².0000000000000000000000000000000000000000000000000000000000000000",
+])
+def test_non_ascii_tokens_return_false(bad_token):
+    """Non-ASCII tokens must return False, never raise TypeError."""
+    assert not check_token(SECRET, bad_token, now=5)
+
+
+def test_token_with_non_ascii_mac_char_returns_false():
+    """Valid token format but with one MAC character replaced by non-ASCII."""
+    t = make_token(SECRET, now=1_000_000)
+    version, issued, mac = t.split(".")
+    # Replace last character of MAC with non-ASCII
+    bad_token = f"{version}.{issued}.{mac[:-1]}é"
+    assert not check_token(SECRET, bad_token, now=1_000_000)
+
+
 def test_store_without_a_file_has_no_password(tmp_path):
     store = AuthStore(tmp_path / "data")
     assert store.load() is None
