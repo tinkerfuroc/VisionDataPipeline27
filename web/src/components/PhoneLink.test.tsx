@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { PhoneLink } from "./PhoneLink";
 
 afterEach(cleanup);
@@ -16,5 +16,20 @@ describe("PhoneLink", () => {
     expect(img.src.startsWith("data:image/")).toBe(true);
     fireEvent.click(screen.getByRole("button", { name: "Hide" }));
     expect(screen.queryByText(url)).toBeNull();
+  });
+
+  it("warns that a localhost address only works on this computer", () => {
+    const real = window.location;
+    const note = /only works on this computer/;
+    vi.stubGlobal("location", { ...real, hostname: "localhost", origin: "http://localhost:28000" });
+    render(<PhoneLink projectId="p1" />);
+    fireEvent.click(screen.getByRole("button", { name: "Upload from a phone" }));
+    expect(screen.getByText(note).textContent).toContain("Open the network address printed by `vdp serve`");
+    cleanup();
+    vi.stubGlobal("location", { ...real, hostname: "192.168.1.5", origin: "http://192.168.1.5:28000" });
+    render(<PhoneLink projectId="p1" />);
+    fireEvent.click(screen.getByRole("button", { name: "Upload from a phone" }));
+    expect(screen.queryByText(note)).toBeNull();
+    vi.unstubAllGlobals();
   });
 });

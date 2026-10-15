@@ -1,6 +1,6 @@
 import { useCallback, useContext, useEffect, useRef, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
-import { startResumableUpload } from "../api/resumable";
+import { rememberedUploads, sameFile, startResumableUpload } from "../api/resumable";
 import { ApiError, UploadCancelled, api, thumbUrl, type UploadHandle } from "../api/rest";
 import type { ClipSummary, Project } from "../api/types";
 import { AppHeader } from "../components/AppHeader";
@@ -161,9 +161,10 @@ export function Clips() {
     if (started === null) return;
     setQueue(() => started.state);
     const item = started.item;
+    const resume = rememberedUploads().find((r) => r.project_id === item.projectId && sameFile(r, item.file));
     const handle = startResumableUpload(item.projectId, item.file, { stride: item.stride, fps: item.fps }, (sent, total) => {
       if (uploadRef.current?.id === item.id) setQueue((q) => updateProgress(q, item.id, sent, total));
-    });
+    }, resume);
     uploadRef.current = { id: item.id, handle };
     handle.promise.then(
       ({ job_id }) => {

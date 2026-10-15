@@ -4,7 +4,7 @@ import { Fragment, StrictMode } from "react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError, api } from "../api/rest";
-import { rememberedUploads, startResumableUpload } from "../api/resumable";
+import { forgetUpload, rememberedUploads, startResumableUpload } from "../api/resumable";
 import { HealthContext } from "../hooks/useHealth";
 import { PhoneUpload } from "./PhoneUpload";
 
@@ -16,11 +16,13 @@ vi.mock("../api/resumable", async (original) => ({
   ...(await original<typeof import("../api/resumable")>()),
   startResumableUpload: vi.fn(),
   rememberedUploads: vi.fn(() => []),
+  forgetUpload: vi.fn(),
 }));
 
 const m = vi.mocked(api);
 const mStart = vi.mocked(startResumableUpload);
 const mRemembered = vi.mocked(rememberedUploads);
+const mForget = vi.mocked(forgetUpload);
 const projects = [
   { id: "p1", name: "Cups", classes: [], created_at: "" },
   { id: "p2", name: "Boards", classes: [], created_at: "" },
@@ -60,6 +62,7 @@ beforeEach(() => {
   Object.values(m).forEach((fn) => fn.mockReset());
   mStart.mockReset();
   mRemembered.mockReset();
+  mForget.mockReset();
   mRemembered.mockReturnValue([]);
   m.listProjects.mockResolvedValue(projects);
   m.listUploads.mockResolvedValue([]);
@@ -141,6 +144,30 @@ describe("PhoneUpload", () => {
     expect(await screen.findByText("IMG_0412.MOV — 45% sent — choose it again to continue")).toBeTruthy();
     choose("Choose videos", [video()]);
     expect(mStart).toHaveBeenCalledWith("p2", expect.any(File), { stride: 1, fps: 30 }, expect.any(Function), remembered);
+  });
+
+  it("offers Discard for this phone's own unfinished upload too, and forgets it", async () => {
+    const remembered = { upload_id: "u1", project_id: "p2", name: "IMG_0412.MOV", size: 100, lastModified: 5 };
+    mRemembered.mockReturnValue([remembered]);
+    m.listUploads.mockResolvedValue([{ upload_id: "u1", project_id: "p2", name: "IMG_0412.MOV", size: 100, received: 45, job_id: null }]);
+    m.deleteUpload.mockResolvedValue(undefined);
+    renderPage();
+    await screen.findByText(/choose it again to continue/);
+    fireEvent.click(screen.getByRole("button", { name: "Discard IMG_0412.MOV" }));
+    await waitFor(() => expect(m.deleteUpload).toHaveBeenCalledWith("u1"));
+    expect(mForget).toHaveBeenCalledWith("u1");
+  });
+
+  it("forgets remembered uploads of this project that the server no longer lists", async () => {
+    mRemembered.mockReturnValue([
+      { upload_id: "gone", project_id: "p2", name: "a.mp4", size: 1, lastModified: 1 },
+      { upload_id: "kept", project_id: "p2", name: "b.mp4", size: 100, lastModified: 2 },
+      { upload_id: "other", project_id: "p1", name: "c.mp4", size: 1, lastModified: 3 },
+    ]);
+    m.listUploads.mockResolvedValue([{ upload_id: "kept", project_id: "p2", name: "b.mp4", size: 100, received: 5, job_id: null }]);
+    renderPage();
+    await screen.findByText(/choose it again to continue/);
+    expect(mForget.mock.calls).toEqual([["gone"]]);
   });
 
   it("offers Discard for an unfinished upload started elsewhere", async () => {

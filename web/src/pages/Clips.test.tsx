@@ -3,7 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError, UploadCancelled, api } from "../api/rest";
-import { startResumableUpload } from "../api/resumable";
+import { rememberedUploads, startResumableUpload } from "../api/resumable";
 import type { ClipSummary, Project } from "../api/types";
 import { Clips } from "./Clips";
 
@@ -18,7 +18,12 @@ vi.mock("../api/rest", async (original) => {
   };
 });
 
-vi.mock("../api/resumable", () => ({ startResumableUpload: vi.fn() }));
+vi.mock("../api/resumable", () => ({
+  startResumableUpload: vi.fn(),
+  rememberedUploads: vi.fn(() => []),
+  sameFile: (r: { name: string; size: number; lastModified: number }, f: File) =>
+    r.name === f.name && r.size === f.size && r.lastModified === f.lastModified,
+}));
 
 class FakeSocket {
   static last: FakeSocket | null = null;
@@ -43,6 +48,7 @@ const project2: Project = { id: "proj-2", name: "second", created_at: "", classe
 const clip2: ClipSummary = { ...clip, id: "c2", project_id: project2.id, source: { type: "video", name: "second.mp4" } };
 const m = vi.mocked(api);
 const mUpload = vi.mocked(startResumableUpload);
+const mRemembered = vi.mocked(rememberedUploads);
 const renderPage = () => render(<MemoryRouter><Clips /></MemoryRouter>);
 
 beforeEach(() => {
@@ -50,6 +56,8 @@ beforeEach(() => {
   vi.stubGlobal("WebSocket", FakeSocket);
   Object.values(m).forEach((fn) => fn.mockReset());
   mUpload.mockReset();
+  mRemembered.mockReset();
+  mRemembered.mockReturnValue([]);
   m.listProjects.mockResolvedValue([project]);
   m.listClips.mockResolvedValue([clip]);
 });
@@ -284,7 +292,7 @@ describe("Clips page", () => {
     fireEvent.change(screen.getByLabelText("Upload stride"), { target: { value: "2" } });
     choose("bench.mp4");
     await waitFor(() =>
-      expect(mUpload).toHaveBeenCalledWith(project.id, expect.any(File), { stride: 2, fps: 30 }, expect.any(Function)),
+      expect(mUpload).toHaveBeenCalledWith(project.id, expect.any(File), { stride: 2, fps: 30 }, expect.any(Function), undefined),
     );
     expect(screen.queryByRole("button", { name: "Upload and import" })).toBeNull();
     act(() => first.progress(50, 100));
@@ -303,6 +311,20 @@ describe("Clips page", () => {
     expect(input.value).toBe("");
   });
 
+  it("resumes the remembered upload of this project and file", async () => {
+    const remembered = { upload_id: "u1", project_id: project.id, name: "bench.mp4", size: 3, lastModified: 7 };
+    mRemembered.mockReturnValue([
+      { ...remembered, upload_id: "other", project_id: "elsewhere" }, remembered,
+    ]);
+    mUpload.mockReturnValue(uploadHandle("j11"));
+    renderPage();
+    await screen.findByText("bench.mp4");
+    const input = screen.getByLabelText("Footage file") as HTMLInputElement;
+    fireEvent.change(input, { target: { files: [new File(["abc"], "bench.mp4", { lastModified: 7 })] } });
+    await waitFor(() => expect(mUpload).toHaveBeenCalledTimes(1));
+    expect(mUpload.mock.calls[0][4]).toEqual(remembered);
+  });
+
   it("always offers frames per second, labelled as zip-only, and sends both settings", async () => {
     mUpload.mockReturnValue(uploadHandle("j11"));
     renderPage();
@@ -312,7 +334,7 @@ describe("Clips page", () => {
     fireEvent.change(screen.getByLabelText("Upload stride"), { target: { value: "3" } });
     choose("run.zip");
     await waitFor(() =>
-      expect(mUpload).toHaveBeenCalledWith(project.id, expect.any(File), { stride: 3, fps: 12 }, expect.any(Function)),
+      expect(mUpload).toHaveBeenCalledWith(project.id, expect.any(File), { stride: 3, fps: 12 }, expect.any(Function), undefined),
     );
   });
 
@@ -332,12 +354,12 @@ describe("Clips page", () => {
     await screen.findByText("bench.mp4");
     choose("one.mp4", "two.mp4");
     await waitFor(() => expect(mUpload).toHaveBeenCalledTimes(1));
-    expect(mUpload).toHaveBeenCalledWith(project.id, expect.objectContaining({ name: "one.mp4" }), { stride: 1, fps: 30 }, expect.any(Function));
+    expect(mUpload).toHaveBeenCalledWith(project.id, expect.objectContaining({ name: "one.mp4" }), { stride: 1, fps: 30 }, expect.any(Function), undefined);
     expect(screen.getByText(/two\.mp4/)).toBeTruthy(); // waiting
 
     await act(async () => first.resolve({ job_id: "job-one" }));
     await waitFor(() => expect(mUpload).toHaveBeenCalledTimes(2));
-    expect(mUpload).toHaveBeenCalledWith(project.id, expect.objectContaining({ name: "two.mp4" }), { stride: 1, fps: 30 }, expect.any(Function));
+    expect(mUpload).toHaveBeenCalledWith(project.id, expect.objectContaining({ name: "two.mp4" }), { stride: 1, fps: 30 }, expect.any(Function), undefined);
 
     await act(async () => second.resolve({ job_id: "job-two" }));
     await waitFor(() => expect(FakeSocket.last?.url).toMatch(/job-two$/));
@@ -378,7 +400,7 @@ describe("Clips page", () => {
     choose("notes.txt", "good.mp4");
     expect(await screen.findByText("notes.txt: That file is not a video or a .zip of images.")).toBeTruthy();
     await waitFor(() =>
-      expect(mUpload).toHaveBeenCalledWith(project.id, expect.objectContaining({ name: "good.mp4" }), { stride: 1, fps: 30 }, expect.any(Function)),
+      expect(mUpload).toHaveBeenCalledWith(project.id, expect.objectContaining({ name: "good.mp4" }), { stride: 1, fps: 30 }, expect.any(Function), undefined),
     );
   });
 

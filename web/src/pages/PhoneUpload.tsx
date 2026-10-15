@@ -1,7 +1,7 @@
 import { useCallback, useContext, useEffect, useRef, useState, type ChangeEvent } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { ApiError, UploadCancelled, api, type UploadHandle } from "../api/rest";
-import { rememberedUploads, sameFile, startResumableUpload, type RememberedUpload } from "../api/resumable";
+import { forgetUpload, rememberedUploads, sameFile, startResumableUpload, type RememberedUpload } from "../api/resumable";
 import type { Project, UploadInfo } from "../api/types";
 import { AppHeader } from "../components/AppHeader";
 import { HealthContext } from "../hooks/useHealth";
@@ -61,7 +61,18 @@ export function PhoneUpload() {
 
   const loadUnfinished = useCallback(() => {
     if (projectId === null) return;
-    api.listUploads(projectId).then(setUnfinished, () => setUnfinished([]));
+    api.listUploads(projectId).then(
+      (list) => {
+        // Expired or finished on the server: nothing left to resume. (Not while one is being sent: it may be newer than this list.)
+        if (current.current === null) {
+          for (const r of rememberedUploads()) {
+            if (r.project_id === projectId && !list.some((u) => u.upload_id === r.upload_id)) forgetUpload(r.upload_id);
+          }
+        }
+        setUnfinished(list);
+      },
+      () => setUnfinished([]),
+    );
   }, [projectId]);
   useEffect(loadUnfinished, [loadUnfinished]);
 
@@ -174,7 +185,13 @@ export function PhoneUpload() {
   };
 
   const discard = (uploadId: string) => {
-    api.deleteUpload(uploadId).then(loadUnfinished, (e) => setError(message(e)));
+    api.deleteUpload(uploadId).then(
+      () => {
+        forgetUpload(uploadId);
+        loadUnfinished();
+      },
+      (e) => setError(message(e)),
+    );
   };
 
   const busy = rows.some((r) => r.status === "sending" || r.status === "waiting");
@@ -242,9 +259,14 @@ export function PhoneUpload() {
               <h2 className="heading">Unfinished uploads</h2>
               {resumable.map((u) =>
                 mine.has(u.upload_id) ? (
-                  <p key={u.upload_id} className="note text-ink">
-                    {`${u.name} — ${uploadPercent(u.received, u.size) ?? 0}% sent — choose it again to continue`}
-                  </p>
+                  <div key={u.upload_id} className="flex items-center justify-between gap-2">
+                    <span className="note truncate text-ink">
+                      {`${u.name} — ${uploadPercent(u.received, u.size) ?? 0}% sent — choose it again to continue`}
+                    </span>
+                    <button type="button" className="btn" aria-label={`Discard ${u.name}`} onClick={() => discard(u.upload_id)}>
+                      Discard
+                    </button>
+                  </div>
                 ) : (
                   <div key={u.upload_id} className="flex items-center justify-between gap-2">
                     <span className="note truncate">{`${u.name} — ${uploadPercent(u.received, u.size) ?? 0}% sent (another device)`}</span>
