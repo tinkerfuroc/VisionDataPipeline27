@@ -59,7 +59,7 @@ def _start(state: AppState, rec: UploadRecord) -> str:
     path = state.uploads.part_path(rec.id)
     started = _start_import(
         state, rec.project_id, lambda: _source_for(rec.kind, path, rec.name, rec.fps, cfg), rec.stride,
-        after=lambda: state.uploads.discard(rec.id),
+        after=lambda: state.uploads.finish(rec.id),
     )
     return started["job_id"]
 

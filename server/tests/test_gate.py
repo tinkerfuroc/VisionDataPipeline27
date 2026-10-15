@@ -127,6 +127,7 @@ def test_a_malformed_cookie_header_counts_as_logged_out(gated):
 @pytest.mark.parametrize("value, expected", [
     ("/train?x=1", "/train?x=1"), ("", "/"), (None, "/"), ("//evil.example", "/"), ("/\\evil.example", "/"),
     ("https://evil.example", "/"), ("/\t/evil.example", "/"), ("/a\nb", "/"), ("/login?next=/x", "/"),
+    ("/#/upload?project=x", "/#/upload?project=x"),
 ])
 def test_safe_next(value, expected):
     assert safe_next(value) == expected

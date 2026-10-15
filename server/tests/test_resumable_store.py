@@ -161,6 +161,32 @@ def test_drop_orphaned_completions_removes_records_with_a_job(store):
     assert not store.part_path(rec.id).exists()
 
 
+def test_finish_keeps_a_marker_that_expires_after_the_ttl(store, clock):
+    rec = _new(store, size=1)
+    store.write_chunk(rec.id, 0, b"x")
+    store.complete(rec.id, lambda r: "job1")
+    store.finish(rec.id)
+    assert not store.part_path(rec.id).exists()
+    got = store.get(rec.id)  # loading does not recreate the part or lower received
+    assert (got.job_id, got.received) == ("job1", 1) and not store.part_path(rec.id).exists()
+    assert store.write_chunk(rec.id, 0, b"x").job_id == "job1"  # a retried last chunk
+    assert store.list("p1") == []
+    clock.t += 24 * 3600 - 1
+    assert store.get(rec.id).job_id == "job1"
+    clock.t += 24 * 3600 + 2
+    assert store.sweep() == 1
+    assert list(store.root.iterdir()) == []
+
+
+def test_drop_orphaned_completions_keeps_finished_markers(store):
+    done = _new(store, size=1)
+    store.write_chunk(done.id, 0, b"x")
+    store.complete(done.id, lambda r: "job1")
+    store.finish(done.id)
+    assert store.drop_orphaned_completions() == 0
+    assert store.get(done.id).job_id == "job1"
+
+
 def test_a_part_longer_than_received_is_truncated_on_load(store):
     rec = _new(store)
     store.write_chunk(rec.id, 0, b"abcd")

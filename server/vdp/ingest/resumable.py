@@ -108,10 +108,16 @@ class ResumableStore:
         except (ValueError, TypeError) as e:
             self._remove(upload_id)
             raise UploadNotFound(f"upload {upload_id} was unreadable and has been removed") from e
+        part = self.part_path(upload_id)
+        if rec.job_id is not None and not part.exists():
+            # A finished import's marker: it only answers a late retry of the last chunk, until the TTL.
+            if self.clock() - rec.updated_at > self.ttl:
+                self._remove(upload_id)
+                raise UploadNotFound(f"upload {upload_id} expired")
+            return rec
         if rec.job_id is None and self.clock() - rec.updated_at > self.ttl:
             self._remove(upload_id)
             raise UploadNotFound(f"upload {upload_id} expired")
-        part = self.part_path(upload_id)
         if not part.exists():
             part.touch()
         actual = part.stat().st_size
@@ -199,8 +205,22 @@ class ResumableStore:
         with self._lock(upload_id):
             self._remove(upload_id)
 
+    def finish(self, upload_id: str) -> None:
+        """The import job ended: drop the bytes but keep the record (with its job id) as a completed marker, so a
+        retry of the last chunk whose reply was lost still learns the job id."""
+        with self._lock(upload_id):
+            try:
+                rec = self._load(upload_id)
+            except UploadNotFound:
+                self._remove(upload_id)
+                return
+            self.part_path(upload_id).unlink(missing_ok=True)
+            rec.updated_at = self.clock()
+            self._save(rec)
+
     def sweep(self) -> int:
-        """Delete unfinished uploads untouched for longer than the TTL; returns how many went."""
+        """Delete unfinished uploads and completed markers untouched for longer than the TTL; returns how many
+        went."""
         if not self.root.is_dir():
             return 0
         removed = 0
@@ -212,7 +232,8 @@ class ResumableStore:
         return removed
 
     def drop_orphaned_completions(self) -> int:
-        """At startup: a record with a job id belongs to an import that died with the previous process."""
+        """At startup: a record with a job id and a part file still on disk belongs to an import that died with
+        the previous process. One whose part is gone finished; it stays as a marker until it expires."""
         if not self.root.is_dir():
             return 0
         removed = 0
@@ -221,7 +242,7 @@ class ResumableStore:
                 rec = self.get(path.stem)
             except UploadNotFound:
                 continue
-            if rec.job_id is not None:
+            if rec.job_id is not None and self.part_path(rec.id).exists():
                 self.discard(rec.id)
                 removed += 1
         return removed

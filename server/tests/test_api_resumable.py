@@ -44,8 +44,10 @@ def test_a_video_sent_in_chunks_becomes_a_clip(client, tmp_path):
     assert snap["status"] == "done", snap
     clip = client.get(f"/api/clips/{snap['result']['clip_id']}").json()
     assert clip["clip"]["frame_count"] == 5  # 10 frames, stride 2
-    assert client.get(f"/api/uploads/{created['upload_id']}").status_code == 404  # cleaned up after the import
-    assert list((tmp_path / "data" / "uploads" / "resumable").glob("*")) == []
+    marker = client.get(f"/api/uploads/{created['upload_id']}")  # only the record stays, as a completed marker
+    assert marker.status_code == 200 and marker.json()["job_id"] == last.json()["job_id"]
+    assert [p.suffix for p in (tmp_path / "data" / "uploads" / "resumable").glob("*")] == [".json"]
+    assert client.get(f"/api/projects/{pid}/uploads").json() == []
 
 
 def test_a_zip_works_the_same_way(client):
@@ -106,18 +108,29 @@ def test_delete_cancels_an_unfinished_upload(client):
     assert client.get(f"/api/projects/{pid}/uploads").json() == []
 
 
-def test_a_repeated_final_chunk_returns_the_same_job(client, tmp_path):
+def test_a_repeated_final_chunk_returns_the_same_job_even_after_the_import(client, tmp_path):
     pid = _project(client)
     body = _video_bytes(tmp_path / "v.avi")
     upload_id = _create(client, pid, "v.avi", len(body)).json()["upload_id"]
     client.put(f"/api/uploads/{upload_id}?offset=0", content=body[:-5])
     first = client.put(f"/api/uploads/{upload_id}?offset={len(body) - 5}", content=body[-5:]).json()
-    again = client.put(f"/api/uploads/{upload_id}?offset={len(body) - 5}", content=body[-5:])
-    if again.status_code == 200:  # the record still exists while the import runs
-        assert again.json()["job_id"] == first["job_id"]
-    else:  # the import already finished and removed it
-        assert again.status_code == 404
     assert wait_job(client, first["job_id"])["status"] == "done"
+    again = client.put(f"/api/uploads/{upload_id}?offset={len(body) - 5}", content=body[-5:])
+    assert again.status_code == 200 and again.json() == {"received": len(body), "job_id": first["job_id"]}
+    assert client.get(f"/api/uploads/{upload_id}").json()["job_id"] == first["job_id"]
+    assert client.delete(f"/api/uploads/{upload_id}").status_code == 204
+    assert client.get(f"/api/uploads/{upload_id}").status_code == 404
+
+
+def test_a_finished_marker_survives_a_restart(tmp_path):
+    with TestClient(_app(tmp_path)) as client:
+        pid = _project(client)
+        body = _video_bytes(tmp_path / "v.avi")
+        upload_id = _create(client, pid, "v.avi", len(body)).json()["upload_id"]
+        job_id = _send_all(client, upload_id, body, chunk=len(body)).json()["job_id"]
+        assert wait_job(client, job_id)["status"] == "done"
+    with TestClient(_app(tmp_path)) as client:
+        assert client.get(f"/api/uploads/{upload_id}").json()["job_id"] == job_id
 
 
 def test_unfinished_uploads_survive_a_restart(tmp_path):
