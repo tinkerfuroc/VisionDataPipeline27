@@ -1,4 +1,4 @@
-server:    {host: 127.0.0.1, port: 28000}
+server:    {host: 127.0.0.1, port: 28000, https: false}   # https: also `vdp serve --https`; cert/key: your own pair
 project:   {data_root: ./data}
 ingest:
   allowed_roots: ["~"]

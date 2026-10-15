@@ -28,6 +28,7 @@ dependencies = [
     "uvicorn[standard]>=0.30",
     "albumentations>=2.0",
     "nvidia-ml-py>=13.610.43",
+    "cryptography>=42",
 ]
 
 [dependency-groups]

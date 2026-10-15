@@ -25,6 +25,9 @@ class _Cfg(BaseModel):
 class ServerCfg(_Cfg):
     host: str = "127.0.0.1"
     port: int = 28000
+    https: bool = False
+    cert: Path | None = None  # with `key`: your own certificate; neither = a self-signed one in <data_root>/tls/
+    key: Path | None = None
 
 
 class ProjectCfg(_Cfg):
@@ -78,4 +81,8 @@ class Settings(_Cfg):
             settings = cls.model_validate(data)
         settings.project.data_root = _resolve_repo_path(settings.project.data_root)
         settings.sam3.model_dir = _resolve_repo_path(settings.sam3.model_dir)
+        if settings.server.cert is not None:
+            settings.server.cert = _resolve_repo_path(settings.server.cert)
+        if settings.server.key is not None:
+            settings.server.key = _resolve_repo_path(settings.server.key)
         return settings
