@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { Fragment, StrictMode } from "react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { api } from "../api/rest";
+import { ApiError, api } from "../api/rest";
 import { rememberedUploads, startResumableUpload } from "../api/resumable";
 import { HealthContext } from "../hooks/useHealth";
 import { PhoneUpload } from "./PhoneUpload";
@@ -36,15 +37,18 @@ function deferred() {
   return { handle, resolve: (id: string) => resolve({ job_id: id }), progress: (s: number, t: number) => progress(s, t) };
 }
 
-function renderPage(path = "/upload?project=p2") {
+function renderPage(path = "/upload?project=p2", strict = false) {
+  const Wrap = strict ? StrictMode : Fragment;
   return render(
+    <Wrap>
     <HealthContext.Provider value={{ health: { status: "ok", version: "0", engine: { loaded: true, device: "cuda:0", error: null }, upload: { max_bytes: 1000 } }, unreachable: false }}>
       <MemoryRouter initialEntries={[path]}>
         <Routes>
           <Route path="/upload" element={<PhoneUpload />} />
         </Routes>
       </MemoryRouter>
-    </HealthContext.Provider>,
+    </HealthContext.Provider>
+    </Wrap>,
   );
 }
 
@@ -145,5 +149,49 @@ describe("PhoneUpload", () => {
     renderPage();
     fireEvent.click(await screen.findByRole("button", { name: "Discard other.mp4" }));
     await waitFor(() => expect(m.deleteUpload).toHaveBeenCalledWith("u7"));
+  });
+
+  it("under StrictMode a finished upload still reaches Open the clip", async () => {
+    const up = deferred();
+    m.getJob.mockResolvedValue({ id: "j1", kind: "import", status: "done", result: { clip_id: "c9" }, error: null, created_at: "", n_events: 0 });
+    renderPage("/upload?project=p2", true);
+    await screen.findByDisplayValue("Boards");
+    choose("Choose videos", [video()]);
+    await act(async () => up.resolve("j1"));
+    expect(await screen.findByRole("link", { name: "Open the clip" })).toBeTruthy();
+  });
+
+  it("does not list an upload whose import has started", async () => {
+    m.listUploads.mockResolvedValue([{ upload_id: "u8", project_id: "p2", name: "started.mp4", size: 100, received: 100, job_id: "j8" }]);
+    renderPage();
+    await screen.findByDisplayValue("Boards");
+    await waitFor(() => expect(m.listUploads).toHaveBeenCalled());
+    expect(screen.queryByText(/started\.mp4/)).toBeNull();
+  });
+
+  it("ends polling with an error row when the job is unknown to the server", async () => {
+    const up = deferred();
+    m.getJob.mockRejectedValue(new ApiError(404, "gone"));
+    renderPage();
+    await screen.findByDisplayValue("Boards");
+    choose("Choose videos", [video()]);
+    await act(async () => up.resolve("j1"));
+    expect(await screen.findByText("the import is no longer known to the server")).toBeTruthy();
+    expect(m.getJob).toHaveBeenCalledTimes(1);
+  });
+
+  it("resumes a remembered upload only once when the same file is picked twice", async () => {
+    const remembered = { upload_id: "u1", project_id: "p2", name: "IMG_0412.MOV", size: 100, lastModified: 5 };
+    mRemembered.mockReturnValue([remembered]);
+    m.listUploads.mockResolvedValue([{ upload_id: "u1", project_id: "p2", name: "IMG_0412.MOV", size: 100, received: 45, job_id: null }]);
+    const first = deferred();
+    deferred();
+    m.getJob.mockResolvedValue({ id: "j1", kind: "import", status: "running", result: null, error: null, created_at: "", n_events: 0 });
+    renderPage();
+    await screen.findByText(/choose it again to continue/);
+    choose("Choose videos", [video(), video()]);
+    await act(async () => first.resolve("j1"));
+    expect(mStart.mock.calls[0][4]).toEqual(remembered);
+    expect(mStart.mock.calls[1][4]).toBeUndefined();
   });
 });

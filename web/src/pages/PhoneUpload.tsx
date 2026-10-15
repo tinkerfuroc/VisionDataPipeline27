@@ -1,6 +1,6 @@
 import { useCallback, useContext, useEffect, useRef, useState, type ChangeEvent } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { UploadCancelled, api, type UploadHandle } from "../api/rest";
+import { ApiError, UploadCancelled, api, type UploadHandle } from "../api/rest";
 import { rememberedUploads, sameFile, startResumableUpload, type RememberedUpload } from "../api/resumable";
 import type { Project, UploadInfo } from "../api/types";
 import { AppHeader } from "../components/AppHeader";
@@ -34,7 +34,17 @@ export function PhoneUpload() {
   const current = useRef<{ key: number; handle: UploadHandle } | null>(null);
   const nextKey = useRef(1);
   const alive = useRef(true);
-  useEffect(() => () => void (alive.current = false), []);
+  const timers = useRef(new Set<ReturnType<typeof setTimeout>>());
+  const claimed = useRef(new Set<string>());
+  useEffect(() => {
+    alive.current = true;
+    const pending = timers.current;
+    return () => {
+      alive.current = false;
+      pending.forEach(clearTimeout);
+      pending.clear();
+    };
+  }, []);
 
   useEffect(() => {
     api.listProjects().then(
@@ -59,6 +69,14 @@ export function PhoneUpload() {
     setRows((rs) => rs.map((r) => (r.key === key ? { ...r, ...change } : r)));
 
   const watchJob = (key: number, jobId: string) => {
+    const later = () => {
+      if (!alive.current) return;
+      const id = setTimeout(() => {
+        timers.current.delete(id);
+        tick();
+      }, POLL_MS);
+      timers.current.add(id);
+    };
     const tick = () => {
       if (!alive.current) return;
       api.getJob(jobId).then(
@@ -69,10 +87,16 @@ export function PhoneUpload() {
           } else if (snap.status === "error" || snap.status === "cancelled") {
             patch(key, { status: "error", message: snap.error ?? "the import was cancelled" });
           } else {
-            setTimeout(tick, POLL_MS);
+            later();
           }
         },
-        () => setTimeout(tick, POLL_MS),
+        (e: unknown) => {
+          if (e instanceof ApiError && e.status === 404) {
+            patch(key, { status: "error", message: "the import is no longer known to the server" });
+          } else {
+            later();
+          }
+        },
       );
     };
     tick();
@@ -88,8 +112,12 @@ export function PhoneUpload() {
       (sent, total) => patch(item.key, { sent, total }), item.resume,
     );
     current.current = { key: item.key, handle };
+    const release = () => {
+      if (item.resume) claimed.current.delete(item.resume.upload_id);
+    };
     handle.promise.then(
       ({ job_id }) => {
+        release();
         current.current = null;
         patch(item.key, { status: "importing" });
         watchJob(item.key, job_id);
@@ -97,6 +125,7 @@ export function PhoneUpload() {
         startNext();
       },
       (e: unknown) => {
+        release();
         current.current = null;
         if (e instanceof UploadCancelled) setRows((rs) => rs.filter((r) => r.key !== item.key));
         else patch(item.key, { status: "error", message: message(e) });
@@ -120,7 +149,9 @@ export function PhoneUpload() {
         continue;
       }
       added.push({ key, name: file.name, status: "waiting", sent: 0, total: file.size });
-      queue.current.push({ key, file, projectId, stride, fps, resume: remembered.find((r) => sameFile(r, file)) });
+      const resume = remembered.find((r) => !claimed.current.has(r.upload_id) && sameFile(r, file));
+      if (resume) claimed.current.add(resume.upload_id);
+      queue.current.push({ key, file, projectId, stride, fps, resume });
     }
     setRows((rs) => [...rs, ...added]);
     startNext();
@@ -136,6 +167,8 @@ export function PhoneUpload() {
       current.current.handle.abort();
       return;
     }
+    const dropped = queue.current.find((q) => q.key === key);
+    if (dropped?.resume) claimed.current.delete(dropped.resume.upload_id);
     queue.current = queue.current.filter((q) => q.key !== key);
     setRows((rs) => rs.filter((r) => r.key !== key));
   };
@@ -149,7 +182,7 @@ export function PhoneUpload() {
 
   const mine = new Set(rememberedUploads().map((r) => r.upload_id));
   const inProgress = new Set(rows.filter((r) => r.status === "sending" || r.status === "waiting").map((r) => `${r.name}/${r.total}`));
-  const resumable = unfinished.filter((u) => !inProgress.has(`${u.name}/${u.size}`));
+  const resumable = unfinished.filter((u) => u.job_id === null && !inProgress.has(`${u.name}/${u.size}`));
 
   const statusText = (r: Row): string => {
     if (r.status === "waiting") return "Waiting";
