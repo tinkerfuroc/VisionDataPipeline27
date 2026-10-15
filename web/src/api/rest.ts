@@ -1,6 +1,6 @@
 import { isLoginRequired, toLogin } from "./auth";
 import type {
-  AcceptResult, AugmentRequest, BackgroundPool, Candidate, ClassDef, ClipDetail, ClipSummary, Direction, ExportInfo, ExportRequest, ExportSample, FromCheckpointRequest, Health, JobSnapshot, MaskResult, ObjectSelection, PredictionFilter, PredictionPage, Project, PromptSpec, Run, RunDetail, StartRunsRequest, TrainStatus, WriteTarget,
+  AcceptResult, AugmentRequest, BackgroundPool, Candidate, ClassDef, ClipDetail, ClipSummary, Direction, ExportInfo, ExportRequest, ExportSample, FromCheckpointRequest, Health, JobSnapshot, MaskResult, ObjectSelection, PredictionFilter, PredictionPage, Project, PromptSpec, Run, RunDetail, StartRunsRequest, TrainStatus, UploadInfo, WriteTarget,
 } from "./types";
 
 /** The `job_id` the server reports while a prompt/accept/clear-range call holds the GPU lease. */
@@ -181,6 +181,11 @@ export const api = {
   importFrames: (projectId: string, body: { path: string; fps: number; stride: number }) =>
     request<{ job_id: string }>(`/api/projects/${projectId}/clips/import-frames`, post(body)),
   uploadClip,
+  createUpload: (projectId: string, body: { name: string; size: number; stride: number; fps: number }) =>
+    request<{ upload_id: string; chunk_size: number; received: number }>(`/api/projects/${projectId}/uploads`, post(body)),
+  getUpload: (id: string) => request<UploadInfo>(`/api/uploads/${id}`),
+  listUploads: (projectId: string) => request<UploadInfo[]>(`/api/projects/${projectId}/uploads`),
+  deleteUpload: (id: string) => request<void>(`/api/uploads/${id}`, { method: "DELETE" }),
 
   getClip: (id: string) => request<ClipDetail>(`/api/clips/${id}`),
   deleteClip: (id: string) => request<void>(`/api/clips/${id}`, { method: "DELETE" }),

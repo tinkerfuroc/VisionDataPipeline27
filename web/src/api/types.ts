@@ -252,3 +252,13 @@ export type PredictionPage = {
 export type StartRunsRequest = { export_id: string; runs: { model: string; gpu: number }[]; params: TrainParams };
 export type StartMode = "continue" | "finetune";
 export type FromCheckpointRequest = { export_id: string; mode: StartMode; gpu: number; params?: TrainParams };
+
+/** A resumable upload as the server reports it. */
+export type UploadInfo = {
+  upload_id: string;
+  project_id: string;
+  name: string;
+  size: number;
+  received: number;
+  job_id: string | null;
+};
