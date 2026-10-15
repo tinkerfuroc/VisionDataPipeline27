@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from .. import __version__
+from ..auth import AuthStore
 from ..config import REPO_ROOT, Settings
 from ..engine.types import EngineNotLoaded
 from ..ingest import IngestError, UploadTooLarge, clear_uploads
@@ -21,6 +22,7 @@ from ..store import NotFound, ProjectStore, StoreError
 from ..train.scheduler import TrainScheduler, detect_gpus
 from . import augment as augment_api
 from . import clips, export, jobs, labeling, projects
+from . import gate as gate_api
 from . import train as train_api
 from .deps import AppState, State
 
@@ -43,7 +45,9 @@ def _build_engine(settings: Settings):
     )
 
 
-def create_app(settings: Settings, *, engine=None, load_engine: bool = True, train=None) -> FastAPI:
+def create_app(
+    settings: Settings, *, engine=None, load_engine: bool = True, train=None, auth_store: AuthStore | None = None,
+) -> FastAPI:
     state = AppState(
         settings=settings,
         store=ProjectStore(settings.project.data_root),
@@ -51,6 +55,7 @@ def create_app(settings: Settings, *, engine=None, load_engine: bool = True, tra
         jobs=JobManager(),
         train=train if train is not None else TrainScheduler(settings.project.data_root, detect_gpus()),
     )
+    gate = gate_api.GateState(auth_store if auth_store is not None else AuthStore(settings.project.data_root))
 
     def _load() -> None:
         with contextlib.suppress(EngineNotLoaded):  # the reason is kept in engine.load_error for /api/health
@@ -66,6 +71,8 @@ def create_app(settings: Settings, *, engine=None, load_engine: bool = True, tra
 
     app = FastAPI(title="VisionDataPipeline27", version=__version__, lifespan=lifespan)
     app.state.vdp = state
+    app.state.gate = gate
+    app.add_middleware(gate_api.AuthGate, state=gate)
 
     def _handler(status: int):
         async def handle(request: Request, exc: Exception) -> JSONResponse:
@@ -81,7 +88,7 @@ def create_app(settings: Settings, *, engine=None, load_engine: bool = True, tra
         return JSONResponse(status_code=409, content={"detail": str(exc), "job_id": exc.job_id})
 
     @app.get("/api/health")
-    def health(st: State) -> dict:
+    def health(st: State, request: Request) -> dict:
         eng = st.engine
         return {
             "status": "ok",
@@ -92,6 +99,7 @@ def create_app(settings: Settings, *, engine=None, load_engine: bool = True, tra
                 "error": getattr(eng, "load_error", None),
             },
             "upload": {"max_bytes": st.settings.ingest.max_upload_bytes},
+            "auth": {"enabled": request.app.state.gate.enabled()},
         }
 
     app.include_router(projects.router)
@@ -101,6 +109,7 @@ def create_app(settings: Settings, *, engine=None, load_engine: bool = True, tra
     app.include_router(train_api.router)
     app.include_router(augment_api.router)
     app.include_router(jobs.router)
+    app.include_router(gate_api.router)
 
     removed = clear_uploads(state.settings.project.data_root)  # litter from a previous process; see clear_uploads
     if removed:
