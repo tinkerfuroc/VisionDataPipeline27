@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import getpass
+import sys
 from pathlib import Path
 
+from .auth import AuthCorrupt, AuthStore
 from .config import DEFAULT_CONFIG_PATH, Settings
 from .engine.device import cuda_capabilities, pick_device
 from .weights import convert_checkpoint, verify_checkpoint
@@ -58,18 +61,179 @@ def _doctor(settings: Settings, config_path: Path | None) -> int:
     return 0 if ok else 1
 
 
-def _serve(settings: Settings, host: str | None, port: int | None) -> int:
-    import uvicorn
+LOCAL_HOSTS = ("127.0.0.1", "localhost", "::1")
 
-    from .api.app import create_app
 
+def _prompt_new_password(getpass_fn=None, tries: int = 3) -> str | None:
+    """Ask for a new password twice; None after `tries` failed attempts (empty, or the two do not match).
+    Shared by `vdp set-password` (one try) and `vdp serve`'s menus."""
+    getpass_fn = getpass_fn or getpass.getpass
+    for _ in range(tries):
+        first = getpass_fn("New password: ")
+        if not first:
+            print("The password must not be empty.")
+            continue
+        if getpass_fn("Repeat it: ") != first:
+            print("The two passwords do not match.")
+            continue
+        return first
+    return None
+
+
+def _ask(prompt: str, *, stdin, ask) -> str:
+    """A one-letter menu answer, lowercased; "" when there is no terminal to ask or input ends."""
+    if not stdin.isatty():
+        return ""
+    try:
+        return ask(prompt).strip().lower()[:1]
+    except EOFError:
+        return ""
+
+
+def _set_password(settings: Settings, args, *, stdin=None, getpass_fn=None) -> int:
+    store = AuthStore(settings.project.data_root)
+    if args.off:
+        store.clear()
+        print(f"Login is off: removed {store.path}")
+        return 0
+    if args.stdin:
+        password = (stdin or sys.stdin).readline().rstrip("\r\n")
+        if not password:
+            print("error: no password on stdin")
+            return 1
+    else:
+        password = _prompt_new_password(getpass_fn, tries=1)
+        if password is None:
+            return 1
+    store.set_password(password)
+    print(f"Password set in {store.path}. Every existing session has ended.")
+    return 0
+
+
+def _tls_pair(settings: Settings) -> tuple[Path, Path, bool]:
+    """(cert, key, supplied_by_user). Raises ValueError when only one of server.cert / server.key is set."""
+    from .tls import default_pair
+
+    cert, key = settings.server.cert, settings.server.key
+    if (cert is None) != (key is None):
+        raise ValueError("set both server.cert and server.key in the config, or neither")
+    if cert is not None and key is not None:
+        return cert, key, True
+    cert, key = default_pair(settings.project.data_root)
+    return cert, key, False
+
+
+def _print_cert(cert: Path) -> None:
+    from .tls import cert_info
+
+    info = cert_info(cert)
+    print(f"certificate: {info.path}")
+    print(f"  names:   {', '.join(info.names)}")
+    print(f"  expires: {info.not_after:%Y-%m-%d}")
+    print(f"  SHA-256: {info.fingerprint}")
+
+
+def _cert(settings: Settings, args) -> int:
+    from .tls import generate_cert
+
+    try:
+        cert, key, supplied = _tls_pair(settings)
+    except ValueError as e:
+        print(f"error: {e}")
+        return 2
+    if args.regenerate:
+        if supplied:
+            print("error: server.cert/server.key are set in the config; replace those files yourself")
+            return 2
+        generate_cert(cert, key)
+        print("Generated a new self-signed certificate.")
+    elif not cert.is_file():
+        print(f"No certificate at {cert} yet; `vdp serve --https` or `vdp cert --regenerate` creates one.")
+        return 1
+    _print_cert(cert)
+    return 0
+
+
+def _serve(settings: Settings, host: str | None, port: int | None, https: bool = False, *,
+           stdin=None, ask=None, getpass_fn=None, run=None, make_app=None) -> int:
+    from .tls import ensure_cert, local_ipv4s
+
+    stdin = stdin or sys.stdin
+    ask = ask or input
     host = host or settings.server.host
     port = port or settings.server.port
-    if host not in ("127.0.0.1", "localhost", "::1"):
-        print(f"WARNING: binding {host} exposes an unauthenticated labeling server to the network")
+    network = host not in LOCAL_HOSTS
+    store = AuthStore(settings.project.data_root)
+
+    def set_new_password() -> bool:
+        password = _prompt_new_password(getpass_fn)
+        if password is None:
+            print("No password set; quitting.")
+            return False
+        store.set_password(password)
+        return True
+
+    try:
+        config = store.load()
+    except AuthCorrupt as e:
+        answer = _ask(f"auth.json is unreadable ({e}). [s] set a new password, [w] wipe it and start without "
+                      "a password, [q] quit (default): ", stdin=stdin, ask=ask)
+        if answer == "s":
+            if not set_new_password():
+                return 1
+            config = store.load()
+        elif answer == "w":
+            store.clear()
+            config = None
+            print(f"Removed {store.path}.")
+        else:
+            print(f"error: {e}. Fix it with `vdp set-password` (a new password) or `vdp set-password --off` "
+                  "(no login).")
+            return 2
+    if network and config is None:
+        answer = _ask("No password is set, so the server would be open to the network. [s] set one now, "
+                      "[q] quit (default): ", stdin=stdin, ask=ask)
+        if answer != "s":
+            print(f"error: refusing to serve on {host} without a password; run `vdp set-password` first.")
+            return 2
+        if not set_new_password():
+            return 1
+        config = store.load()
+
+    ssl: dict = {}
+    use_https = https or settings.server.https
+    if use_https:
+        try:
+            cert, key, supplied = _tls_pair(settings)
+        except ValueError as e:
+            print(f"error: {e}")
+            return 2
+        if supplied:
+            missing = [str(p) for p in (cert, key) if not p.is_file()]
+            if missing:
+                print(f"error: missing {', '.join(missing)}")
+                return 2
+        elif ensure_cert(cert, key, [host]):
+            print(f"Generated a self-signed certificate: {cert}")
+        _print_cert(cert)
+        ssl = {"ssl_certfile": str(cert), "ssl_keyfile": str(key)}
+    elif network:
+        print("WARNING: no HTTPS, so the password and session cookie travel unencrypted; add --https")
+
+    scheme = "https" if use_https else "http"
+    shown = (local_ipv4s() or [host]) if host in ("0.0.0.0", "::") else [host]
+    for h in shown:
+        print(f"open:      {scheme}://{h}:{port}/")
+    print(f"login:     {'on' if config is not None else 'off'}")
     print(f"data_root: {settings.project.data_root}")
     print(f"model_dir: {settings.sam3.model_dir}")
-    uvicorn.run(create_app(settings), host=host, port=port, log_level="info")
+    if make_app is None:
+        from .api.app import create_app as make_app
+    if run is None:
+        import uvicorn
+
+        run = uvicorn.run
+    run(make_app(settings, auth_store=store), host=host, port=port, log_level="info", **ssl)
     return 0
 
 
@@ -255,6 +419,13 @@ def main(argv: list[str] | None = None) -> int:
     p_serve = sub.add_parser("serve", help="run the HTTP API (and the web UI when web/dist exists)")
     p_serve.add_argument("--host", default=None, help="bind address (default: server.host from the config)")
     p_serve.add_argument("--port", type=int, default=None, help="port (default: server.port from the config)")
+    p_serve.add_argument("--https", action="store_true", help="serve over HTTPS (self-signed unless configured)")
+    p_pw = sub.add_parser("set-password", help="set the team password for `vdp serve` (ends every session)")
+    pw_mode = p_pw.add_mutually_exclusive_group()
+    pw_mode.add_argument("--off", action="store_true", help="remove the password (login off)")
+    pw_mode.add_argument("--stdin", action="store_true", help="read the password from one line of stdin")
+    p_cert = sub.add_parser("cert", help="show the HTTPS certificate `vdp serve --https` uses")
+    p_cert.add_argument("--regenerate", action="store_true", help="replace the self-signed certificate")
     p_train = sub.add_parser("train", help="train YOLO segmentation models on a yolo_seg export")
     p_train.add_argument("--list", action="store_true", help="list the exports that have a yolo_seg dataset")
     p_train.add_argument("--export", default=None, help="export id (a folder name under data/exports/)")
@@ -293,7 +464,11 @@ def main(argv: list[str] | None = None) -> int:
         )
         return _report(problems, args.out)
     if args.cmd == "serve":
-        return _serve(settings, args.host, args.port)
+        return _serve(settings, args.host, args.port, args.https)
+    if args.cmd == "set-password":
+        return _set_password(settings, args)
+    if args.cmd == "cert":
+        return _cert(settings, args)
     if args.cmd == "train":
         return _train(settings, args)
     if args.cmd == "backgrounds" and args.bg_cmd == "fetch":
