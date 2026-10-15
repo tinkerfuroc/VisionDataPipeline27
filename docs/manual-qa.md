@@ -41,7 +41,8 @@ Run on real footage before trusting a dataset.
     confirm it shows its error with a Dismiss button while the rest still upload. Press "Cancel upload" mid-transfer:
     it must stop without an error message and the queue must move on to the next file. With several files still
     queued, press "Cancel all": the running transfer and every waiting file must clear. Reload the page during an
-    upload and confirm the transfer stops, no partial clip appears, and `data/uploads/` is empty.
+    upload and confirm the transfer pauses, no partial clip appears, and choosing the same file again offers to
+    continue it from where it stopped; "Cancel upload" discards the unfinished upload.
 15. Upload a file larger than `ingest.max_upload_bytes`: the GUI must refuse it before the transfer starts, and
     `curl -X POST --data-binary @big.mp4 .../clips/upload?name=big.mp4` must answer 413.
 16. Brush: pick the Brush tool on a masked frame, paint a missing corner (left-drag) and erase a spill (right-drag);

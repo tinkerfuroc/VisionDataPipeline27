@@ -80,6 +80,12 @@ compare the fingerprint it shows with the printed one, accept, and log in with t
 removes it. `vdp cert` shows the certificate, `vdp cert --regenerate` replaces it (e.g. after the machine's address
 changed). To use your own certificate, set `server.cert` and `server.key` in the config.
 
+**From a phone:** on the Clips page, click **Upload from a phone** and scan the QR code (or open the address it
+shows) on a phone connected to the same network. The phone page records a video with the camera or takes several
+from the gallery; iPhone HEVC `.mov` and Android `.mp4` footage import as they are. Uploads go in 8 MB pieces: a
+locked screen, switching apps or a WiFi drop only pauses them, and after the browser reloads the tab the page lists
+the unfinished upload, which continues when you choose the same file again. Unfinished uploads are kept for 24 hours.
+
 `vdp serve` never starts open on a network address: without a password it offers to set one, or quits. After 5 wrong
 passwords from one address in 5 minutes, that address must wait.
 
