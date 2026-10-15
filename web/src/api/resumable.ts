@@ -10,6 +10,10 @@ const STORE_KEY = "vdp.uploads";
 /** How the uploader sizes chunks and waits; tests replace these. */
 export const uploaderEnv = {
   chunkSize: CHUNK_SIZE,
+  /** A chunk request that has not answered by then is given up and sent again (a dead connection never errors). */
+  chunkTimeoutMs: 90_000,
+  /** Coming back to the page after this long hidden also gives up the chunk in flight (iOS resuming a suspended tab). */
+  hiddenAbortMs: 10_000,
   /** Resolves once the browser is online (at once if it already is). */
   online: (signal?: AbortSignal): Promise<void> =>
     navigator.onLine
@@ -105,6 +109,31 @@ async function putChunk(
   return body as { received: number; job_id?: string };
 }
 
+/** An AbortController for one chunk: aborted with the upload's cancel signal, on timeout, or when the page returns after a long absence. */
+function chunkController(cancel: AbortSignal): { signal: AbortSignal; done: () => void } {
+  const ctl = new AbortController();
+  const abort = () => ctl.abort();
+  let hiddenAt: number | null = null;
+  const onVisibility = () => {
+    if (document.visibilityState === "hidden") hiddenAt ??= Date.now();
+    else {
+      if (hiddenAt !== null && Date.now() - hiddenAt > uploaderEnv.hiddenAbortMs) abort();
+      hiddenAt = null;
+    }
+  };
+  const timer = setTimeout(abort, uploaderEnv.chunkTimeoutMs);
+  cancel.addEventListener("abort", abort);
+  document.addEventListener("visibilitychange", onVisibility);
+  return {
+    signal: ctl.signal,
+    done: () => {
+      clearTimeout(timer);
+      cancel.removeEventListener("abort", abort);
+      document.removeEventListener("visibilitychange", onVisibility);
+    },
+  };
+}
+
 const retryable = (e: unknown) => !(e instanceof ApiError) || e.status >= 500;
 
 /**
@@ -165,8 +194,9 @@ export function startResumableUpload(
       await Promise.race([uploaderEnv.online(controller.signal), cancelledPromise]);
       if (cancelled) throw new UploadCancelled();
       const end = Math.min(received + uploaderEnv.chunkSize, file.size);
+      const chunk = chunkController(controller.signal);
       try {
-        const reply = await putChunk(id, received, file.slice(received, end), controller.signal);
+        const reply = await putChunk(id, received, file.slice(received, end), chunk.signal);
         const progressed = reply.received !== received;
         received = reply.received;
         onProgress?.(received, file.size);
@@ -180,6 +210,8 @@ export function startResumableUpload(
         if (cancelled) throw new UploadCancelled(); // an aborted fetch is a cancel, not a failure
         if (!retryable(e)) throw e;
         await waitAfterFailure(failures++);
+      } finally {
+        chunk.done();
       }
     }
   };

@@ -47,6 +47,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   Object.assign(uploaderEnv, realEnv);
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
@@ -201,6 +202,60 @@ describe("cancel and already-complete uploads", () => {
     expect(signal?.aborted).toBe(true);
     expect(puts).toBe(1);
     expect(waits).toEqual([]);
+  });
+
+  it("gives up a chunk request that hangs past the timeout and sends it again", async () => {
+    uploaderEnv.chunkTimeoutMs = 20;
+    let received = 0;
+    let puts = 0;
+    const signals: AbortSignal[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => {
+      const method = init?.method ?? "GET";
+      if (method === "POST") return json({ upload_id: "u1", chunk_size: 10, received: 0 }, 201);
+      if (method === "DELETE") return new Response(null, { status: 204 });
+      puts += 1;
+      if (puts === 1) {
+        const signal = init?.signal as AbortSignal;
+        signals.push(signal);
+        return new Promise<Response>((_, reject) =>
+          signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError"))));
+      }
+      received = 10;
+      return json({ received, job_id: "j1" });
+    }));
+    uploaderEnv.chunkSize = 10;
+    const handle = startResumableUpload("p1", file(), { stride: 1, fps: 30 });
+    expect(await handle.promise).toEqual({ job_id: "j1" });
+    expect(signals[0].aborted).toBe(true);
+    expect(puts).toBe(2);
+    expect(waits).toEqual([1000]);
+  });
+
+  it("gives up the chunk in flight when the page comes back after a long absence", async () => {
+    uploaderEnv.hiddenAbortMs = 5;
+    let puts = 0;
+    const state = vi.spyOn(document, "visibilityState", "get");
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => {
+      const method = init?.method ?? "GET";
+      if (method === "POST") return json({ upload_id: "u1", chunk_size: 10, received: 0 }, 201);
+      if (method === "DELETE") return new Response(null, { status: 204 });
+      puts += 1;
+      if (puts > 1) return json({ received: 10, job_id: "j1" });
+      const signal = init?.signal as AbortSignal;
+      return new Promise<Response>((_, reject) =>
+        signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError"))));
+    }));
+    uploaderEnv.chunkSize = 10;
+    const handle = startResumableUpload("p1", file(), { stride: 1, fps: 30 });
+    await new Promise((r) => setTimeout(r, 10));
+    state.mockReturnValue("hidden");
+    document.dispatchEvent(new Event("visibilitychange"));
+    await new Promise((r) => setTimeout(r, 20));
+    state.mockReturnValue("visible");
+    document.dispatchEvent(new Event("visibilitychange"));
+    expect(await handle.promise).toEqual({ job_id: "j1" });
+    state.mockRestore();
+    expect(puts).toBe(2);
   });
 
   it("abort while waiting offline rejects promptly", async () => {

@@ -12,7 +12,7 @@ export const browser = {
 
 /** Off to the login page, which returns here once logged in. */
 export function toLogin(): void {
-  browser.go(`/login?next=${encodeURIComponent(window.location.pathname + window.location.search)}`);
+  browser.go(`/login?next=${encodeURIComponent(window.location.pathname + window.location.search + window.location.hash)}`);
 }
 
 export const isLoginRequired = (status: number, body: unknown): boolean =>

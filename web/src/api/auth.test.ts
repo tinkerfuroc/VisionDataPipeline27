@@ -25,6 +25,12 @@ describe("login redirects", () => {
     expect(go).toHaveBeenCalledWith("/login?next=%2Flabel%2Fc1%3Ff%3D3");
   });
 
+  it("toLogin keeps the hash, so a phone upload link returns to its page", () => {
+    window.history.replaceState(null, "", "/#/upload?project=p1");
+    toLogin();
+    expect(go).toHaveBeenCalledWith("/login?next=%2F%23%2Fupload%3Fproject%3Dp1");
+  });
+
   it("a 401 login required sends the browser to log in and never settles", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ detail: "login required" }), { status: 401 })));
     expect(await settles(request("/api/projects"))).toBe("pending");
