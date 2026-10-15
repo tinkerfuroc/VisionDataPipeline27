@@ -14,6 +14,7 @@ import logging
 import math
 import os
 import secrets
+import threading
 import time
 from collections import deque
 from collections.abc import Callable
@@ -170,7 +171,8 @@ class AuthStore:
 
 
 class LoginLimiter:
-    """Wrong passwords per client address in a sliding window. In memory, so a restart forgets it."""
+    """Login attempts per client address in a sliding window. In memory, so a restart forgets it.
+    `login` runs on a thread pool, so all state is under a lock and `attempt` checks and records in one step."""
 
     def __init__(
         self, max_failures: int = 5, window_s: float = 300.0, clock: Callable[[], float] = time.monotonic
@@ -179,6 +181,7 @@ class LoginLimiter:
         self.window_s = window_s
         self.clock = clock
         self._failures: dict[str, deque[float]] = {}
+        self._lock = threading.Lock()
 
     def _prune(self, key: str) -> deque[float] | None:
         q = self._failures.get(key)
@@ -192,16 +195,25 @@ class LoginLimiter:
             return None
         return q
 
-    def retry_after(self, key: str) -> int:
-        """Seconds until `key` may try again; 0 = allowed now."""
-        q = self._prune(key)
+    def _wait(self, q: deque[float] | None) -> int:
         if q is None or len(q) < self.max_failures:
             return 0
         return max(1, math.ceil(q[0] + self.window_s - self.clock()))
 
-    def failed(self, key: str) -> None:
-        self._prune(key)
-        self._failures.setdefault(key, deque()).append(self.clock())
+    def retry_after(self, key: str) -> int:
+        """Seconds until `key` may try again; 0 = allowed now. Read-only."""
+        with self._lock:
+            return self._wait(self._prune(key))
+
+    def attempt(self, key: str) -> int:
+        """Seconds `key` must wait; 0 = go ahead, and the attempt is recorded as a failure until
+        `succeeded` clears it."""
+        with self._lock:
+            wait = self._wait(self._prune(key))
+            if wait == 0:
+                self._failures.setdefault(key, deque()).append(self.clock())
+            return wait
 
     def succeeded(self, key: str) -> None:
-        self._failures.pop(key, None)
+        with self._lock:
+            self._failures.pop(key, None)

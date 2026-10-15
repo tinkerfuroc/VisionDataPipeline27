@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 import stat
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from vdp.auth import (
@@ -155,23 +157,37 @@ class Clock:
         return self.t
 
 
-def test_limiter_blocks_after_five_failures_until_the_window_passes():
+def test_limiter_blocks_after_five_attempts_until_the_window_passes():
     clock = Clock()
     limiter = LoginLimiter(clock=clock)
     for _ in range(5):
-        assert limiter.retry_after("a") == 0
-        limiter.failed("a")
+        assert limiter.attempt("a") == 0
         clock.t += 1
-    assert limiter.retry_after("a") == 295  # first failure at t=0, window 300 s, now t=5
-    assert limiter.retry_after("b") == 0  # per address
+    assert limiter.attempt("a") == 295  # first attempt at t=0, window 300 s, now t=5
+    assert limiter.retry_after("a") == 295
+    assert limiter.attempt("b") == 0  # per address
     clock.t = 300.0
-    assert limiter.retry_after("a") == 0  # the t=0 failure has left the window
+    assert limiter.attempt("a") == 0  # the t=0 attempt has left the window
 
 
 def test_a_success_clears_the_count():
     limiter = LoginLimiter(clock=Clock())
     for _ in range(4):
-        limiter.failed("a")
+        assert limiter.attempt("a") == 0
     limiter.succeeded("a")
-    limiter.failed("a")
-    assert limiter.retry_after("a") == 0
+    for _ in range(5):
+        assert limiter.attempt("a") == 0
+    assert limiter.attempt("a") > 0
+
+
+def test_concurrent_attempts_are_counted_exactly():
+    limiter = LoginLimiter()
+    barrier = threading.Barrier(20)
+
+    def go() -> int:
+        barrier.wait()
+        return limiter.attempt("a")
+
+    with ThreadPoolExecutor(20) as pool:
+        results = list(pool.map(lambda _: go(), range(20)))
+    assert results.count(0) == 5

@@ -163,12 +163,11 @@ def login(request: Request, password: str = Form(""), next_: str = Form("/", ali
     if cfg is None:
         return RedirectResponse(target, status_code=303)  # login is off: nothing to log into
     client = request.client.host if request.client else "unknown"
-    wait = gate.limiter.retry_after(client)
+    wait = gate.limiter.attempt(client)  # records this try as a failure; a success clears it
     if wait:
         return HTMLResponse(render_message(f"Too many attempts. Try again in {wait} s."), status_code=429,
                             headers={"Retry-After": str(wait)})
     if not isinstance(cfg, AuthConfig) or not verify_password(password, cfg.password_hash):
-        gate.limiter.failed(client)
         return RedirectResponse(f"/login?error=wrong&next={quote(target, safe='')}", status_code=303)
     gate.limiter.succeeded(client)
     response = RedirectResponse(target, status_code=303)
