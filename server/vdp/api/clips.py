@@ -53,9 +53,18 @@ class ImportFramesBody(BaseModel):
     stride: int = Field(default=1, ge=1)
 
 
+def _source_for(kind: str, path: Path, name: str, fps: float, cfg) -> FrameSource:
+    """The frame source for an uploaded file: a video decodes itself; a zip of images needs `fps`."""
+    if kind == "video":
+        return VideoFileSource(path, name=name)
+    return ZipFrameSource(
+        path, fps=fps, name=Path(name).stem or name, max_entries=cfg.max_zip_entries, max_bytes=cfg.max_zip_bytes,
+    )
+
+
 def _start_import(
     state: AppState, project_id: str, build_source: Callable[[], FrameSource], stride: int,
-    cleanup: Path | None = None,
+    cleanup: Path | None = None, after: Callable[[], None] | None = None,
 ) -> dict:
     cfg = state.settings.ingest
 
@@ -73,6 +82,8 @@ def _start_import(
         finally:
             if cleanup is not None:
                 cleanup.unlink(missing_ok=True)
+            if after is not None:
+                after()
 
     return {"job_id": state.jobs.start("import", work).id}
 
@@ -117,16 +128,7 @@ async def upload_clip(
     except ClientDisconnect as e:  # the tab closed, or the SSH tunnel dropped
         raise IngestError("the upload was interrupted") from e
     cfg = state.settings.ingest
-
-    def build_source() -> FrameSource:
-        if kind == "video":
-            return VideoFileSource(tmp, name=clean)
-        return ZipFrameSource(
-            tmp, fps=fps, name=Path(clean).stem or clean,
-            max_entries=cfg.max_zip_entries, max_bytes=cfg.max_zip_bytes,
-        )
-
-    return _start_import(state, project_id, build_source, stride, cleanup=tmp)
+    return _start_import(state, project_id, lambda: _source_for(kind, tmp, clean, fps, cfg), stride, cleanup=tmp)
 
 
 @router.get("/api/clips/{clip_id}")

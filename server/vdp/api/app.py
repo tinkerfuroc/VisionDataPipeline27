@@ -16,6 +16,7 @@ from ..auth import AuthStore
 from ..config import REPO_ROOT, Settings
 from ..engine.types import EngineNotLoaded
 from ..ingest import IngestError, UploadTooLarge, clear_uploads
+from ..ingest.resumable import OffsetConflict, ResumableStore, UploadNotFound
 from ..jobs import JobBusy, JobManager, JobNotFound
 from ..labeling.errors import BadRequest, Conflict, PropagationFailed
 from ..store import NotFound, ProjectStore, StoreError
@@ -24,12 +25,13 @@ from . import augment as augment_api
 from . import clips, export, jobs, labeling, projects
 from . import gate as gate_api
 from . import train as train_api
+from . import uploads as uploads_api
 from .deps import AppState, State
 
 log = logging.getLogger(__name__)
 
 _STATUS = [  # most specific first
-    (NotFound, 404), (JobNotFound, 404), (Conflict, 409), (EngineNotLoaded, 503),
+    (UploadNotFound, 404), (NotFound, 404), (JobNotFound, 404), (Conflict, 409), (EngineNotLoaded, 503),
     (train_api.TrainUnavailable, 503), (PropagationFailed, 500),
     (UploadTooLarge, 413), (BadRequest, 400), (IngestError, 400), (StoreError, 400),
 ]
@@ -54,6 +56,7 @@ def create_app(
         engine=engine if engine is not None else _build_engine(settings),
         jobs=JobManager(),
         train=train if train is not None else TrainScheduler(settings.project.data_root, detect_gpus()),
+        uploads=ResumableStore(settings.project.data_root / "uploads" / "resumable", settings.ingest.max_upload_bytes),
     )
     gate = gate_api.GateState(auth_store if auth_store is not None else AuthStore(settings.project.data_root))
 
@@ -87,6 +90,10 @@ def create_app(
     async def _busy(request: Request, exc: JobBusy) -> JSONResponse:
         return JSONResponse(status_code=409, content={"detail": str(exc), "job_id": exc.job_id})
 
+    @app.exception_handler(OffsetConflict)
+    async def _offset(request: Request, exc: OffsetConflict) -> JSONResponse:
+        return JSONResponse(status_code=409, content={"detail": str(exc), "received": exc.received})
+
     @app.get("/api/health")
     def health(st: State, request: Request) -> dict:
         eng = st.engine
@@ -110,10 +117,13 @@ def create_app(
     app.include_router(augment_api.router)
     app.include_router(jobs.router)
     app.include_router(gate_api.router)
+    app.include_router(uploads_api.router)
 
     removed = clear_uploads(state.settings.project.data_root)  # litter from a previous process; see clear_uploads
     if removed:
         log.info("removed %d stale upload(s) from a previous run", removed)
+    state.uploads.drop_orphaned_completions()  # their import jobs died with the previous process
+    state.uploads.sweep()
 
     dist = REPO_ROOT / "web" / "dist"  # built by Plan 3; absent until then
     if dist.is_dir():

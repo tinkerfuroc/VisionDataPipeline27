@@ -61,3 +61,15 @@ When a team password is set (`vdp set-password`), every route needs the `vdp_ses
 code 4401. `POST /api/auth/login` takes a form (`password`, `next`) and answers `303` (to `next` with the cookie,
 or back to `/login?error=wrong`); after 5 wrong passwords from one address in 5 minutes it answers `429` with
 `Retry-After`. `/api/health` reports `auth.enabled`.
+
+## Resumable uploads
+
+Used by the GUI (Clips page and the phone page `/upload`), so a lost connection or a locked phone never restarts a
+file. `POST /api/projects/{id}/uploads` with `{name, size, stride, fps}` → `201 {upload_id, chunk_size, received}`
+(400 for a file that is not a video or `.zip`, 413 over `ingest.max_upload_bytes`). Then
+`PUT /api/uploads/{upload_id}?offset=N` with the raw bytes of one chunk (at most 8 MiB) → `{received}`: the offset
+must equal what the server has (a retried chunk that already arrived is accepted and ignored; any other mismatch is
+`409 {received}`). The final chunk starts the import and adds `job_id`. `GET /api/uploads/{upload_id}` reports
+progress, `GET /api/projects/{id}/uploads` lists unfinished uploads, `DELETE /api/uploads/{upload_id}` cancels one
+(409 while its import runs). Unfinished uploads survive a server restart and expire after 24 hours without activity.
+`GET /upload?project=<id>` redirects to the phone page.
