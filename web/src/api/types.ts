@@ -108,6 +108,8 @@ export type Health = {
   engine: { loaded: boolean; device: string | null; error: string | null };
   /** Absent on an older server: the GUI then skips its own size check and lets the server refuse. */
   upload?: { max_bytes: number };
+  /** Absent on an older server: treated as login off. */
+  auth?: { enabled: boolean };
 };
 
 export type AugmentMode = "default" | "strong" | "custom";

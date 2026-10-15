@@ -1,4 +1,5 @@
 import { useEffect, useReducer, useRef, useState } from "react";
+import { WS_LOGIN_REQUIRED, toLogin } from "../api/auth";
 import { ApiError, api, wsUrl } from "../api/rest";
 import type { JobEvent } from "../api/types";
 import { idleJob, isTerminal, jobReducer, type JobView } from "../lib/jobReducer";
@@ -71,8 +72,12 @@ export function useJob(jobId: string | null, onEvent?: (event: JobEvent) => void
       dispatch({ type: "event", event });
       callback.current?.(event);
     };
-    ws.onclose = () => {
+    ws.onclose = (e: CloseEvent) => {
       if (closed || finished) return;
+      if (e.code === WS_LOGIN_REQUIRED) {
+        toLogin(); // the session expired: polling would only get 401s
+        return;
+      }
       setTransport("poll");
       void poll();
     };

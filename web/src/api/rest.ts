@@ -1,3 +1,4 @@
+import { isLoginRequired, toLogin } from "./auth";
 import type {
   AcceptResult, AugmentRequest, BackgroundPool, Candidate, ClassDef, ClipDetail, ClipSummary, Direction, ExportInfo, ExportRequest, ExportSample, FromCheckpointRequest, Health, JobSnapshot, MaskResult, ObjectSelection, PredictionFilter, PredictionPage, Project, PromptSpec, Run, RunDetail, StartRunsRequest, TrainStatus, WriteTarget,
 } from "./types";
@@ -47,6 +48,10 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   } catch {
     /* not JSON: keep null */
   }
+  if (isLoginRequired(r.status, body)) {
+    toLogin();
+    return new Promise<T>(() => {}); // the page is leaving: never settle, so no error alert flashes first
+  }
   if (!r.ok) {
     const jobId =
       body !== null && typeof body === "object" && typeof (body as { job_id?: unknown }).job_id === "string"
@@ -92,6 +97,10 @@ export function uploadClip(
         body = JSON.parse(xhr.responseText);
       } catch {
         /* not JSON: keep null */
+      }
+      if (isLoginRequired(xhr.status, body)) {
+        toLogin(); // the page is leaving; leave the promise unsettled like `request` does
+        return;
       }
       if (xhr.status >= 200 && xhr.status < 300) {
         resolve(body as { job_id: string });
@@ -159,6 +168,7 @@ export const wsUrl = (path: string) =>
 
 export const api = {
   health: () => request<Health>("/api/health"),
+  logout: () => request<void>("/api/auth/logout", post()),
 
   listProjects: () => request<Project[]>("/api/projects"),
   createProject: (name: string) => request<Project>("/api/projects", post({ name })),

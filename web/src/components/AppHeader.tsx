@@ -1,7 +1,18 @@
 import { useContext, type ReactNode } from "react";
 import { Link } from "react-router-dom";
+import { browser } from "../api/auth";
+import { api } from "../api/rest";
 import { HealthContext } from "../hooks/useHealth";
 import { EngineBanner } from "./EngineBanner";
+
+async function logOut(): Promise<void> {
+  try {
+    await api.logout();
+  } catch {
+    /* going to the login page either way */
+  }
+  browser.go("/login");
+}
 
 /**
  * The one row of page chrome: the wordmark, whatever the page puts beside it, and the engine state on the right.
@@ -25,6 +36,11 @@ export function AppHeader({ children }: { children?: ReactNode }) {
             <span aria-hidden className="inline-block h-1.5 w-1.5 rounded-full bg-ink" />
             SAM3 on {engine.device}
           </span>
+        )}
+        {state.health?.auth?.enabled && (
+          <button type="button" className="shrink-0 font-cond text-dim hover:text-ink" onClick={() => void logOut()}>
+            Log out
+          </button>
         )}
       </header>
       <EngineBanner {...state} />
