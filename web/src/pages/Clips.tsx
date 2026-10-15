@@ -1,9 +1,11 @@
 import { useCallback, useContext, useEffect, useRef, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
+import { startResumableUpload } from "../api/resumable";
 import { ApiError, UploadCancelled, api, thumbUrl, type UploadHandle } from "../api/rest";
 import type { ClipSummary, Project } from "../api/types";
 import { AppHeader } from "../components/AppHeader";
 import { ImportJobRow } from "../components/ImportJobRow";
+import { PhoneLink } from "../components/PhoneLink";
 import { HealthContext } from "../hooks/useHealth";
 import { percentLabeled } from "../lib/timeline";
 import { formatBytes, uploadPercent } from "../lib/upload";
@@ -159,7 +161,7 @@ export function Clips() {
     if (started === null) return;
     setQueue(() => started.state);
     const item = started.item;
-    const handle = api.uploadClip(item.projectId, item.file, { stride: item.stride, fps: item.fps }, (sent, total) => {
+    const handle = startResumableUpload(item.projectId, item.file, { stride: item.stride, fps: item.fps }, (sent, total) => {
       if (uploadRef.current?.id === item.id) setQueue((q) => updateProgress(q, item.id, sent, total));
     });
     uploadRef.current = { id: item.id, handle };
@@ -404,6 +406,7 @@ export function Clips() {
                   setFileInputKey((k) => k + 1); // reset so choosing the same file(s) again still fires onChange
                 }}
               />
+              <PhoneLink projectId={project.id} />
               {queue.current === null && queue.waiting.length === 0 && (
                 <p className="note">Drop one or more videos or zips of images here, or choose them above.</p>
               )}
