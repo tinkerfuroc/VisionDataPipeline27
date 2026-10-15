@@ -65,14 +65,29 @@ uv run python scripts/seed_demo.py     # optional: a demo project with a synthet
 Open http://127.0.0.1:28000/. `/api/health` reports whether the engine loaded (and why not); `/docs` has the
 interactive API docs.
 
-### Using a remote GPU machine
+### Sharing with teammates
 
-`vdp serve` binds `127.0.0.1` by default and has no authentication, so forward the port rather than binding the
-server to the network:
+`vdp serve` binds `127.0.0.1` by default. To let teammates on the same network use it, set a team password and
+serve over HTTPS:
+
+    uv run vdp set-password                                # asks twice; stored hashed in data/auth.json
+    HF_HUB_OFFLINE=1 uv run vdp serve --host 0.0.0.0 --https
+
+The first `--https` start creates a self-signed certificate in `data/tls/` and prints its SHA-256 fingerprint and
+the address to share (e.g. `https://192.168.1.20:28000/`). Each teammate's browser warns once about the certificate:
+compare the fingerprint it shows with the printed one, accept, and log in with the team password; the session lasts
+30 days. Running `vdp set-password` again changes the password and logs everyone out; `vdp set-password --off`
+removes it. `vdp cert` shows the certificate, `vdp cert --regenerate` replaces it (e.g. after the machine's address
+changed). To use your own certificate, set `server.cert` and `server.key` in the config.
+
+`vdp serve` never starts open on a network address: without a password it offers to set one, or quits. After 5 wrong
+passwords from one address in 5 minutes, that address must wait.
+
+The alternative needs no password: give teammates SSH access and let each forward the port,
 
     ssh -N -L 28000:127.0.0.1:28000 user@gpu-host
 
-then open `http://127.0.0.1:28000/` locally; uploads travel through the tunnel. `-o Compression=no` is usually
+then open `http://127.0.0.1:28000/` locally (still asks for the password if one is set). `-o Compression=no` is usually
 faster for already-compressed footage, and `-o ServerAliveInterval=30` keeps a NAT'd tunnel alive.
 
 ## Configuration

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import os
 import sys
 import time
 from pathlib import Path
@@ -82,16 +83,30 @@ def wait_job(client: httpx.Client, job_id: str, timeout: float = WAIT_TIMEOUT_S)
         time.sleep(0.2)
 
 
+def login(client: httpx.Client, password: str) -> None:
+    """Log in through the server's login form; the client keeps the session cookie for every later call."""
+    r = client.post("/api/auth/login", data={"password": password, "next": "/"}, follow_redirects=False)
+    if r.status_code == 429:
+        raise SystemExit(f"login refused: too many attempts, retry in {r.headers.get('retry-after', '?')} s")
+    if r.status_code != 303 or "error=" in r.headers.get("location", ""):
+        raise SystemExit("login failed: wrong password")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--base", default="http://127.0.0.1:28000")
     ap.add_argument("--frames", type=int, default=40)
     ap.add_argument("--no-label", action="store_true", help="import only; do not accept a prompt or propagate")
+    ap.add_argument("--password", default=os.environ.get("VDP_PASSWORD"),
+                    help="the team password, when the server has one (default: $VDP_PASSWORD)")
+    ap.add_argument("--insecure", action="store_true", help="accept the server's self-signed HTTPS certificate")
     args = ap.parse_args()
 
     write_frames(args.frames)
     # trust_env=False: this machine exports http_proxy, which must not be used for localhost
-    with httpx.Client(base_url=args.base, trust_env=False, timeout=120) as client:
+    with httpx.Client(base_url=args.base, trust_env=False, timeout=120, verify=not args.insecure) as client:
+        if args.password:
+            login(client, args.password)
         health_resp = client.get("/api/health")
         health_resp.raise_for_status()
 
