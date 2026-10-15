@@ -3,6 +3,7 @@ import { HealthContext, useHealth } from "./hooks/useHealth";
 import { Clips } from "./pages/Clips";
 import { Export } from "./pages/Export";
 import { Label } from "./pages/Label";
+import { PhoneUpload } from "./pages/PhoneUpload";
 import { Train } from "./pages/Train";
 
 // A fresh `key` per clip id remounts the whole Label subtree on navigation between clips, instead of reusing
@@ -24,6 +25,7 @@ export function App() {
             <Route path="/clips/:clipId" element={<LabelRoute />} />
             <Route path="/projects/:projectId/export" element={<Export />} />
             <Route path="/train" element={<Train />} />
+            <Route path="/upload" element={<PhoneUpload />} />
           </Routes>
         </main>
       </div>
