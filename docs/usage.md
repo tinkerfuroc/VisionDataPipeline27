@@ -39,9 +39,11 @@ selection still queue. Queued files upload one at a time, in the order chosen, t
 the sidebar: the running file with its progress, the waiting files by name (each removable with its own ×
 button), and any failed file with its error and a Dismiss button. A failure never stops the queue — it moves on
 to the next file. "Cancel upload" cancels the running file and moves on; "Cancel all" (once more than one file
-is queued or running) aborts the running file and clears the rest. Each file is sent in 8 MB pieces, so a dropped connection only pauses it: it continues by itself, and after a
-reload the page offers to continue when you choose the same file again (unfinished uploads are kept for 24 hours;
-"Cancel upload" discards one). The same uploads work from a phone: see "Upload from a phone" in the sidebar. Peak disk use during an import is the upload plus the JPEG frames and
+is queued or running) aborts the running file and clears the rest. Each file is sent in 8 MB pieces, so a
+dropped connection only pauses it: it continues by itself, and after a reload the page offers to continue when
+you choose the same file again (unfinished uploads are kept for 24 hours; "Cancel upload" discards one). The
+same uploads work from a phone: see the Clips page's Upload from a phone button.
+Peak disk use during an import is the upload plus the JPEG frames and
 thumbnails it writes.
 
 ## Label page: several objects

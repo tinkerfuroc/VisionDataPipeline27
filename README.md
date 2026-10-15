@@ -84,7 +84,8 @@ changed). To use your own certificate, set `server.cert` and `server.key` in the
 shows) on a phone connected to the same network. The phone page records a video with the camera or takes several
 from the gallery; iPhone HEVC `.mov` and Android `.mp4` footage import as they are. Uploads go in 8 MB pieces: a
 locked screen, switching apps or a WiFi drop only pauses them, and after the browser reloads the tab the page lists
-the unfinished upload, which continues when you choose the same file again. Unfinished uploads are kept for 24 hours.
+the unfinished upload, which continues when you choose the same file again. Unfinished uploads are kept for 24 hours. On an iPhone, a video picked from the gallery after the tab was reloaded
+may not be recognised as the same file; it then uploads again from the start.
 
 `vdp serve` never starts open on a network address: without a password it offers to set one, or quits. After 5 wrong
 passwords from one address in 5 minutes, that address must wait.
