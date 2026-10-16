@@ -150,3 +150,14 @@ def test_prepare_returns_the_frames_and_propagate_accepts_them():
         if a[1] is not None:
             assert np.array_equal(a[1], b[1])
     assert eng.propagate_calls == [4, 4]
+
+
+def test_release_and_load_round_trip():
+    eng = FakeEngine(device="cuda:1", vram_bytes=123)
+    eng.release()
+    assert not eng.is_loaded() and eng.release_calls == 1
+    assert eng.device == "cuda:1" and eng.vram_bytes == 123  # kept, like Sam3Engine's
+    eng.load()
+    assert eng.is_loaded() and eng.load_calls == 1
+    eng.load()
+    assert eng.load_calls == 2  # counts every call; the caller decides when to call it

@@ -774,3 +774,106 @@ def test_shutdown_interrupts_running_runs(tmp_path):
     sched.shutdown(timeout=10)
     assert status(sched, rid) == "interrupted"
     assert status(sched, waiting) == "queued"  # picked up again by the next start()
+
+
+def _record_idle(sched) -> list[tuple[int, bool]]:
+    """Hooks `on_gpu_idle`, recording (gpu, whether that GPU really was idle when it fired)."""
+    calls: list[tuple[int, bool]] = []
+    sched.on_gpu_idle = lambda gpu: calls.append((gpu, sched.gpu_idle(gpu)))
+    return calls
+
+
+def test_on_gpu_idle_fires_once_the_last_run_on_that_gpu_ends(env):
+    sched, export = env
+    calls = _record_idle(sched)
+    sched.start()
+    a, b = sched.submit(export, [("yolo26s-seg", 0), ("yolo26m-seg", 0)], TrainParams(epochs=2))
+    assert not sched.gpu_idle(0) and sched.gpu_idle(1)
+    calls.clear()  # start() reports both GPUs idle once; only what follows the submit matters here
+    until(sched, a, "done")
+    until(sched, b, "done")
+    wait_for(lambda: (0, True) in calls)
+    assert all(idle for _, idle in calls)  # never fired while b was still queued or running
+    assert sched.gpu_idle(0)
+
+
+def test_on_gpu_idle_fires_when_the_last_queued_run_is_cancelled(env):
+    sched, export = env
+    (rid,) = sched.submit(export, [("yolo26s-seg", 0)], TrainParams(epochs=2))
+    calls = _record_idle(sched)
+    sched.cancel(rid)  # the scheduler threads are not running: only cancel() can report it
+    assert calls == [(0, True)]
+
+
+def test_on_gpu_idle_fires_after_a_run_that_could_not_start(tmp_path):
+    data_root = tmp_path / "data"
+    export = find_export(data_root, make_export(data_root).name)
+    sched = TrainScheduler(data_root, GPUS, worker_cmd=["/nonexistent/binary"], kill_after=5.0)
+    calls = _record_idle(sched)
+    sched.start()
+    try:
+        calls.clear()
+        (rid,) = sched.submit(export, [("yolo26s-seg", 0)], TrainParams(epochs=2))
+        until(sched, rid, "error")
+        wait_for(lambda: (0, True) in calls)
+    finally:
+        sched.shutdown(timeout=10)
+
+
+def test_on_gpu_idle_is_quiet_during_shutdown(tmp_path):
+    data_root = tmp_path / "data"
+    export = find_export(data_root, make_export(data_root).name)
+    sched = TrainScheduler(data_root, GPUS, worker_cmd=FAKE_WORKER, kill_after=5.0)
+    calls = _record_idle(sched)
+    sched.start()
+    (rid,) = sched.submit(export, [("yolo26s-seg", 0)], TrainParams(epochs=99))
+    until(sched, rid, "running")
+    calls.clear()
+    sched.shutdown(timeout=10)
+    assert status(sched, rid) == "interrupted" and calls == []
+
+
+def test_before_queue_runs_after_validation_and_can_veto(env):
+    sched, export = env
+    seen = []
+    with pytest.raises(BadRequest):  # an invalid request never reaches the hook
+        sched.submit(export, [("yolov5s-seg", 0)], TrainParams(), before_queue=lambda: seen.append("bad"))
+    assert seen == []
+
+    def veto():
+        raise RuntimeError("busy")
+
+    with pytest.raises(RuntimeError):
+        sched.submit(export, [("yolo26s-seg", 0)], TrainParams(), before_queue=veto)
+    assert sched.runs.list() == [] and sched.gpu_idle(0)
+    (rid,) = sched.submit(export, [("yolo26s-seg", 0)], TrainParams(epochs=2), before_queue=lambda: seen.append("ok"))
+    assert seen == ["ok"] and status(sched, rid) == "queued"
+
+
+def test_before_queue_on_submit_from_resume_and_complete(env):
+    sched, export = env
+    sched.start()
+    (rid,) = sched.submit(export, [("yolo26s-seg", 1)], TrainParams(epochs=99))
+    until(sched, rid, "running")
+    wait_for(lambda: (sched.runs.dir(rid) / "train" / "weights" / "last.pt").is_file())
+    sched.cancel(rid)
+    until(sched, rid, "cancelled")
+
+    def veto():
+        raise RuntimeError("busy")
+
+    n_runs = len(sched.runs.list())
+    with pytest.raises(RuntimeError):
+        sched.submit_from(rid, export, "continue", 1, before_queue=veto)
+    assert len(sched.runs.list()) == n_runs
+    with pytest.raises(RuntimeError):
+        sched.resume(rid, before_queue=veto)
+    assert status(sched, rid) == "cancelled"
+    with pytest.raises(Conflict):  # not completable (no best.pt): the hook is not reached
+        sched.complete(rid, before_queue=veto)
+    seen = []
+    sched.resume(rid, before_queue=lambda: seen.append("resume"))
+    assert seen == ["resume"]
+    until(sched, rid, "running")
+    sched.cancel(rid)
+    until(sched, rid, "cancelled")

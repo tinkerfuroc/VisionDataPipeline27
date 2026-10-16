@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import contextlib
 import logging
-import threading
 import time
 from contextlib import asynccontextmanager
 
@@ -24,6 +22,7 @@ from ..store import NotFound, ProjectStore, StoreError
 from ..train.scheduler import TrainScheduler, detect_gpus
 from . import augment as augment_api
 from . import clips, export, jobs, labeling, projects
+from . import engine as engine_api
 from . import gate as gate_api
 from . import train as train_api
 from . import uploads as uploads_api
@@ -65,16 +64,14 @@ def create_app(
         train=train if train is not None else TrainScheduler(settings.project.data_root, detect_gpus()),
         uploads=ResumableStore(settings.project.data_root / "uploads" / "resumable", settings.ingest.max_upload_bytes),
     )
+    state.engine_ctl = engine_api.EngineControl(state.engine, state.jobs, state.train)
+    state.train.on_gpu_idle = state.engine_ctl.gpu_idle  # reloads SAM3 after a training pause
     gate = gate_api.GateState(auth_store if auth_store is not None else AuthStore(settings.project.data_root))
-
-    def _load() -> None:
-        with contextlib.suppress(EngineNotLoaded):  # the reason is kept in engine.load_error for /api/health
-            state.engine.load()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        if load_engine and hasattr(state.engine, "load"):
-            threading.Thread(target=_load, name="engine-load", daemon=True).start()
+        if load_engine:
+            state.engine_ctl.start_load()
         state.train.start()
         yield
         deadline = time.monotonic() + SHUTDOWN_JOIN_S
@@ -115,6 +112,7 @@ def create_app(
                 "loaded": bool(eng.is_loaded()),
                 "device": getattr(eng, "device", None),
                 "error": getattr(eng, "load_error", None),
+                "paused": st.engine_ctl.paused,
             },
             "upload": {"max_bytes": st.settings.ingest.max_upload_bytes},
             "auth": {"enabled": request.app.state.gate.enabled()},
@@ -127,6 +125,7 @@ def create_app(
     app.include_router(train_api.router)
     app.include_router(augment_api.router)
     app.include_router(jobs.router)
+    app.include_router(engine_api.router)
     app.include_router(gate_api.router)
     app.include_router(uploads_api.router)
 

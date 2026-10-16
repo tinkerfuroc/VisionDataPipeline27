@@ -55,7 +55,7 @@ def _project(client, classes=("part",)):
 
 def test_health_with_a_loaded_engine(client):
     body = client.get("/api/health").json()
-    assert body["status"] == "ok" and body["engine"] == {"loaded": True, "device": None, "error": None}
+    assert body["status"] == "ok" and body["engine"] == {"loaded": True, "device": None, "error": None, "paused": False}
     assert body["upload"] == {"max_bytes": 8 * 2**30}
 
 
@@ -75,7 +75,9 @@ def test_health_reports_a_background_load_failure(tmp_path):
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline and c.get("/api/health").json()["engine"]["error"] is None:
             time.sleep(0.02)
-        assert c.get("/api/health").json()["engine"] == {"loaded": False, "device": None, "error": "no CUDA device"}
+        assert c.get("/api/health").json()["engine"] == {
+            "loaded": False, "device": None, "error": "no CUDA device", "paused": False,
+        }
 
 
 def test_projects_and_classes(client):

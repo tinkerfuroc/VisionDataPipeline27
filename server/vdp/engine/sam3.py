@@ -62,7 +62,8 @@ class Sam3Engine:
         self.torch_dtype = _DTYPES[dtype]
         self.text_threshold = float(text_threshold)
         self.score_mode = score_mode
-        self.device: str | None = None
+        self.device: str | None = None  # kept by release(): where the next load() lands
+        self.vram_bytes: int | None = None  # what the loaded model took on `device`; also kept by release()
         self.load_error: str | None = None
         self._lock = threading.Lock()
         self._model = None
@@ -116,7 +117,8 @@ class Sam3Engine:
         model.tracker_model.config.multimask_max_pt_num = 32
         self._model = model.to(device).eval()
         self.device = device
-        log.info("Sam3Engine loaded on %s; vram=%.2f GiB", device, torch.cuda.memory_allocated(device) / 2**30)
+        self.vram_bytes = int(torch.cuda.memory_allocated(device))
+        log.info("Sam3Engine loaded on %s; vram=%.2f GiB", device, self.vram_bytes / 2**30)
 
     @staticmethod
     def _sync_tracker_neck(model) -> tuple[int, int]:
