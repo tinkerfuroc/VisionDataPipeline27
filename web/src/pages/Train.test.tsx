@@ -4,6 +4,8 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "../api/rest";
 import type { BackgroundPool, ExportInfo, ExportSample, Run, RunDetail, TrainStatus } from "../api/types";
+import type { JobHandle } from "../hooks/useJob";
+import { useJob } from "../hooks/useJob";
 import { SERIES_COLORS } from "../lib/chart";
 import { runLabel } from "../lib/train";
 import { Train } from "./Train";
@@ -20,6 +22,13 @@ vi.mock("../api/rest", async (original) => {
     },
   };
 });
+
+// AugmentPanel is the page's only job follower; its jobs come from `jobs` (idle when absent)
+vi.mock("../hooks/useJob", () => ({ useJob: vi.fn() }));
+const jobs: Record<string, JobHandle> = {};
+const idleJob: JobHandle = {
+  status: "idle", nextSeq: 0, done: 0, total: null, lastFrame: null, logs: [], result: null, error: null, transport: "ws",
+};
 
 const status: TrainStatus = {
   available: true, error: null, sam3_gpu: 0, default_gpu: 0,
@@ -71,6 +80,8 @@ const renderPage = () => render(<MemoryRouter><Train /></MemoryRouter>);
 
 beforeEach(() => {
   Object.values(m).forEach((fn) => fn.mockReset());
+  Object.keys(jobs).forEach((k) => delete jobs[k]);
+  vi.mocked(useJob).mockImplementation((jobId: string | null) => (jobId === null ? idleJob : (jobs[jobId] ?? idleJob)));
   m.trainStatus.mockResolvedValue(status);
   m.listExports.mockResolvedValue([exp]);
   m.listRuns.mockResolvedValue([r1, r2]);
@@ -272,6 +283,27 @@ describe("Train page", () => {
     fireEvent.change(await screen.findByLabelText("Export"), { target: { value: derivedExp.id } });
     expect(await screen.findByText(`Augmented samples · ${derivedExp.id}`)).toBeTruthy();
     expect(m.exportSamples).toHaveBeenCalledWith(derivedExp.id, 12, 0);
+  });
+
+  it("after a time-limited augment, selects the new copy and says it stopped at the limit", async () => {
+    const limits = {
+      max_train_images: null, time_limit_s: 600, stopped_by: "time" as const,
+      requested: { composites: 2394, lighting: 1596 }, planned: { composites: 2394, lighting: 1596 },
+      produced: { composites: 1200, lighting: 800 },
+    };
+    const copy: ExportInfo = { ...derivedExp, augment_limits: limits };
+    m.listExports.mockResolvedValueOnce([exp]).mockResolvedValue([copy, exp]);
+    m.augmentExport.mockResolvedValue({ job_id: "aug1" });
+    jobs.aug1 = { ...idleJob, status: "done", result: { export_id: copy.id, limits } };
+    renderPage();
+
+    await screen.findByText("DTD textures · 5,640 images");
+    fireEvent.click(screen.getByRole("button", { name: "Make augmented copy" }));
+    await waitFor(() => expect((screen.getByLabelText("Export") as HTMLSelectElement).value).toBe(copy.id));
+    expect(await screen.findByText(`This is an augmented copy of ${exp.id}. Make copies from the original export.`)).toBeTruthy();
+    expect(
+      screen.getByText("Stopped at the 10-minute limit: 1,200 composites and 800 lighting copies (of 2,394 and 1,596 asked for)."),
+    ).toBeTruthy();
   });
 
   it("shows the export's name at the start of its select option, else the project name", async () => {

@@ -401,5 +401,55 @@ describe("AugmentPanel", () => {
         await screen.findByText("Stopped at the 2-minute limit: 10 composites and 4 lighting copies (of 3,000 and 1,000 asked for)."),
       ).toBeTruthy();
     });
+
+    it("says how a selected derived copy was cut, from its persisted limits", async () => {
+      const copy = exp({
+        id: "copy", derived_from: "20260924-040124-8336a8",
+        augment_limits: limits({
+          max_train_images: 2000, stopped_by: "images",
+          planned: { composites: 721, lighting: 481 }, produced: { composites: 721, lighting: 481 },
+        }),
+      });
+      render(<AugmentPanel exportInfo={copy} onCreated={vi.fn()} />);
+      expect(await screen.findByText(/This is an augmented copy of 20260924-040124-8336a8/)).toBeTruthy();
+      expect(screen.getByText("Capped at 2,000 training images: 721 composites and 481 lighting copies.")).toBeTruthy();
+    });
+
+    it("says nothing extra for a derived copy nothing cut short", async () => {
+      render(<AugmentPanel exportInfo={exp({ derived_from: "src", augment_limits: limits({}) })} onCreated={vi.fn()} />);
+      await screen.findByText(/This is an augmented copy of src/);
+      expect(screen.queryByText(/Stopped at the|Capped at/)).toBeNull();
+    });
+
+    it("keeps the minutes field within 1 to 1440 whole minutes", async () => {
+      await ready();
+      const field = screen.getByLabelText("Stop after minutes") as HTMLInputElement;
+      expect(field.max).toBe("1440");
+      expect(field.step).toBe("1");
+      const make = screen.getByRole("button", { name: "Make augmented copy" }) as HTMLButtonElement;
+      for (const bad of ["0.1", "1500", "0"]) {
+        fireEvent.change(field, { target: { value: bad } });
+        expect(screen.getByText("Stop after takes 1 to 1440 minutes.")).toBeTruthy();
+        expect(make.disabled).toBe(true);
+      }
+      fireEvent.change(field, { target: { value: "2.6" } });
+      expect(screen.queryByText(/takes 1 to 1440 minutes/)).toBeNull();
+      fireEvent.click(make);
+      await waitFor(() => expect(m.augmentExport).toHaveBeenCalled());
+      expect(m.augmentExport.mock.calls[0][1].time_limit_s).toBe(180); // rounded to whole minutes
+    });
+
+    it("clears the limit fields when another source export is selected", async () => {
+      m.listBackgrounds.mockResolvedValue([pool({ images: 5640 })]);
+      const { rerender } = render(<AugmentPanel exportInfo={exp({ id: "expA" })} onCreated={vi.fn()} />);
+      await screen.findByText("DTD textures · 5,640 images");
+      fireEvent.change(screen.getByLabelText("At most training images"), { target: { value: "2000" } });
+      fireEvent.change(screen.getByLabelText("Stop after minutes"), { target: { value: "10" } });
+      fireEvent.change(screen.getByLabelText("Seed"), { target: { value: "7" } });
+      rerender(<AugmentPanel exportInfo={exp({ id: "expB", train_images: 3000 })} onCreated={vi.fn()} />);
+      await waitFor(() => expect((screen.getByLabelText("At most training images") as HTMLInputElement).value).toBe(""));
+      expect((screen.getByLabelText("Stop after minutes") as HTMLInputElement).value).toBe("");
+      expect((screen.getByLabelText("Seed") as HTMLInputElement).value).toBe("7"); // the generic options carry over
+    });
   });
 });

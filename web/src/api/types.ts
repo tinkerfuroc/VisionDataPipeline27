@@ -186,6 +186,7 @@ export type ExportInfo = {
   val_images: number;
   formats: string[];
   derived_from: string | null;
+  augment_limits?: AugmentLimits | null; // a derived copy's `augment.limits`; null for an ordinary export
 };
 export type BackgroundPool = { name: string; label: string; images: number; size_bytes: number; fetching: string | null };
 export type ExportSample = { name: string; width: number; height: number; ground_truth: Instance[] };

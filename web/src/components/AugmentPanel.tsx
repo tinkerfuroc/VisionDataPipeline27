@@ -9,7 +9,9 @@ const isBusy = (status: string) => status === "pending" || status === "running";
 const pct = (done: number, total: number | null) => (total ? Math.round((done / total) * 100) : 0);
 
 const n = (v: number) => v.toLocaleString();
-function limitsLine(l: AugmentLimits | undefined): string | null {
+const MAX_MINUTES = 1440; // the server's time_limit_s bound (86 400 s)
+// What cut a run short, from a job result's `limits` or a derived copy's persisted `augment.limits`.
+function limitsLine(l: AugmentLimits | null | undefined): string | null {
   if (!l) return null;
   const { composites, lighting } = l.produced;
   if (l.stopped_by === "time" && l.time_limit_s !== null) {
@@ -23,11 +25,12 @@ function limitsLine(l: AugmentLimits | undefined): string | null {
 
 type Props = { exportInfo: ExportInfo | null; onCreated: (exportId: string) => void };
 
-function Note({ text }: { text: string }) {
+function Note({ text, extra = null }: { text: string; extra?: string | null }) {
   return (
     <section className="flex flex-col gap-2">
       <h2 className="heading">Augmented copy</h2>
       <p className="note">{text}</p>
+      {extra !== null && <p className="note">{extra}</p>}
     </section>
   );
 }
@@ -53,6 +56,13 @@ export function AugmentPanel({ exportInfo, onCreated }: Props) {
   const [lighting, setLighting] = useState(0);
   const [maxImages, setMaxImages] = useState("");
   const [minutes, setMinutes] = useState("");
+
+  // The limits depend on the export (a cap must exceed its train frames), so a new selection starts them empty;
+  // the generic options above carry over.
+  useEffect(() => {
+    setMaxImages("");
+    setMinutes("");
+  }, [exportInfo?.id]);
 
   const loadPools = useCallback(() => {
     api.listBackgrounds().then(setPools, (e) => setPoolsError(message(e)));
@@ -101,8 +111,10 @@ export function AugmentPanel({ exportInfo, onCreated }: Props) {
 
   if (exportInfo === null) return <Note text="Augmented copies need an export with Mask images." />;
   if (exportInfo.derived_from !== null) {
+    // also where a just-finished job lands: the sidebar selects the new copy, so say here what cut it short
     return (
-      <Note text={`This is an augmented copy of ${exportInfo.derived_from}. Make copies from the original export.`} />
+      <Note text={`This is an augmented copy of ${exportInfo.derived_from}. Make copies from the original export.`}
+        extra={limitsLine(exportInfo.augment_limits)} />
     );
   }
   if (!exportInfo.formats.includes("masks")) return <Note text="Augmented copies need an export with Mask images." />;
@@ -112,8 +124,10 @@ export function AugmentPanel({ exportInfo, onCreated }: Props) {
   const augmentRunning = isBusy(augmentJob.status);
   const augmentError = augmentErrors[exportInfo.id] ?? null;
   const addsNothing = perImage === 0 && lighting === 0;
+  const mins = Math.round(Number(minutes)); // whole minutes
+  const badMinutes = minutes !== "" && !(mins >= 1 && mins <= MAX_MINUTES);
   // only composites need the background textures; a lighting-only copy can be made without them
-  const canMake = !augmentRunning && !addsNothing && (perImage === 0 || poolReady);
+  const canMake = !augmentRunning && !addsNothing && !badMinutes && (perImage === 0 || poolReady);
 
   const resultLine = limitsLine(augmentJob.result?.limits as AugmentLimits | undefined);
 
@@ -139,11 +153,10 @@ export function AugmentPanel({ exportInfo, onCreated }: Props) {
       return rest;
     });
     const cap = Math.floor(Number(maxImages));
-    const mins = Number(minutes);
     api.augmentExport(exportId, {
       per_image: perImage, max_objects: maxObjects, seed, pool: POOL, lighting,
       ...(maxImages !== "" && cap >= 1 ? { max_train_images: cap } : {}),
-      ...(minutes !== "" && mins > 0 ? { time_limit_s: Math.round(mins * 60) } : {}),
+      ...(minutes !== "" ? { time_limit_s: mins * 60 } : {}),
     }).then(
       (r) => setAugmentJobs((j) => ({ ...j, [exportId]: r.job_id })),
       (e) => setAugmentErrors((errs) => ({ ...errs, [exportId]: message(e) })),
@@ -216,9 +229,10 @@ export function AugmentPanel({ exportInfo, onCreated }: Props) {
       </label>
       <label className="flex items-center justify-between gap-2 text-sm text-dim">
         Stop after (min)
-        <input aria-label="Stop after minutes" type="number" className="field w-24" min={1}
-          placeholder="no limit" value={minutes} onChange={(e) => setMinutes(e.target.value)} />
+        <input aria-label="Stop after minutes" type="number" className="field w-24" min={1} max={MAX_MINUTES}
+          step={1} placeholder="no limit" value={minutes} onChange={(e) => setMinutes(e.target.value)} />
       </label>
+      {badMinutes && <p className="note text-ink">Stop after takes 1 to {MAX_MINUTES} minutes.</p>}
 
       {augmentRunning && (
         <div className="flex flex-col gap-1">
