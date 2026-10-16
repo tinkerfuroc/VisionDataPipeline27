@@ -134,7 +134,7 @@ def test_decode_refuses_a_decompression_bomb_and_reads_alpha_only_masks():
 
 
 def test_painted_masks_are_trimmed_to_the_kept_area(store, make_clip):
-    project, clip = make_clip(n_frames=6)
+    _, clip = make_clip(n_frames=6)
     clip.regions = [RegionRange(start=0, end=5, blocks=[(10, 10, 20, 30)])]
     store.write_clip(clip)
     _, oid = set_mask(store, clip.id, 2, _blob(clip.height, clip.width), object_id=None, class_id=0)
