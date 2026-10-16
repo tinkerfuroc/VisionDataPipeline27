@@ -10,7 +10,14 @@ from PIL import Image
 from pydantic import BaseModel, Field
 
 from ..augment.backgrounds import POOLS, FetchCancelled, fetch_pool, list_images, pool_dir
-from ..augment.derive import MAX_LIGHTING, MAX_TRAIN_IMAGES, AugmentOptions, check_augment, run_augment
+from ..augment.derive import (
+    MAX_LIGHTING,
+    MAX_MIN_PIECE_PX,
+    MAX_TRAIN_IMAGES,
+    AugmentOptions,
+    check_augment,
+    run_augment,
+)
 from ..export import ExportCancelled
 from ..jobs import Job
 from ..train.models import find_export
@@ -35,6 +42,7 @@ class AugmentBody(BaseModel):
     lighting: int = Field(default=0, ge=0, le=MAX_LIGHTING)
     max_train_images: int | None = Field(default=None, ge=1, le=MAX_TRAIN_IMAGES)
     time_limit_s: int | None = Field(default=None, ge=10, le=86400)
+    min_piece_px: int = Field(default=0, ge=0, le=MAX_MIN_PIECE_PX)
 
 
 @router.get("/api/backgrounds")
@@ -69,7 +77,7 @@ def augment(export_id: str, state: State, body: AugmentBody | None = None) -> di
     b = body or AugmentBody()
     opts = AugmentOptions(
         per_image=b.per_image, max_objects=b.max_objects, seed=b.seed, pool=b.pool, lighting=b.lighting,
-        max_train_images=b.max_train_images, time_limit_s=b.time_limit_s,
+        max_train_images=b.max_train_images, time_limit_s=b.time_limit_s, min_piece_px=b.min_piece_px,
     )
     data_root = state.settings.project.data_root
     check_augment(data_root, export_id, opts)  # 400 / 404 now, not as a job error

@@ -10,6 +10,8 @@ const pct = (done: number, total: number | null) => (total ? Math.round((done / 
 
 const n = (v: number) => v.toLocaleString();
 const MAX_MINUTES = 1440; // the server's time_limit_s bound (86 400 s)
+const DEFAULT_MIN_PIECE_PX = 2000; // about 45 x 45 px on a 1080p frame
+const MAX_MIN_PIECE_PX = 100_000; // the server's min_piece_px bound
 // What cut a run short, from a job result's `limits` or a derived copy's persisted `augment.limits`.
 function limitsLine(l: AugmentLimits | null | undefined): string | null {
   if (!l) return null;
@@ -52,6 +54,7 @@ export function AugmentPanel({ exportInfo, onCreated }: Props) {
   const [handled, setHandled] = useState<Record<string, string>>({});
   const [perImage, setPerImage] = useState(3);
   const [maxObjects, setMaxObjects] = useState(2);
+  const [minPiece, setMinPiece] = useState(DEFAULT_MIN_PIECE_PX);
   const [seed, setSeed] = useState(0);
   const [lighting, setLighting] = useState(0);
   const [maxImages, setMaxImages] = useState("");
@@ -154,7 +157,7 @@ export function AugmentPanel({ exportInfo, onCreated }: Props) {
     });
     const cap = Math.floor(Number(maxImages));
     api.augmentExport(exportId, {
-      per_image: perImage, max_objects: maxObjects, seed, pool: POOL, lighting,
+      per_image: perImage, max_objects: maxObjects, seed, pool: POOL, lighting, min_piece_px: minPiece,
       ...(maxImages !== "" && cap >= 1 ? { max_train_images: cap } : {}),
       ...(minutes !== "" ? { time_limit_s: mins * 60 } : {}),
     }).then(
@@ -207,6 +210,16 @@ export function AugmentPanel({ exportInfo, onCreated }: Props) {
         <input aria-label="Objects per image" type="number" className="field w-20" min={1} max={3}
           value={maxObjects} onChange={(e) => setMaxObjects(Math.min(3, Math.max(1, Number(e.target.value) || 1)))} />
       </label>
+      <label className="flex items-center justify-between gap-2 text-sm text-dim">
+        Smallest object piece (px²)
+        <input aria-label="Smallest object piece (px²)" type="number" className="field w-24" min={0}
+          max={MAX_MIN_PIECE_PX} step={100} value={minPiece}
+          onChange={(e) => setMinPiece(Math.min(MAX_MIN_PIECE_PX, Math.max(0, Math.floor(Number(e.target.value) || 0))))} />
+      </label>
+      <p className="note">
+        In composites, any part of an object smaller than this, as pasted, is left out (not drawn and not labelled);
+        an object with no part this big is skipped. 0 keeps every part.
+      </p>
       <label className="flex items-center justify-between gap-2 text-sm text-dim">
         Lighting variants per image
         <input aria-label="Lighting variants per image" type="number" className="field w-20" min={0} max={3}

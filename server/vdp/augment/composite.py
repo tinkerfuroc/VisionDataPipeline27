@@ -149,7 +149,12 @@ def _colour_match(
 
 
 def make_composite(rng: np.random.Generator, width: int, height: int, background: np.ndarray,
-                   cutouts: list[Cutout], max_objects: int, min_area_px: int) -> Composite:
+                   cutouts: list[Cutout], max_objects: int, min_area_px: int, min_piece_px: int = 0) -> Composite:
+    """`min_piece_px` > 1: every piece (connected blob) of an object smaller than this many pixels, as scaled
+    onto the canvas, is left out of the paste and of the label alike, so no unlabelled crumb is drawn; an object
+    with no piece that big is not pasted at all. Pieces cut off by the canvas edge are filtered the same way
+    before drawing. A piece only split off later, by an object pasted over it, can just be dropped from the
+    label (its pixels are already drawn); overlap is capped at MAX_OVERLAP, so that is rare and small."""
     canvas = crop_background(rng, background, width, height).astype(np.float32)
     k = int(rng.integers(1, max_objects + 1))
     picks = [cutouts[int(i)] for i in rng.integers(0, len(cutouts), k)]
@@ -158,6 +163,10 @@ def make_composite(rng: np.random.Generator, width: int, height: int, background
     classes: list[int] = []
     for j, cut in enumerate(picks):
         img, m = transform_cutout(rng, cut, min(width, height))
+        if min_piece_px > 1:
+            m = clean_mask(m, min_piece_px)
+            if not m.any():
+                continue
         pos = place(rng, m, (height, width), placed, check_overlap=j > 0)
         if pos is None:
             if j > 0:
@@ -168,6 +177,10 @@ def make_composite(rng: np.random.Generator, width: int, height: int, background
         if vis is None or not vis[2].any():
             continue
         y0, x0, crop = vis
+        if min_piece_px > 1:
+            crop = clean_mask(crop, min_piece_px)  # what the canvas edge cut off may leave crumbs
+            if not crop.any():
+                continue
         h, w = crop.shape
         y1, x1 = y0 + h, x0 + w
         src = img[y0 - pos[0]:y1 - pos[0], x0 - pos[1]:x1 - pos[1]]
@@ -196,7 +209,7 @@ def make_composite(rng: np.random.Generator, width: int, height: int, background
     image = np.rint(np.clip(canvas, 0, 255)).astype(np.uint8)
     objects = []
     for idx, cls in enumerate(classes):
-        m = clean_mask(owner == idx, min_area_px)
+        m = clean_mask(owner == idx, max(min_area_px, min_piece_px))
         if m.any():
             objects.append((cls, m))
     return Composite(image, objects)

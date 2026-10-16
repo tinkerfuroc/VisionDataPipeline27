@@ -196,6 +196,8 @@ def test_augment_limits_are_validated_and_accepted(client, store, make_clip, tmp
     assert client.post(url, json={"per_image": 1, "time_limit_s": 5}).status_code == 422
     assert client.post(url, json={"per_image": 1, "max_train_images": 0}).status_code == 422
     assert client.post(url, json={"per_image": 1, "max_train_images": 10_000_001}).status_code == 422
+    assert client.post(url, json={"per_image": 1, "min_piece_px": -1}).status_code == 422
+    assert client.post(url, json={"per_image": 1, "min_piece_px": 100_001}).status_code == 422
 
     ok = client.post(url, json={"per_image": 1, "max_train_images": real + 2, "time_limit_s": 60})
     assert ok.status_code == 202, ok.text

@@ -198,6 +198,8 @@ export type BackgroundPool = { name: string; label: string; images: number; size
 export type ExportSample = { name: string; width: number; height: number; ground_truth: Instance[] };
 export type AugmentRequest = {
   per_image: number; max_objects: number; seed: number; pool: string; lighting: number;
+  /** composites leave out object pieces smaller than this many pixels (as pasted); 0 = keep every piece */
+  min_piece_px: number;
   max_train_images?: number; time_limit_s?: number;
 };
 export type AugmentCounts = { composites: number; lighting: number };

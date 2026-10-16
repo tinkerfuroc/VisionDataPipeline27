@@ -180,3 +180,57 @@ def test_objects_clipped_at_the_canvas_edge_match_the_reference():
         for _, m in new.objects:
             touching += bool(m[0].any() or m[-1].any() or m[:, 0].any() or m[:, -1].any())
     assert touching > 0, "no object reached the canvas edge"
+
+
+def _cut_with_crumb(class_id=0):
+    """A bright 40x40 body plus a separate 2x2 crumb: after any scale in SCALE_RANGE on a 200 px canvas the body
+    stays far above 50 px and the crumb far below it."""
+    img = np.full((60, 60, 3), 255, np.uint8)
+    mask = np.zeros((60, 60), bool)
+    mask[2:42, 2:42] = True
+    mask[55:57, 55:57] = True
+    return Cutout(class_id, img, mask)
+
+
+def _components(mask) -> int:
+    return cv2.connectedComponents(mask.astype(np.uint8), connectivity=8)[0] - 1
+
+
+def test_min_piece_px_drops_small_pieces_of_a_cutout_before_pasting():
+    dark = np.zeros((300, 300, 3), np.uint8)
+    kept_crumb = dropped = 0
+    for seed in range(30):
+        with_crumbs = make_composite(np.random.default_rng(seed), 200, 200, dark, [_cut_with_crumb()], 1, 1)
+        (_, m0), = with_crumbs.objects
+        kept_crumb += _components(m0) == 2
+        comp = make_composite(np.random.default_rng(seed), 200, 200, dark, [_cut_with_crumb()], 1, 1,
+                              min_piece_px=50)
+        (_, m), = comp.objects
+        assert _components(m) == 1
+        assert m.sum() >= 50
+        # nothing bright was pasted away from the label: the dropped crumb was never drawn
+        near = cv2.dilate(m.astype(np.uint8), np.ones((31, 31), np.uint8)) > 0
+        assert comp.image[~near].max() < 80, seed
+        dropped += 1
+    assert kept_crumb > 0  # without the option the crumb does come through, so the check above means something
+    assert dropped == 30
+
+
+def test_min_piece_px_drops_an_object_with_no_piece_big_enough():
+    dark = np.zeros((300, 300, 3), np.uint8)
+    for seed in range(10):
+        comp = make_composite(np.random.default_rng(seed), 200, 200, dark, [_cut_with_crumb()], 1, 1,
+                              min_piece_px=10**6)
+        assert comp.objects == []
+        assert comp.image.max() < 80  # and nothing of it is drawn
+
+
+def test_min_piece_px_zero_is_the_old_behaviour():
+    cutouts = _ref_cutouts(np.random.default_rng(5))
+    background = np.random.default_rng(6).integers(0, 255, (400, 600, 3), dtype=np.uint8)
+    for seed in range(10):
+        a = make_composite(np.random.default_rng(seed), 320, 240, background, cutouts, 3, 64)
+        b = make_composite(np.random.default_rng(seed), 320, 240, background, cutouts, 3, 64, min_piece_px=0)
+        assert np.array_equal(a.image, b.image)
+        assert [c for c, _ in a.objects] == [c for c, _ in b.objects]
+        assert all(np.array_equal(x, y) for (_, x), (_, y) in zip(a.objects, b.objects, strict=True))

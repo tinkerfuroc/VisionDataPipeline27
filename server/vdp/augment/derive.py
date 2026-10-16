@@ -60,6 +60,7 @@ from .limits import GenerationPlan, plan_generation
 
 MAX_LIGHTING = 3
 MAX_TRAIN_IMAGES = 10_000_000  # upper bound on `max_train_images` (keeps the export id and name short)
+MAX_MIN_PIECE_PX = 100_000  # a 1080p frame is about 2 M px
 UNIT_STEMS = 64  # mask files per cutout work unit
 UNIT_COMPOSITES = 16  # composites per work unit
 UNIT_LIGHTING = 16  # source frames per lighting work unit
@@ -77,6 +78,7 @@ class AugmentOptions:
     lighting: int = 0  # relit copies per real train frame
     max_train_images: int | None = None  # cap on the whole train split (real + generated)
     time_limit_s: int | None = None  # stop generating this many seconds after the job starts
+    min_piece_px: int = 0  # composites: leave out object pieces smaller than this (px, as pasted); 0 = off
 
 
 def _derived_name(
@@ -120,6 +122,8 @@ def check_augment(data_root: Path, export_id: str, opts: AugmentOptions) -> dict
         raise BadRequest("max_objects must be between 1 and 3")
     if opts.seed < 0:
         raise BadRequest("seed must be 0 or more")
+    if not 0 <= opts.min_piece_px <= MAX_MIN_PIECE_PX:
+        raise BadRequest(f"min_piece_px must be between 0 and {MAX_MIN_PIECE_PX}")
     if opts.time_limit_s is not None and not 10 <= opts.time_limit_s <= 86400:
         raise BadRequest("time_limit_s must be between 10 and 86400")
     manifest = json.loads((info.dir / "export.json").read_text())
@@ -308,7 +312,7 @@ def _composite_unit(ns: list[int]) -> list[SynthResult | None]:
         width, height = w["sizes"][int(rng.integers(len(w["sizes"])))]
         background = w["load_background"](w["pool_images"][int(rng.integers(len(w["pool_images"])))])
         composite = make_composite(
-            rng, width, height, background, w["cutouts"], opts.max_objects, w["min_area_px"],
+            rng, width, height, background, w["cutouts"], opts.max_objects, w["min_area_px"], opts.min_piece_px,
         )
         if not composite.objects:
             results.append(None)
@@ -688,6 +692,7 @@ def run_augment(
         )
         result_manifest["augment"] = {
             "per_image": opts.per_image, "max_objects": opts.max_objects, "seed": opts.seed,
+            "min_piece_px": opts.min_piece_px,
             "pool": opts.pool if opts.per_image else None, "synthetic_images": len(synthetic),
             "cutouts": cutout_mode, "lighting_variants": opts.lighting, "lighting_images": len(lit),
             "limits": limits,

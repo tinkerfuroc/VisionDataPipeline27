@@ -108,9 +108,27 @@ describe("AugmentPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "Make augmented copy" }));
     await waitFor(() =>
       expect(m.augmentExport).toHaveBeenCalledWith("20260924-040124-8336a8", {
-        per_image: 5, max_objects: 2, seed: 0, pool: "dtd", lighting: 0,
+        per_image: 5, max_objects: 2, seed: 0, pool: "dtd", lighting: 0, min_piece_px: 2000,
       }),
     );
+  });
+
+  it("sends the smallest object piece to keep", async () => {
+    m.listBackgrounds.mockResolvedValue([pool({ images: 5640 })]);
+    m.augmentExport.mockResolvedValue({ job_id: "aug1" });
+    render(<AugmentPanel exportInfo={exp()} onCreated={vi.fn()} />);
+    await screen.findByText("DTD textures · 5,640 images");
+    const field = screen.getByLabelText("Smallest object piece (px²)") as HTMLInputElement;
+    expect(field.value).toBe("2000");
+    fireEvent.change(field, { target: { value: "500" } });
+    fireEvent.click(screen.getByRole("button", { name: "Make augmented copy" }));
+    await waitFor(() =>
+      expect(m.augmentExport).toHaveBeenCalledWith("20260924-040124-8336a8", {
+        per_image: 3, max_objects: 2, seed: 0, pool: "dtd", lighting: 0, min_piece_px: 500,
+      }),
+    );
+    fireEvent.change(field, { target: { value: "-5" } }); // clamped to the allowed range
+    expect(field.value).toBe("0");
   });
 
   it("disables Make augmented copy while the pool has no images", async () => {
@@ -169,7 +187,7 @@ describe("AugmentPanel", () => {
     m.augmentExport.mockResolvedValue({ job_id: "augB" });
     fireEvent.click(makeB);
     await waitFor(() =>
-      expect(m.augmentExport).toHaveBeenLastCalledWith("expB", { per_image: 3, max_objects: 2, seed: 0, pool: "dtd", lighting: 0 }),
+      expect(m.augmentExport).toHaveBeenLastCalledWith("expB", { per_image: 3, max_objects: 2, seed: 0, pool: "dtd", lighting: 0, min_piece_px: 2000 }),
     );
 
     rerender(<AugmentPanel exportInfo={expA} onCreated={vi.fn()} />);
@@ -207,7 +225,7 @@ describe("AugmentPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "Make augmented copy" }));
     await waitFor(() =>
       expect(m.augmentExport).toHaveBeenCalledWith("20260924-040124-8336a8", {
-        per_image: 0, max_objects: 2, seed: 0, pool: "dtd", lighting: 2,
+        per_image: 0, max_objects: 2, seed: 0, pool: "dtd", lighting: 2, min_piece_px: 2000,
       }),
     );
   });
@@ -230,7 +248,7 @@ describe("AugmentPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "Make augmented copy" }));
     await waitFor(() =>
       expect(m.augmentExport).toHaveBeenCalledWith("20260924-040124-8336a8", {
-        per_image: 3, max_objects: 2, seed: 7, pool: "dtd", lighting: 0,
+        per_image: 3, max_objects: 2, seed: 7, pool: "dtd", lighting: 0, min_piece_px: 2000,
       }),
     );
   });
@@ -313,7 +331,8 @@ describe("AugmentPanel", () => {
       fireEvent.click(screen.getByRole("button", { name: "Make augmented copy" }));
       await waitFor(() =>
         expect(m.augmentExport).toHaveBeenLastCalledWith("20260924-040124-8336a8", {
-          per_image: 3, max_objects: 2, seed: 0, pool: "dtd", lighting: 0, max_train_images: 2000, time_limit_s: 600,
+          per_image: 3, max_objects: 2, seed: 0, pool: "dtd", lighting: 0, min_piece_px: 2000, max_train_images: 2000,
+          time_limit_s: 600,
         }),
       );
       fireEvent.change(screen.getByLabelText("At most training images"), { target: { value: "" } });

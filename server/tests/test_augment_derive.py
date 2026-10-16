@@ -1104,3 +1104,28 @@ def test_no_composite_worker_state_when_the_cap_leaves_no_composites(store, make
 
     run_augment(data_root, src["export_id"], AugmentOptions(per_image=1, lighting=2, seed=3), workers=1)
     assert len(calls) == 1
+
+
+def test_min_piece_px_reaches_the_composites_and_is_recorded(store, make_clip, tmp_path):
+    project, clip = _labelled(store, make_clip)
+    data_root = tmp_path / "data"
+    src = _export(store, project, clip, ["yolo_seg", "coco", "masks"], data_root)
+    _make_pool(data_root)
+    kept = run_augment(data_root, src["export_id"], AugmentOptions(per_image=2, seed=1, min_piece_px=100))
+    manifest = json.loads((Path(kept["path"]) / "export.json").read_text())
+    assert manifest["augment"]["min_piece_px"] == 100
+    assert kept["synthetic"] > 0
+    # bigger than any object can be on this small canvas: every composite comes out without objects
+    none = run_augment(data_root, src["export_id"], AugmentOptions(per_image=2, seed=1, min_piece_px=100_000))
+    assert none["synthetic"] == 0
+
+
+def test_min_piece_px_is_validated(store, make_clip, tmp_path):
+    project, clip = _labelled(store, make_clip)
+    data_root = tmp_path / "data"
+    src = _export(store, project, clip, ["yolo_seg", "coco", "masks"], data_root)
+    _make_pool(data_root)
+    with pytest.raises(BadRequest):
+        check_augment(data_root, src["export_id"], AugmentOptions(per_image=1, min_piece_px=-1))
+    with pytest.raises(BadRequest):
+        check_augment(data_root, src["export_id"], AugmentOptions(per_image=1, min_piece_px=100_001))
