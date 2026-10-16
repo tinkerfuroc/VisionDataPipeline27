@@ -149,3 +149,33 @@ def test_workers_exit_when_the_parent_is_killed(tmp_path):
         for p in workers:
             if _alive(p):
                 os.kill(p, signal.SIGKILL)
+
+
+def test_inline_deadline_already_passed_runs_nothing():
+    calls = []
+
+    def fn(x):
+        calls.append(x)
+        return x
+
+    assert run_units(fn, [1, 2, 3], workers=1, deadline=time.monotonic() - 1) == [None, None, None]
+    assert calls == []
+
+
+def test_pool_deadline_keeps_finished_units_and_drops_the_rest():
+    done = []
+    start = time.monotonic()
+    results = run_units(slow, list(range(200)), workers=2, on_done=done.append, deadline=start + 0.5)
+    assert time.monotonic() - start < 5  # 200 units x 0.05 s on 2 workers would take >= 5 s plus start-up
+    assert len(results) == 200
+    kept = [i for i, r in enumerate(results) if r is not None]
+    assert 0 < len(kept) < 200
+    assert all(results[i] == i for i in kept)
+    assert sum(done) == len(kept)
+    assert multiprocessing.active_children() == []
+
+
+def test_cancel_wins_over_the_deadline():
+    with pytest.raises(ExportCancelled):
+        run_units(slow, list(range(200)), workers=2, cancel=lambda: True, deadline=time.monotonic() - 1)
+    assert multiprocessing.active_children() == []
