@@ -47,9 +47,9 @@ def test_warm_writes_the_caches_a_training_run_then_loads_without_rescanning(tmp
 
     caches = warm_cache.warm(export_dir)
 
-    expected = {export_dir.resolve() / "yolo_seg" / "labels" / f"{split}.cache" for split in ("train", "val")}
+    expected = {export_dir.resolve() / fmt / "labels" / f"{split}.cache"
+                for fmt in ("yolo_seg", "yolo_det") for split in ("train", "val")}  # yolo_det: detection runs
     assert set(caches) == expected and all(c.is_file() for c in expected)
-    assert not list((export_dir / "yolo_det").rglob("*.cache"))  # training never reads yolo_det
     assert not list(export_dir.rglob("*.tmp"))
     for split in ("train", "val"):
         assert len(_training_dataset(export_dir, tmp_path, split, monkeypatch).labels) == {"train": 4, "val": 2}[split]

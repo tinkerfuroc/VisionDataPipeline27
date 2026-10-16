@@ -12,7 +12,7 @@ from .runs import atomic_write_json, read_json
 FILTERS = ("all", "missed", "worst")
 
 
-def load_gallery(run_dir: Path, labels_dir: Path) -> dict:
+def load_gallery(run_dir: Path, labels_dir: Path, *, boxes: bool = False) -> dict:
     preds_path = run_dir / "predictions.json"
     preds = read_json(preds_path)
     if preds is None:
@@ -24,7 +24,7 @@ def load_gallery(run_dir: Path, labels_dir: Path) -> dict:
     fresh: dict[str, float | None] = {}
     items = []
     for index, im in enumerate(sorted(preds["images"], key=lambda im: im["name"])):
-        gt = read_ground_truth(labels_dir / f"{Path(im['name']).stem}.txt")
+        gt = read_ground_truth(labels_dir / f"{Path(im['name']).stem}.txt", boxes=boxes)
         if cache is not None and im["name"] in cache:
             iou = cache[im["name"]]
         else:

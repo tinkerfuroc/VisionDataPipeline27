@@ -21,12 +21,12 @@ from collections.abc import Callable
 from pathlib import Path
 
 from ..jobs import JobFailed
+from .models import model_task
 from .runs import atomic_write_json, now_iso
 from .vram_probe import HEADROOM_BYTES, PREFIX, PROBE_INSTANCES
 
 log = logging.getLogger(__name__)
 
-TASK = "segment"  # every model in models.MODELS is a -seg model
 CACHE_NAME = "vram_estimates.json"
 LOG_NAME = "vram_probe.log"  # the last probe's output, next to the cache in data/train_weights
 PROBE_CMD = (sys.executable, "-m", "vdp.train.vram_probe")
@@ -98,7 +98,7 @@ def export_objects(yolo_dir: Path) -> int:
 
 
 def cache_key(model: str, imgsz: int, objects: int, gpu_name: str) -> str:
-    return f"{model}|{imgsz}|{TASK}|{objects}|{gpu_name}"
+    return f"{model}|{imgsz}|{model_task(model)}|{objects}|{gpu_name}"
 
 
 def _valid_entry(entry) -> bool:

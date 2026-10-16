@@ -28,7 +28,9 @@ import yaml
 
 log = logging.getLogger(__name__)
 
-FORMATS = (("yolo_seg", "segment"),)  # export format dir -> Ultralytics task (training only reads yolo_seg)
+# export format dir -> Ultralytics task: segmentation trains on yolo_seg, detection on yolo_det when the export has it
+# (else on yolo_seg, whose cache serves both: the cache holds boxes and polygons, and its hash ignores the task)
+FORMATS = (("yolo_seg", "segment"), ("yolo_det", "detect"))
 SPLITS = ("train", "val")
 NICE = 10
 LOG_NAME = "warm_cache.log"
@@ -74,7 +76,7 @@ def drop_unloadable_caches(yolo_dir: Path) -> list[Path]:
 
 
 def warm(export_dir: Path) -> list[Path]:
-    """Scan (or check) the export's yolo_seg train and val labels exactly as a training run would, leaving their
+    """Scan (or check) the export's yolo_seg (and yolo_det) train and val labels exactly as a training run would, leaving their
     `.cache` files behind (an unloadable one is deleted and rebuilt). Returns the cache files that exist afterwards."""
     os.environ.setdefault("NO_ALBUMENTATIONS_UPDATE", "1")  # never phone home for a version check
     from ultralytics.data import dataset as ul_dataset

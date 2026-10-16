@@ -24,8 +24,10 @@ from ..train.models import (
     check_model,
     find_export,
     list_exports,
+    model_task,
     rename_export,
     run_classes,
+    run_data_dir,
 )
 from ..train.results import SPEED, read_metrics, tail
 from ..train.runs import best_weights, onnx_weights, read_json
@@ -89,7 +91,9 @@ def _view(state, run: dict, *, detail: bool = False) -> dict:
         start_mode=run.get("start_mode"),
         continued_from_epoch=run.get("continued_from_epoch"),
         sampling=_sampling_view(run_dir, run.get("sampling")),
-        speed=read_json(run_dir / SPEED),  # the worker's last measured train/val images per second, if any
+        speed=read_json(run_dir / SPEED),
+        task=model_task(run["model"]),  # "segment" (masks) or "detect" (boxes)
+        data_format=run.get("data_format", "yolo_seg"),  # the export dataset it trains on  # the worker's last measured train/val images per second, if any
         # "Train from a previous run" eligibility, mirroring TrainScheduler.submit_from's own checks.
         continuable=resumable,
         finetunable=has_best,
@@ -185,7 +189,8 @@ def vram_estimate(body: VramEstimateBody, state: State) -> dict:
     if _sam3_loading_on(state, gpu.index):
         raise Conflict(f"SAM3 is loading on cuda:{gpu.index}; estimate VRAM once it has loaded "
                        "(the measurement would take the memory it is loading into)")
-    yolo_dir = find_export(state.settings.project.data_root, body.export_id).yolo_dir if body.export_id else None
+    yolo_dir = (find_export(state.settings.project.data_root, body.export_id).data_dir(model_task(body.model))
+                if body.export_id else None)  # the dataset the model would train on: its objects per image
     vram = state.vram
     objects = vram.objects_for(yolo_dir)
 
@@ -280,6 +285,7 @@ class FromCheckpointBody(BaseModel):
     gpu: int
     params: TrainParams | None = None
     pause_sam3: bool = False
+    model: str | None = None  # the source run's model, always; given, a model of the other task is refused (400)
 
 
 @router.post("/api/train/runs/{run_id}/from-checkpoint", status_code=201)
@@ -293,7 +299,7 @@ def start_from_checkpoint(run_id: str, body: FromCheckpointBody, state: State) -
     new_id = state.engine_ctl.start_training(
         body.pause_sam3, {body.gpu},
         lambda before_queue: state.train.submit_from(
-            run_id, export, body.mode, body.gpu, body.params, before_queue=before_queue,
+            run_id, export, body.mode, body.gpu, body.params, model=body.model, before_queue=before_queue,
         ),
     )
     return {"run_id": new_id}
@@ -372,8 +378,8 @@ def predictions(
     filter: Literal["all", "missed", "worst"] = Query("all"),
 ) -> dict:
     run = state.train.runs.read(run_id)
-    labels = Path(run["export_dir"]) / "yolo_seg" / "labels" / "val"
-    gallery = load_gallery(state.train.runs.dir(run_id), labels)
+    labels = run_data_dir(run) / "labels" / "val"
+    gallery = load_gallery(state.train.runs.dir(run_id), labels, boxes=model_task(run["model"]) == "detect")
     lists = {name: filter_items(gallery["items"], name) for name in FILTERS}
     chosen = lists[filter]
     return {"total": len(chosen), "conf": gallery["conf"], "counts": {k: len(v) for k, v in lists.items()},

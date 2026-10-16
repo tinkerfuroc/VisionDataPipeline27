@@ -59,3 +59,13 @@ def test_cache_written_and_rebuilt_when_predictions_change(tmp_path):
 def test_missing_predictions(tmp_path):
     with pytest.raises(NotFound):
         load_gallery(tmp_path, tmp_path)
+
+
+def test_detection_ground_truth_is_boxes_from_yolo_det_or_yolo_seg_lines(tmp_path):
+    from vdp.train.results import read_ground_truth
+
+    (tmp_path / "det.txt").write_text("1 0.5 0.5 0.2 0.4\n")
+    (tmp_path / "seg.txt").write_text("0 0.1 0.2 0.3 0.2 0.3 0.6\n")
+    assert read_ground_truth(tmp_path / "det.txt", boxes=True) == [
+        {"class_id": 1, "box": [0.4, 0.3, 0.6, 0.7], "polygons": [[0.4, 0.3, 0.6, 0.3, 0.6, 0.7, 0.4, 0.7]]}]
+    assert read_ground_truth(tmp_path / "seg.txt", boxes=True)[0]["box"] == [0.1, 0.2, 0.3, 0.6]

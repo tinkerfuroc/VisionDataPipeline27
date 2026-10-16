@@ -423,3 +423,29 @@ def test_sampled_epoch_params_and_the_runs_measured_speed(client, tmp_path):
     bad = client.post("/api/train/runs", json={"export_id": EXPORT_ID, "runs": [{"model": "yolo26s-seg", "gpu": 0}],
                                                "params": {**params, "batch": 4, "train_images_per_epoch": 2}})
     assert bad.status_code == 422
+
+
+def test_a_detection_run_reports_its_task_and_box_ground_truth(client, tmp_path):
+    make_export(tmp_path / "data", "20260201-000000-boxes", det=True)
+    r = client.post("/api/train/runs", json={"export_id": "20260201-000000-boxes",
+                                             "runs": [{"model": "yolo26n", "gpu": 1}], "params": {"epochs": 2}})
+    rid = r.json()["run_ids"][0]
+    view = until(client, rid, "done")
+    assert (view["task"], view["data_format"]) == ("detect", "yolo_det")
+    item = client.get(f"/api/train/runs/{rid}/predictions").json()["items"][0]
+    assert item["ground_truth"] == [{"class_id": 0, "box": [0.25, 0.25, 0.75, 0.75],
+                                     "polygons": [[0.25, 0.25, 0.75, 0.25, 0.75, 0.75, 0.25, 0.75]]}]
+    seg = until(client, start(client), "done")
+    assert (seg["task"], seg["data_format"]) == ("segment", "yolo_seg")
+    assert "yolo26n" in client.get("/api/train/status").json()["models"]
+
+
+def test_from_checkpoint_refuses_to_cross_boxes_and_masks(client):
+    rid = start(client, epochs=2, gpu=1)
+    until(client, rid, "done")
+    r = client.post(f"/api/train/runs/{rid}/from-checkpoint",
+                    json={"export_id": EXPORT_ID, "mode": "finetune", "gpu": 0, "model": "yolo26s"})
+    assert r.status_code == 400 and "a box model can't fine-tune a mask model's run" in r.text
+    r = client.post(f"/api/train/runs/{rid}/from-checkpoint",
+                    json={"export_id": EXPORT_ID, "mode": "finetune", "gpu": 0, "model": "yolo26s-seg"})
+    assert r.status_code == 201, r.text

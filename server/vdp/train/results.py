@@ -80,8 +80,15 @@ def run_summary(run_dir: Path) -> dict | None:
     return summary
 
 
-def read_ground_truth(label_path: Path) -> list[dict]:
-    """YOLO-seg label lines (one contour per line, as vdp exports them) as preview instances."""
+def _box(cls: int, x1: float, y1: float, x2: float, y2: float) -> dict:
+    x1, y1, x2, y2 = (round(v, 5) for v in (x1, y1, x2, y2))
+    return {"class_id": cls, "box": [x1, y1, x2, y2], "polygons": [[x1, y1, x2, y1, x2, y2, x1, y2]]}
+
+
+def read_ground_truth(label_path: Path, *, boxes: bool = False) -> list[dict]:
+    """YOLO-seg label lines (one contour per line, as vdp exports them) as preview instances. With `boxes` (a
+    detection run), every line as a box instance instead: a yolo_det line (class cx cy w h) or a contour's bounding
+    box, the same boxes Ultralytics trains a detection model on."""
     try:
         text = Path(label_path).read_text()
     except FileNotFoundError:
@@ -89,6 +96,14 @@ def read_ground_truth(label_path: Path) -> list[dict]:
     out = []
     for line in text.splitlines():
         parts = line.split()
+        if boxes and len(parts) == 5:
+            cx, cy, w, h = (float(v) for v in parts[1:])
+            out.append(_box(int(parts[0]), cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2))
+            continue
+        if boxes and len(parts) >= 7:
+            xs, ys = [float(v) for v in parts[1::2]], [float(v) for v in parts[2::2]]
+            out.append(_box(int(parts[0]), min(xs), min(ys), max(xs), max(ys)))
+            continue
         if len(parts) < 7:  # class + at least three points
             continue
         out.append(

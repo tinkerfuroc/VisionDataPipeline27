@@ -29,7 +29,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..labeling.errors import BadRequest, Conflict
-from .models import ExportInfo, TrainParams, check_model, run_classes
+from .models import ExportInfo, TrainParams, check_model, model_task, run_classes
 from .results import read_metrics, run_summary, tail
 from .runs import TERMINAL, RunStore, best_weights, last_weights, now_iso, read_json
 from .worker import CANCELLED_EXIT
@@ -351,7 +351,7 @@ class TrainScheduler:
 
     def submit_from(
         self, source_id: str, export: ExportInfo, mode: str, gpu: int, params: TrainParams | None = None, *,
-        before_queue: Callable[[], None] | None = None,
+        model: str | None = None, before_queue: Callable[[], None] | None = None,
     ) -> str:
         """A new run that starts from `source_id`'s checkpoint on `export` (which must carry the
         same classes, in the same order) instead of pretrained weights, queued like any `submit`
@@ -368,6 +368,15 @@ class TrainScheduler:
             raise BadRequest(f"GPU {gpu} does not exist")
         source = self.runs.read(source_id)
         source_dir = self.runs.dir(source_id)
+        if model is not None:  # the new run always trains the source's model; a box/mask checkpoint can't swap heads
+            check_model(model)
+            kind = {"detect": "box", "segment": "mask"}
+            if model_task(model) != model_task(source["model"]):
+                verb = "continue" if mode == "continue" else "fine-tune"
+                raise BadRequest(f"a {kind[model_task(model)]} model can't {verb} a "
+                                 f"{kind[model_task(source['model'])]} model's run")
+            if model != source["model"]:
+                raise BadRequest(f"Continue and Fine-tune train the source run's model, {source['model']}")
         if mode == "continue":
             if not self.resumable(source):
                 raise Conflict(f"run {source_id} cannot be continued (not stopped, or no last.pt)")

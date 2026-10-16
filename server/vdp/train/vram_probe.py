@@ -14,7 +14,8 @@ model's real segmentation loss under AMP autocast (fp16, as training uses), a Gr
 clipping, an AdamW step (the optimizer Ultralytics' "auto" picks for runs under 10k iterations; it keeps two state
 tensors per weight, more than SGD/MuSGD's one, so it is the conservative choice; its state is allocated before the
 first measurement) and an EMA update. The labels are synthetic (`--objects` per image) but shaped exactly as the trainer's collate function produces them (overlapping instance masks at
-1/mask_ratio resolution, semantic masks for YOLO26's semantic branch).
+1/mask_ratio resolution, semantic masks for YOLO26's semantic branch). A detection model (`model_task`) is built as
+a DetectionModel instead, and its detection loss reads only the boxes and classes of the same batch.
 
 Output goes to stdout as lines starting with PREFIX followed by JSON (Ultralytics' own logging is free-form text on
 the same streams): {"type": "start", gpu_name, total_bytes, limit_bytes}, one {"type": "batch", batch, bytes} per
@@ -123,25 +124,36 @@ def synthetic_batch(batch: int, imgsz: int, *, device, classes: int = PROBE_CLAS
     }
 
 
+def probe_model(model_yaml: dict, task: str, cfg):
+    """A fresh model of `task` from a checkpoint's yaml with PROBE_CLASSES classes and the trainer's hyper-parameters
+    attached, as the segment (or detect) trainer's `get_model` builds it."""
+    from ultralytics.nn.tasks import DetectionModel, SegmentationModel
+
+    cls = DetectionModel if task == "detect" else SegmentationModel
+    model = cls(model_yaml, nc=PROBE_CLASSES, ch=3, verbose=False)
+    model.args = cfg
+    model.nc = PROBE_CLASSES
+    return model
+
+
 def build_step(model_name: str, imgsz: int, objects: int = PROBE_INSTANCES) -> Callable[[int], int]:
-    """Load the model as the segment trainer does and return `step(batch) -> peak reserved bytes`."""
+    """Load the model as its trainer does and return `step(batch) -> peak reserved bytes`."""
     os.environ.setdefault("NO_ALBUMENTATIONS_UPDATE", "1")
     import torch
     from ultralytics import YOLO
     from ultralytics.cfg import get_cfg
-    from ultralytics.nn.tasks import SegmentationModel
     from ultralytics.utils.torch_utils import ModelEMA, autocast, init_seeds
+
+    from .models import model_task
 
     device = torch.device("cuda:0")
     cfg = get_cfg()  # the trainer's defaults: loss gains, overlap_mask, mask_ratio, epochs, deterministic
     # As the trainer starts: deterministic cuDNN/cuBLAS algorithms choose different workspaces than the default ones.
     init_seeds(cfg.seed + 1, deterministic=cfg.deterministic)
     pretrained = YOLO(f"{model_name}.pt").model  # downloaded into the cwd (data/train_weights) when missing
-    model = SegmentationModel(pretrained.yaml, nc=PROBE_CLASSES, ch=3, verbose=False)
+    model = probe_model(pretrained.yaml, model_task(model_name), cfg)
     model.load(pretrained, verbose=False)
     del pretrained
-    model.args = cfg
-    model.nc = PROBE_CLASSES
     # The trainer trains channels_last (NHWC) on CUDA; its convolutions use other algorithms and much less memory
     # than NCHW ones (about 1 GiB less for yolo26s-seg at batch 8, 960 px), so leaving this out overestimates.
     model.to(device).to(memory_format=torch.channels_last).train()

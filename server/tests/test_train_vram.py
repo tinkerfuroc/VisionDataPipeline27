@@ -235,3 +235,10 @@ def test_run_probe_kills_the_probe_when_asked_to_stop(tmp_path):
     out = run_probe("yolo26n-seg", 320, 0, 8, lambda b, n: seen.append(b), lambda: bool(seen),
                     cwd=tmp_path / "w", cmd=cmd, poll=0.05)
     assert out is None and seen == [1] and time.monotonic() - started < 10
+
+
+def test_the_cache_key_names_the_models_task():
+    from vdp.train.vram import cache_key
+
+    assert cache_key("yolo26s-seg", 960, 8, "GPU") == "yolo26s-seg|960|segment|8|GPU"  # as before: still cached
+    assert cache_key("yolo26s", 960, 8, "GPU") == "yolo26s|960|detect|8|GPU"

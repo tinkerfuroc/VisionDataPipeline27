@@ -123,3 +123,15 @@ def test_synthetic_batch_scales_to_many_objects():
     pytest.importorskip("torch")
     b = vram_probe.synthetic_batch(2, 640, device="cpu", classes=4, instances=300)
     assert b["cls"].shape == (600, 1) and b["masks"].max() == 300
+
+
+def test_a_detection_probe_model_takes_the_synthetic_batch_through_its_loss_on_cpu():
+    pytest.importorskip("ultralytics")
+    from ultralytics import YOLO
+    from ultralytics.cfg import get_cfg
+    from ultralytics.nn.tasks import DetectionModel, SegmentationModel
+
+    model = vram_probe.probe_model(YOLO("yolo26n.yaml").model.yaml, "detect", get_cfg())  # nothing to download
+    assert isinstance(model, DetectionModel) and not isinstance(model, SegmentationModel)
+    loss, _ = model.train()(vram_probe.synthetic_batch(2, 64, device="cpu"))
+    assert loss.sum().isfinite()

@@ -463,11 +463,11 @@ def main(argv: list[str] | None = None) -> int:
     pw_mode.add_argument("--stdin", action="store_true", help="read the password from one line of stdin")
     p_cert = sub.add_parser("cert", help="show the HTTPS certificate `vdp serve --https` uses")
     p_cert.add_argument("--regenerate", action="store_true", help="replace the self-signed certificate")
-    p_train = sub.add_parser("train", help="train YOLO segmentation models on a yolo_seg export")
+    p_train = sub.add_parser("train", help="train YOLO segmentation (-seg) or detection models on an export")
     p_train.add_argument("--list", action="store_true", help="list the exports that have a yolo_seg dataset")
     p_train.add_argument("--export", default=None, help="export id (a folder name under data/exports/)")
     p_train.add_argument("--model", action="append", default=None,
-                         help="model to train, repeatable (default: yolo26s/m-seg and yolo11s/m-seg)")
+                         help="model to train, repeatable: a -seg model (masks) or yolo26n/s/m/l/x (boxes; trains on the export's yolo_det when it has one) (default: yolo26s/m-seg and yolo11s/m-seg)")
     p_train.add_argument("--from-run", default=None,
                          help="run id to continue or fine-tune from on --export (needs --mode); "
                               "invalid with --model")
