@@ -17,3 +17,4 @@ sam3:
   score_mode: native    # "per_query" drops the presence multiplier for verbose prompts
 propagate: {chunk_size: 24, min_chunk_size: 4, lost_after: 15}
 export:    {val_fraction: 0.2, min_area_px: 64}
+augment:   {workers: null}   # processes for augmentation; null = CPU count - 4 (min 1), 1 = no pool

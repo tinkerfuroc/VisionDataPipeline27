@@ -65,3 +65,10 @@ def test_repo_default_yaml_is_valid():
     repo_root = Path(__file__).resolve().parents[2]
     s = Settings.load(repo_root / "configs" / "default.yaml")
     assert s.sam3.score_mode == "native"
+
+
+def test_augment_workers_setting():
+    assert Settings.load(None).augment.workers is None
+    assert Settings.model_validate({"augment": {"workers": 2}}).augment.workers == 2
+    with pytest.raises(ValidationError):
+        Settings.model_validate({"augment": {"workers": 0}})

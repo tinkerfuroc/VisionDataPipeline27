@@ -323,6 +323,7 @@ def _merged_format_summaries(
 def run_augment(
     data_root: Path, export_id: str, opts: AugmentOptions,
     progress: Callable[[int, int], None] | None = None, cancel: Callable[[], bool] | None = None,
+    workers: int | None = None,  # accepted for the process pool; not used yet
 ) -> dict:
     data_root = Path(data_root)
     manifest = check_augment(data_root, export_id, opts)
