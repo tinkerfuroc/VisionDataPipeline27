@@ -6,6 +6,10 @@ export type PromptType = "text" | "clicks" | "box" | "paint";
 export type Point = [number, number, 0 | 1];
 /** [x1, y1, x2, y2] in image pixels */
 export type Box = [number, number, number, number];
+/** [x0, y0, x1, y1] in image pixels, half-open */
+export type Rect = [number, number, number, number];
+/** frames start..end (inclusive) share a crop (keep only this) and blocked boxes (exclude these) */
+export type RegionRange = { start: number; end: number; crop: Rect | null; blocks: Rect[] };
 export type PromptSpec = { type: PromptType; phrase?: string; points?: Point[]; box?: Box };
 
 export type Keyframe = {
@@ -34,6 +38,8 @@ export type Clip = {
   objects: LabelObject[];
   /** the next object id the server hands out (ids are never reused); absent or 0 in older clip files */
   next_object_id?: number;
+  /** absent in older clip files */
+  regions?: RegionRange[];
 };
 export type ClipSummary = Clip & { labeled_frames: number };
 export type FrameState = "empty" | "masked" | "keyframe" | "deleted";
