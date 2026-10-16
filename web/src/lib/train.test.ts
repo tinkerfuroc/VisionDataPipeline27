@@ -71,6 +71,11 @@ describe("train helpers", () => {
     expect(startProblem({ available: true, error: null, exportId: null, picked: 1 })).toBe("Choose an export to train on.");
     expect(startProblem({ available: true, error: null, exportId: "e", picked: 0 })).toBe("Tick at least one model.");
     expect(startProblem({ available: true, error: null, exportId: "e", picked: 2 })).toBeNull();
+    const params = { epochs: 100, imgsz: 960, batch: 8, patience: 30, workers: 8, seed: 0 };
+    expect(startProblem({ available: true, error: null, exportId: "e", picked: 1, params: { ...params, train_images_per_epoch: 7 } }))
+      .toBe("Images per epoch must be at least the batch size.");
+    expect(startProblem({ available: true, error: null, exportId: "e", picked: 1, params: { ...params, train_images_per_epoch: 8 } }))
+      .toBeNull();
   });
 
   it("checkpointSources keeps only continuable-or-finetunable runs, in their given order", () => {
@@ -214,6 +219,11 @@ describe("sampled epochs", () => {
       "Per-epoch validation uses a fixed 400 of 1,643 val images; the final metrics are on all 1,643.",
     );
     expect(valSubsetNote(sampled)).toBe("val subset of 400");
+    const grown = run("e", { sampling: { ...sampled.sampling!, val_images_per_epoch: 10, val_images_chosen: 13 } });
+    expect(samplingNote(grown)).toContain(
+      "Per-epoch validation uses a fixed 13 of 1,643 val images (10 asked, more to cover every class); the final metrics are on all 1,643.",
+    );
+    expect(valSubsetNote(grown)).toBe("val subset of 13");
     const valOnly = run("c", { sampling: { train_images: 28000, train_images_per_epoch: null, val_images: 1643, val_images_per_epoch: 400 } });
     expect(samplingNote(valOnly)).toBe("Per-epoch validation uses a fixed 400 of 1,643 val images; the final metrics are on all 1,643.");
     const trainOnly = run("d", { sampling: { train_images: 28000, train_images_per_epoch: 7000, val_images: 1643, val_images_per_epoch: null, warmup_epochs: 12, close_mosaic: 40 } });

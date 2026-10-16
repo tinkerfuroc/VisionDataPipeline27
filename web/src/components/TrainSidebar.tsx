@@ -7,7 +7,7 @@ import type {
 import { exportLabel } from "../lib/exportName";
 import {
   checkpointSources, classesCompatible, continueModeLabel, defaultGpu, defaultMode, epochEstimate, finetuneModeLabel,
-  gpuOptionLabel, measuredSpeed, modeDisabledReason, sendableParams, sourceRunLabel, startProblem, statusText,
+  gpuOptionLabel, measuredSpeed, modeDisabledReason, paramsProblem, sendableParams, sourceRunLabel, startProblem, statusText,
 } from "../lib/train";
 import { AugmentPanel } from "./AugmentPanel";
 import { VramEstimatePanel } from "./VramEstimate";
@@ -261,7 +261,7 @@ export function TrainSidebar({
   const chosen = status.models.filter((m) => picks[m]?.checked);
   const onSam3 = status.sam3_gpu !== null && chosen.some((m) => gpuOf(m) === status.sam3_gpu);
   const checkpointOnSam3 = status.sam3_gpu !== null && (batchGpu ?? 0) === status.sam3_gpu;
-  const problem = startProblem({ available: status.available, error: status.error, exportId, picked: chosen.length });
+  const problem = startProblem({ available: status.available, error: status.error, exportId, picked: chosen.length, params });
   const byId = new Map(runs.map((r) => [r.id, r]));
 
   // Continue keeps the source's own params, so they are shown but disabled; Fine-tune (or the
@@ -273,7 +273,7 @@ export function TrainSidebar({
     !status.available ? (status.error ?? "Training is not available on this server.")
       : exportId === null ? "Choose an export to train on."
         : exportMismatch ? "This export's classes do not match the source run's classes."
-          : null;
+          : mode === "finetune" ? paramsProblem(params) : null;
   const effectiveProblem = sourceRun !== null ? fromCheckpointProblem : problem;
   // "Estimate VRAM" is for one model: the source run's, or one of the picked ones (the first unless chosen).
   const estimateModel = sourceRun !== null ? sourceRun.model

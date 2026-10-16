@@ -235,6 +235,9 @@ export type EpochPlan = {
    * train size). */
   warmup_epochs?: number;
   close_mosaic?: number;
+  /** How many images the worker put in the val subset (more than asked only to cover every class); null until it
+   * has, absent without a val subset or on an older server. */
+  val_images_chosen?: number | null;
 };
 /** What the worker last measured: images per second while training an epoch, and while validating. */
 export type RunSpeed = { train_images_per_s?: number; val_images_per_s?: number; batch?: number; imgsz?: number };

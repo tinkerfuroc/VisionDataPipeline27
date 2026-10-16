@@ -1,4 +1,4 @@
-import type { ExportInfo, GpuQueue, MetricRow, Run, RunBest, RunSpeed, StartMode, TrainParams, TrainStatus } from "../api/types";
+import type { EpochPlan, ExportInfo, GpuQueue, MetricRow, Run, RunBest, RunSpeed, StartMode, TrainParams, TrainStatus } from "../api/types";
 import { exportLabel } from "./exportName";
 import type { Pt } from "./chart";
 
@@ -73,11 +73,19 @@ export function statusText(run: Run): string {
 
 export const runLabel = (run: Pick<Run, "id" | "model">) => `${run.model} · ${run.id.slice(-4)}`;
 
-export function startProblem(o: { available: boolean; error: string | null; exportId: string | null; picked: number }): string | null {
+export function startProblem(o: {
+  available: boolean; error: string | null; exportId: string | null; picked: number; params?: TrainParams;
+}): string | null {
   if (!o.available) return o.error ?? "Training is not available on this server.";
   if (o.exportId === null) return "Choose an export to train on.";
   if (o.picked === 0) return "Tick at least one model.";
-  return null;
+  return o.params !== undefined ? paramsProblem(o.params) : null;
+}
+
+/** The server's own check on the params, so Start is off (with the same message) instead of answering a 422. */
+export function paramsProblem(params: TrainParams): string | null {
+  const n = params.train_images_per_epoch;
+  return n != null && n < params.batch ? "Images per epoch must be at least the batch size." : null;
 }
 
 /** Runs offered as a "Start from" source in the New-runs form: any run that can be continued or
@@ -207,16 +215,20 @@ export function samplingNote(run: Run): string | null {
   }
   if (s.val_images_per_epoch != null) {
     parts.push(
-      `Per-epoch validation uses a fixed ${count(s.val_images_per_epoch)} of ${count(s.val_images)} val images; ` +
+      `Per-epoch validation uses a fixed ${count(subsetSize(s))} of ${count(s.val_images)} val images` +
+      `${subsetSize(s) > s.val_images_per_epoch ? ` (${count(s.val_images_per_epoch)} asked, more to cover every class)` : ""}; ` +
       `the final metrics are on all ${count(s.val_images)}.`,
     );
   }
   return parts.join(" ");
 }
 
+/** The val subset's actual size once the worker has chosen it (more than asked only to cover every class). */
+const subsetSize = (s: EpochPlan): number => s.val_images_chosen ?? s.val_images_per_epoch ?? s.val_images;
+
 /** "val subset of 400" for a run validated per epoch on a subset (its per-epoch charts), else null. */
 export const valSubsetNote = (run: Run): string | null =>
-  run.sampling?.val_images_per_epoch != null ? `val subset of ${count(run.sampling.val_images_per_epoch)}` : null;
+  run.sampling?.val_images_per_epoch != null ? `val subset of ${count(subsetSize(run.sampling))}` : null;
 
 /** "Final, best.pt (epoch 12) on all 252 val images: mask mAP50-95 0.712 · …" for a run whose reported metrics come
  * from the final evaluation on the whole val split (validated per epoch on a subset); null otherwise. */

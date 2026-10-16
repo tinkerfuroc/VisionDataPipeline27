@@ -366,6 +366,15 @@ describe("TrainSidebar images per epoch", () => {
     expect(onStart.mock.calls[2][0].params).not.toHaveProperty("train_images_per_epoch");
   });
 
+  it("keeps Start off while images per epoch is below the batch size", () => {
+    renderForm();
+    fireEvent.change(screen.getByLabelText("Images per epoch"), { target: { value: "4" } }); // batch 8
+    expect(screen.getByText("Images per epoch must be at least the batch size.")).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Start 1 run" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText("Images per epoch"), { target: { value: "8" } });
+    expect((screen.getByRole("button", { name: "Start 1 run" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
   it("shows the epoch estimate, with minutes from a run measured on the same model, image size and GPU", () => {
     const measured = run({
       model: "yolo11s-seg", gpu: 0, status: "done", speed: { train_images_per_s: 65, val_images_per_s: 80 },
