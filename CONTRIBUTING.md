@@ -32,6 +32,7 @@ export flow, walk through the relevant items of [docs/manual-qa.md](docs/manual-
 ## Conventions
 
 - Python: ruff, line length 110, Python 3.11.
+- Augmentation workers are spawned processes that re-import the main module, so a script that calls `run_augment` must sit under `if __name__ == "__main__":`.
 - Keep the README a short front page; reference material belongs in `docs/`.
 - Commit messages: an imperative summary line naming the area (e.g. `Train page: ...`, `Export: ...`), with the
   reasoning in the body when it is not obvious.

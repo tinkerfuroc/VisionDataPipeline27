@@ -231,6 +231,8 @@ class SynthResult(NamedTuple):
     linked: bool  # every format's image was hard-linked (not copied)
 
 
+# Per-process state; relies on augment jobs being exclusive (api/augment.py starts them with exclusive=EXCLUSIVE),
+# so two in-process runs never overlap.
 _worker: dict = {}  # a composite worker's state, set by _init_composite_worker
 
 
@@ -432,7 +434,8 @@ def _merge_coco(
     lighting_annotations = 0
     for stem, new_stem in lighting:
         im = by_stem[stem]
-        images.append({**im, "id": next_image_id, "file_name": str(Path(im["file_name"]).with_name(f"{new_stem}.jpg"))})
+        file_name = str(Path(im["file_name"]).with_name(f"{new_stem}.jpg"))
+        images.append({**im, "id": next_image_id, "file_name": file_name})
         for ann in anns_by_image.get(im["id"], []):
             annotations.append({**ann, "id": next_ann_id, "image_id": next_image_id})
             next_ann_id += 1
@@ -446,7 +449,8 @@ def _merge_coco(
             next_ann_id += 1
         next_image_id += 1
 
-    (out / annotations_dir / "instances_train.json").write_text(json.dumps({**src_train, "images": images, "annotations": annotations}))
+    train_json = {**src_train, "images": images, "annotations": annotations}
+    (out / annotations_dir / "instances_train.json").write_text(json.dumps(train_json))
     val_name = annotations_dir / "instances_val.json"
     shutil.copy2(source_dir / val_name, out / val_name)
     return lighting_annotations
