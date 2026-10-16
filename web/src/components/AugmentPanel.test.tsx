@@ -284,4 +284,99 @@ describe("AugmentPanel", () => {
     await screen.findByText("DTD textures · 5,640 images");
     expect(screen.queryByText(/has no COCO format/)).toBeNull();
   });
+
+  describe("limits", () => {
+    const ready = async () => {
+      m.listBackgrounds.mockResolvedValue([pool({ images: 5640 })]);
+      m.augmentExport.mockResolvedValue({ job_id: "aug1" });
+      render(<AugmentPanel exportInfo={exp()} onCreated={vi.fn()} />);
+      await screen.findByText("DTD textures · 5,640 images");
+    };
+    const limits = (over: Record<string, unknown>) => ({
+      max_train_images: null, time_limit_s: null, requested: { composites: 2394, lighting: 0 },
+      planned: { composites: 2394, lighting: 0 }, produced: { composites: 2394, lighting: 0 }, stopped_by: null, ...over,
+    });
+
+    it("omits both limit keys by default", async () => {
+      await ready();
+      fireEvent.click(screen.getByRole("button", { name: "Make augmented copy" }));
+      await waitFor(() => expect(m.augmentExport).toHaveBeenCalled());
+      const body = m.augmentExport.mock.calls[0][1];
+      expect("max_train_images" in body).toBe(false);
+      expect("time_limit_s" in body).toBe(false);
+    });
+
+    it("sends the image cap and the time limit in seconds, and omits a cleared one", async () => {
+      await ready();
+      fireEvent.change(screen.getByLabelText("At most training images"), { target: { value: "2000" } });
+      fireEvent.change(screen.getByLabelText("Stop after minutes"), { target: { value: "10" } });
+      fireEvent.click(screen.getByRole("button", { name: "Make augmented copy" }));
+      await waitFor(() =>
+        expect(m.augmentExport).toHaveBeenLastCalledWith("20260924-040124-8336a8", {
+          per_image: 3, max_objects: 2, seed: 0, pool: "dtd", lighting: 0, max_train_images: 2000, time_limit_s: 600,
+        }),
+      );
+      fireEvent.change(screen.getByLabelText("At most training images"), { target: { value: "" } });
+      fireEvent.change(screen.getByLabelText("Stop after minutes"), { target: { value: "" } });
+      fireEvent.click(screen.getByRole("button", { name: "Make augmented copy" }));
+      await waitFor(() => expect(m.augmentExport).toHaveBeenCalledTimes(2));
+      const body = m.augmentExport.mock.calls[1][1];
+      expect("max_train_images" in body).toBe(false);
+      expect("time_limit_s" in body).toBe(false);
+    });
+
+    it("shows the server's 400 about the cap in the error spot", async () => {
+      await ready();
+      m.augmentExport.mockRejectedValue(
+        new Error("this export already has 798 training frames; set a limit above that, or leave it empty"),
+      );
+      fireEvent.change(screen.getByLabelText("At most training images"), { target: { value: "500" } });
+      fireEvent.click(screen.getByRole("button", { name: "Make augmented copy" }));
+      expect((await screen.findByRole("alert")).textContent).toContain("this export already has 798 training frames");
+    });
+
+    it("reports a time-limited run", async () => {
+      await ready();
+      jobs.aug1 = {
+        ...idle, status: "done",
+        result: {
+          export_id: "new",
+          limits: limits({
+            time_limit_s: 600, stopped_by: "time",
+            planned: { composites: 2394, lighting: 1596 }, produced: { composites: 1200, lighting: 800 },
+          }),
+        },
+      };
+      fireEvent.click(screen.getByRole("button", { name: "Make augmented copy" }));
+      expect(
+        await screen.findByText(
+          "Stopped at the 10-minute limit: 1,200 composites and 800 lighting copies (of 2,394 and 1,596 asked for).",
+        ),
+      ).toBeTruthy();
+    });
+
+    it("reports an image-capped run", async () => {
+      await ready();
+      jobs.aug1 = {
+        ...idle, status: "done",
+        result: {
+          export_id: "new",
+          limits: limits({
+            max_train_images: 2000, stopped_by: "images",
+            produced: { composites: 800, lighting: 402 },
+          }),
+        },
+      };
+      fireEvent.click(screen.getByRole("button", { name: "Make augmented copy" }));
+      expect(await screen.findByText("Capped at 2,000 training images: 800 composites and 402 lighting copies.")).toBeTruthy();
+    });
+
+    it("shows no limit line when nothing stopped the run", async () => {
+      await ready();
+      jobs.aug1 = { ...idle, status: "done", result: { export_id: "new", limits: limits({}) } };
+      fireEvent.click(screen.getByRole("button", { name: "Make augmented copy" }));
+      await waitFor(() => expect(m.augmentExport).toHaveBeenCalled());
+      expect(screen.queryByText(/Stopped at the|Capped at/)).toBeNull();
+    });
+  });
 });

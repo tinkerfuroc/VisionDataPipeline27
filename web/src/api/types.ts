@@ -189,7 +189,16 @@ export type ExportInfo = {
 };
 export type BackgroundPool = { name: string; label: string; images: number; size_bytes: number; fetching: string | null };
 export type ExportSample = { name: string; width: number; height: number; ground_truth: Instance[] };
-export type AugmentRequest = { per_image: number; max_objects: number; seed: number; pool: string; lighting: number };
+export type AugmentRequest = {
+  per_image: number; max_objects: number; seed: number; pool: string; lighting: number;
+  max_train_images?: number; time_limit_s?: number;
+};
+export type AugmentCounts = { composites: number; lighting: number };
+export type AugmentLimits = {
+  max_train_images: number | null; time_limit_s: number | null;
+  requested: AugmentCounts; planned: AugmentCounts; produced: AugmentCounts;
+  stopped_by: "images" | "time" | null;
+};
 export type RunStatus = "queued" | "running" | "done" | "error" | "cancelled" | "interrupted";
 export type RunBest = {
   epoch: number;

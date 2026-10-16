@@ -19,6 +19,27 @@ empty list, a repeated id or an unknown class id is a 400. It returns 400 for an
 format, no clips, a bad option) and 409 (with the running `job_id`) while a propagation job runs, since
 propagation rewrites the very masks an export reads.
 
+## Augmented copies
+
+`POST /api/exports/{id}/augment` starts an augment job; body `{per_image, max_objects, seed, pool, lighting}` plus the
+optional limits `max_train_images` (integer ≥ 1, a cap on the whole train split: real + composite + lighting) and
+`time_limit_s` (10 to 86 400 seconds, measured from the job start) → `202 {job_id}`. Leaving a limit out (or `null`)
+means no limit. It returns 400 for an invalid request, including a `max_train_images` at or below the export's
+train frame count: "this export already has N training frames; set a limit above that, or leave it empty". When
+both limits are set, whichever is reached first ends the run. At the time limit queued work is dropped and running
+work finishes; cancelling still ends the job as cancelled.
+
+The finished export's `export.json` has `augment.limits`, and the job result carries the same object as `limits`:
+
+    {"max_train_images": 2000 | null, "time_limit_s": 600 | null,
+     "requested": {"composites": 2394, "lighting": 1596},
+     "planned":   {"composites": 800,  "lighting": 402},     # after the image cap
+     "produced":  {"composites": 800,  "lighting": 402},     # after the time limit
+     "stopped_by": "images" | "time" | null}
+
+`stopped_by` is `"time"` when the deadline cut the run short, otherwise `"images"` when the cap reduced the plan,
+otherwise `null`.
+
 ## Several objects per clip
 
 A clip can hold more than one labelled object (`clip.objects`, each with its own `id`, `class_id`, keyframes and
