@@ -7,10 +7,10 @@ import re
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
 
 from ..export.naming import clean_name
 from ..labeling.errors import BadRequest
@@ -51,24 +51,27 @@ STRONG_AUG = AugParams(degrees=15, shear=5, perspective=0.0005, flipud=0.5, scal
 AUG_PRESETS = {"default": AugParams(), "strong": STRONG_AUG}
 
 
+def _multiple_of_32(v: int) -> int:
+    if v % 32:
+        raise ValueError("imgsz must be a multiple of 32")
+    return v
+
+
+# A training image size; also what POST /api/train/vram-estimate accepts.
+Imgsz = Annotated[int, Field(ge=320, le=1920), AfterValidator(_multiple_of_32)]
+
+
 class TrainParams(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     epochs: int = Field(default=100, ge=1, le=1000)
-    imgsz: int = Field(default=960, ge=320, le=1920)
+    imgsz: Imgsz = 960
     batch: int = Field(default=8, ge=1, le=64)
     patience: int = Field(default=30, ge=0, le=1000)
     workers: int = Field(default=8, ge=0, le=16)
     seed: int = Field(default=0, ge=0)
     augment: Literal["default", "strong", "custom"] = "default"
     aug: AugParams | None = None
-
-    @field_validator("imgsz")
-    @classmethod
-    def _multiple_of_32(cls, v: int) -> int:
-        if v % 32:
-            raise ValueError("imgsz must be a multiple of 32")
-        return v
 
     @model_validator(mode="after")
     def _custom_needs_values(self) -> TrainParams:

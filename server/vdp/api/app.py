@@ -20,6 +20,7 @@ from ..jobs import JobBusy, JobManager, JobNotFound
 from ..labeling.errors import BadRequest, Conflict, PropagationFailed
 from ..store import NotFound, ProjectStore, StoreError
 from ..train.scheduler import TrainScheduler, detect_gpus
+from ..train.vram import VramEstimator
 from ..train.warm_cache import LabelCacheWarmer
 from . import augment as augment_api
 from . import clips, export, jobs, labeling, projects
@@ -33,8 +34,9 @@ log = logging.getLogger(__name__)
 
 # Job kinds that shutdown waits for once cancelled: they stop within a work unit and then delete their
 # half-written export, which a daemon job thread killed at interpreter exit would leave behind (and an augment
-# job's pool would first drain every queued unit in concurrent.futures' exit hook).
-SHUTDOWN_JOIN_KINDS = frozenset({augment_api.AUGMENT, "export"})
+# job's pool would first drain every queued unit in concurrent.futures' exit hook). A VRAM estimate kills its probe
+# subprocess when cancelled, which would otherwise run on (in its own session) after the server exits.
+SHUTDOWN_JOIN_KINDS = frozenset({augment_api.AUGMENT, "export", train_api.VRAM_ESTIMATE})
 SHUTDOWN_JOIN_S = 30.0
 
 _STATUS = [  # most specific first
@@ -56,7 +58,7 @@ def _build_engine(settings: Settings):
 
 def create_app(
     settings: Settings, *, engine=None, load_engine: bool = True, train=None, auth_store: AuthStore | None = None,
-    warmer=None,
+    warmer=None, vram=None,
 ) -> FastAPI:
     state = AppState(
         settings=settings,
@@ -68,6 +70,7 @@ def create_app(
         warmer=warmer if warmer is not None else LabelCacheWarmer(
             enabled=settings.train.warm_label_cache, available=lambda: train_api.ultralytics_error() is None,
         ),
+        vram=vram if vram is not None else VramEstimator(settings.project.data_root),
     )
     state.engine_ctl = engine_api.EngineControl(state.engine, state.jobs, state.train)
     state.train.on_gpu_idle = state.engine_ctl.gpu_idle  # reloads SAM3 after a training pause

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import threading
 from importlib.util import find_spec
 from pathlib import Path
 from typing import Literal
@@ -11,13 +12,17 @@ from fastapi import APIRouter, Query, Response
 from fastapi.responses import FileResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 
+from ..jobs import Job
+from ..labeling.errors import BadRequest, Conflict
 from ..store import NotFound
 from ..train.gallery import FILTERS, filter_items, load_gallery
 from ..train.models import (
     AUG_PRESETS,
     DEFAULT_MODELS,
     MODELS,
+    Imgsz,
     TrainParams,
+    check_model,
     find_export,
     list_exports,
     rename_export,
@@ -33,10 +38,12 @@ from ..train.scheduler import (
     gpu_max_clock_ghz,
     rank_gpus,
 )
+from ..train.vram_probe import BATCHES
 from .deps import State
 from .engine import sam3_gpu
 
 router = APIRouter(tags=["train"])
+VRAM_ESTIMATE = "vram_estimate"  # job kind, and the exclusive key that keeps probes one at a time
 _IMAGE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*\.(jpg|jpeg|png)$")
 _WEIGHT_FILES = {"best.pt": best_weights, "best.onnx": onnx_weights}
 _PRIVATE = ("pid", "owner_pid", "export_dir")
@@ -122,6 +129,70 @@ def train_status(state: State) -> dict:
         "defaults": TrainParams().model_dump(),
         "aug_presets": {k: v.model_dump() for k, v in AUG_PRESETS.items()},
     }
+
+
+class VramEstimateBody(BaseModel):
+    model: str
+    imgsz: Imgsz
+    gpu: int
+    remeasure: bool = False
+
+
+def _training_conflict(gpu: int) -> Conflict:
+    return Conflict(
+        f"a training run is queued or running on cuda:{gpu}; estimate VRAM once it is done "
+        "(measuring now would be wrong and could make the run run out of memory)"
+    )
+
+
+@router.post("/api/train/vram-estimate", status_code=202)
+def vram_estimate(body: VramEstimateBody, state: State) -> dict:
+    """Start a job (kind "vram_estimate") estimating VRAM per batch size for a model, image size and GPU. Always a
+    job, also for a cached answer (it then finishes at once without running the probe), so clients handle one
+    shape; `remeasure` skips the cache. Refused while the GPU has a training run queued or running."""
+    error = ultralytics_error()
+    if error is not None:
+        raise TrainUnavailable(error)
+    check_model(body.model)
+    gpu = next((g for g in state.train.gpus if g.index == body.gpu), None)
+    if gpu is None:
+        raise BadRequest(f"GPU {body.gpu} is not available")
+    if gpu.index in state.train.busy_gpus():
+        raise _training_conflict(gpu.index)
+    vram = state.vram
+    entry = None if body.remeasure else vram.cached(body.model, body.imgsz, gpu.name)
+
+    def free_bytes() -> int | None:
+        return gpu_free_memory([gpu]).get(gpu.index)
+
+    if entry is not None:
+        cached = entry
+        return {"job_id": state.jobs.start(VRAM_ESTIMATE, lambda job: vram.view(
+            cached, body.model, body.imgsz, gpu, free_bytes=free_bytes(), cached=True)).id}
+
+    def work(job: Job) -> dict:
+        done = 0
+        training = threading.Event()
+
+        def on_batch(batch: int, _bytes: int | None) -> None:
+            nonlocal done
+            done += 1
+            job.emit({"type": "progress", "done": done, "total": len(BATCHES), "batch": batch})
+
+        def should_stop() -> bool:
+            if not state.train.gpu_idle(gpu.index):  # a run was queued meanwhile: get out of its way
+                training.set()
+            return training.is_set() or job.cancel_requested()
+
+        measured = vram.measure(body.model, body.imgsz, gpu, on_batch=on_batch, should_stop=should_stop)
+        if training.is_set():
+            raise Conflict(f"a training run was queued on cuda:{gpu.index}, so the VRAM measurement was stopped "
+                           "to leave it the memory; estimate again once the run is done")
+        if measured is None:
+            return {"cancelled": True}
+        return vram.view(measured, body.model, body.imgsz, gpu, free_bytes=free_bytes(), cached=False)
+
+    return {"job_id": state.jobs.start(VRAM_ESTIMATE, work, exclusive=VRAM_ESTIMATE).id}
 
 
 @router.get("/api/exports")

@@ -25,6 +25,7 @@ class AppState:
     uploads: Any = None  # a ResumableStore
     engine_ctl: Any = None  # an engine.EngineControl: background loading and the training pause
     warmer: Any = None  # a train.warm_cache.LabelCacheWarmer: warms a finished export's label cache
+    vram: Any = None  # a train.vram.VramEstimator: VRAM per batch size, measured and cached
 
 
 def get_state(request: Request) -> AppState:
