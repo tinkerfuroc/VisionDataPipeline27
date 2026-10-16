@@ -133,3 +133,27 @@ export function startModeHeaderNote(run: Run): string | null {
   if (note === null) return null;
   return run.start_mode === "continue" ? `${note} at epoch ${run.continued_from_epoch ?? "?"}` : note;
 }
+
+export type VramFit = "fits" | "tight" | "no";
+
+/** An estimate against free memory: "tight" within 10 % of it; a null estimate did not fit when measured. Null when
+ * free memory is unknown. */
+export function vramFit(bytes: number | null, free: number | null): VramFit | null {
+  if (free === null) return null;
+  if (bytes === null || bytes > free) return "no";
+  return bytes > free * 0.9 ? "tight" : "fits";
+}
+
+export const vramLabel = (bytes: number | null): string =>
+  bytes === null ? "—" : `about ${(bytes / 2 ** 30).toFixed(1)} GiB`;
+
+/** Why "Estimate VRAM" is disabled for `gpu`, mirroring the server's 409: anything queued or running there. */
+export function vramBusyReason(status: Pick<TrainStatus, "gpus">, runs: Run[], gpu: number): string | null {
+  const g = status.gpus.find((gg) => gg.index === gpu);
+  if (g === undefined) return null;
+  const why = "; estimate VRAM once it is idle (measuring now would be wrong and could make the run run out of memory).";
+  if (g.running !== null) return `cuda:${gpu} is ${g.running_kind === "onnx" ? "exporting ONNX" : "training"}${why}`;
+  if (g.queue.length > 0) return `cuda:${gpu} has a run queued${why}`;
+  if (runs.some((r) => r.status === "running" && r.gpu === gpu)) return `cuda:${gpu} is training${why}`;
+  return null;
+}

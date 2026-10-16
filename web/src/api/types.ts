@@ -274,6 +274,13 @@ export type StartRunsRequest = {
   export_id: string; runs: { model: string; gpu: number }[]; params: TrainParams; pause_sam3?: boolean;
 };
 export type StartMode = "continue" | "finetune";
+export type VramEstimateRequest = { model: string; imgsz: number; gpu: number; remeasure?: boolean };
+/** A "vram_estimate" job's result: estimated VRAM per batch size (calibration margin included); null = did not fit
+ * when measured. `free_bytes` is the GPU's free memory when the answer was given. */
+export type VramEstimate = {
+  model: string; imgsz: number; gpu: number; gpu_name: string; total_bytes: number; free_bytes: number | null;
+  estimates: { batch: number; bytes: number | null }[]; measured_at: string; cached: boolean;
+};
 export type FromCheckpointRequest = {
   export_id: string; mode: StartMode; gpu: number; params?: TrainParams; pause_sam3?: boolean;
 };

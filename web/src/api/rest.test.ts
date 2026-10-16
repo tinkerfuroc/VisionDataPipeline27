@@ -118,6 +118,14 @@ describe("api", () => {
     expect(fetchMock.mock.calls[1][1].method).toBe("DELETE");
   });
 
+  it("posts a VRAM estimate request", async () => {
+    const fetchMock = mockFetch(jsonResponse({ job_id: "v1" }, 202));
+    expect(await api.vramEstimate({ model: "yolo26s-seg", imgsz: 960, gpu: 1, remeasure: true })).toEqual({ job_id: "v1" });
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/train/vram-estimate");
+    expect(fetchMock.mock.calls[0][1].method).toBe("POST");
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ model: "yolo26s-seg", imgsz: 960, gpu: 1, remeasure: true });
+  });
+
   it("sets a class's colour", async () => {
     const fetchMock = mockFetch(jsonResponse({ id: 5, name: "connector", color: "#abcdef" }));
     expect(await api.setClassColor("p1", 5, "#abcdef")).toEqual({ id: 5, name: "connector", color: "#abcdef" });

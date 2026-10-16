@@ -1,6 +1,6 @@
 import { isLoginRequired, toLogin } from "./auth";
 import type {
-  AcceptResult, AugmentRequest, BackgroundPool, Candidate, ClassDef, ClipDetail, ClipSummary, Direction, ExportInfo, ExportRequest, ExportSample, FromCheckpointRequest, Health, JobSnapshot, MaskResult, ObjectSelection, PredictionFilter, PredictionPage, Project, PromptSpec, RegionRange, Run, RunDetail, StartRunsRequest, TrainStatus, UploadInfo, WriteTarget,
+  AcceptResult, AugmentRequest, BackgroundPool, Candidate, ClassDef, ClipDetail, ClipSummary, Direction, ExportInfo, ExportRequest, ExportSample, FromCheckpointRequest, Health, JobSnapshot, MaskResult, ObjectSelection, PredictionFilter, PredictionPage, Project, PromptSpec, RegionRange, Run, RunDetail, StartRunsRequest, TrainStatus, UploadInfo, VramEstimateRequest, WriteTarget,
 } from "./types";
 
 /** The `job_id` the server reports while a prompt/accept/clear-range call holds the GPU lease. */
@@ -261,6 +261,8 @@ export const api = {
   trainFromCheckpoint: (runId: string, body: FromCheckpointRequest) =>
     request<{ run_id: string }>(`/api/train/runs/${runId}/from-checkpoint`, post(body)),
   cancelRun: (id: string) => request<Run>(`/api/train/runs/${id}/cancel`, post()),
+  /** a "vram_estimate" job (finishes at once for a cached answer); 409 while that GPU trains or another estimate runs */
+  vramEstimate: (body: VramEstimateRequest) => request<{ job_id: string }>("/api/train/vram-estimate", post(body)),
   resumeRun: (id: string, gpu?: number, pauseSam3 = false) =>
     request<Run>(`/api/train/runs/${id}/resume`, post(requeueBody(gpu, pauseSam3))),
   completeRun: (id: string, gpu?: number, pauseSam3 = false) =>

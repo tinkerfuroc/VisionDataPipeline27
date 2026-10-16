@@ -1,8 +1,20 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { api } from "../api/rest";
 import type { AugParams, ExportInfo, Run, TrainStatus } from "../api/types";
+import type { JobHandle } from "../hooks/useJob";
+import { useJob } from "../hooks/useJob";
 import { TrainSidebar } from "./TrainSidebar";
+
+vi.mock("../api/rest", async (original) => {
+  const real = await original<typeof import("../api/rest")>();
+  return { ...real, api: { ...real.api, vramEstimate: vi.fn() } };
+});
+vi.mock("../hooks/useJob", async (original) => {
+  const real = await original<typeof import("../hooks/useJob")>();
+  return { ...real, useJob: vi.fn(real.useJob) };
+});
 
 afterEach(cleanup);
 
@@ -287,5 +299,28 @@ describe("TrainSidebar Pause SAM3 checkbox", () => {
     fireEvent.click(within(section).getByRole("button", { name: "Resume on cuda:0" }));
     await Promise.resolve();
     expect(onResume).toHaveBeenCalledWith(stopped.id, 0, true);
+  });
+});
+
+describe("TrainSidebar VRAM estimate", () => {
+  const idle: JobHandle = {
+    status: "idle", nextSeq: 0, done: 0, total: null, lastFrame: null, logs: [], result: null, error: null, transport: "ws",
+  };
+  const estimate = {
+    model: "yolo11s-seg", imgsz: 960, gpu: 0, gpu_name: "NVIDIA GeForce RTX 3080 Ti", total_bytes: 12 * 2 ** 30,
+    free_bytes: 9 * 2 ** 30, measured_at: "", cached: false,
+    estimates: [{ batch: 1, bytes: 2 ** 30 }, { batch: 2, bytes: 2 * 2 ** 30 }, { batch: 4, bytes: 4 * 2 ** 30 },
+      { batch: 8, bytes: 7 * 2 ** 30 }, { batch: 12, bytes: null }],
+  };
+
+  it("estimates for the picked model on its GPU, and a row click sets the batch field", async () => {
+    vi.mocked(api.vramEstimate).mockResolvedValue({ job_id: "v1" });
+    vi.mocked(useJob).mockImplementation((id) => (id === "v1" ? { ...idle, status: "done", result: estimate } : idle));
+    renderSidebar(null);
+    fireEvent.change(screen.getByLabelText("GPU"), { target: { value: "1" } });
+    fireEvent.click(screen.getByRole("button", { name: "Estimate VRAM" }));
+    await waitFor(() => expect(api.vramEstimate).toHaveBeenCalledWith({ model: "yolo11s-seg", imgsz: 960, gpu: 1 }));
+    fireEvent.click(await screen.findByRole("row", { name: /^Use batch 4\b/ }));
+    expect((screen.getByLabelText("Batch") as HTMLInputElement).value).toBe("4");
   });
 });

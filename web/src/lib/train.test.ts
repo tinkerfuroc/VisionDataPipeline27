@@ -3,7 +3,7 @@ import type { ExportInfo, GpuQueue, Run, TrainStatus } from "../api/types";
 import {
   bestRunIds, checkpointSources, classesCompatible, continueModeLabel, defaultGpu, defaultMode, finetuneModeLabel,
   formatDuration, gpuOptionLabel, metricSeries, modeDisabledReason, polygonPoints, sourceRunLabel, startModeHeaderNote,
-  startModeNote, startProblem, statusText,
+  startModeNote, startProblem, statusText, vramBusyReason, vramFit, vramLabel,
 } from "./train";
 
 const gpu = (over: Partial<GpuQueue> = {}): GpuQueue => ({
@@ -136,5 +136,30 @@ describe("train helpers", () => {
     const fine = run("b", { source_run: "20260927-072200-yolo26s-seg-a1b2", start_mode: "finetune" });
     expect(startModeNote(fine)).toBe("fine-tuned from 20260927-0722…");
     expect(startModeHeaderNote(fine)).toBe("fine-tuned from 20260927-0722…");
+  });
+});
+
+describe("VRAM estimate helpers", () => {
+  const G = 2 ** 30;
+  it("vramFit compares an estimate with free memory, tight within 10 %", () => {
+    expect(vramFit(5 * G, 9 * G)).toBe("fits");
+    expect(vramFit(8.5 * G, 9 * G)).toBe("tight");
+    expect(vramFit(9 * G, 9 * G)).toBe("tight");
+    expect(vramFit(9.5 * G, 9 * G)).toBe("no");
+    expect(vramFit(null, 9 * G)).toBe("no"); // did not fit when measured
+    expect(vramFit(5 * G, null)).toBeNull(); // free memory unknown
+  });
+  it("vramLabel", () => {
+    expect(vramLabel(7.84 * G)).toBe("about 7.8 GiB");
+    expect(vramLabel(null)).toBe("—");
+  });
+  it("vramBusyReason names a GPU that is training, queued, exporting or busy in another process", () => {
+    const st = { gpus: [gpu(), gpu({ index: 1, running: "r1", running_kind: "train" }), gpu({ index: 2, queue: ["q"] }),
+      gpu({ index: 3, running: "r2", running_kind: "onnx" })] };
+    expect(vramBusyReason(st, [], 0)).toBeNull();
+    expect(vramBusyReason(st, [], 1)).toMatch(/^cuda:1 is training/);
+    expect(vramBusyReason(st, [], 2)).toMatch(/^cuda:2 has a run queued/);
+    expect(vramBusyReason(st, [], 3)).toMatch(/^cuda:3 is exporting/);
+    expect(vramBusyReason(st, [run("x", { status: "running", gpu: 0 })], 0)).toMatch(/^cuda:0 is training/);
   });
 });

@@ -10,6 +10,7 @@ import {
   gpuOptionLabel, modeDisabledReason, sourceRunLabel, startProblem, statusText,
 } from "../lib/train";
 import { AugmentPanel } from "./AugmentPanel";
+import { VramEstimatePanel } from "./VramEstimate";
 
 type ModelPick = { checked: boolean; gpu: number };
 const PARAM_FIELDS: { key: "epochs" | "imgsz" | "batch" | "patience"; label: string; min: number; max: number; step: number }[] = [
@@ -207,6 +208,7 @@ export function TrainSidebar({
   const [draftName, setDraftName] = useState("");
   const [renaming, setRenaming] = useState(false);
   const [renameError, setRenameError] = useState<string | null>(null);
+  const [vramModel, setVramModel] = useState<string | null>(null);
   const newRunsRef = useRef<HTMLElement>(null);
 
   const selectedExport = exports.find((e) => e.id === exportId) ?? null;
@@ -268,6 +270,10 @@ export function TrainSidebar({
         : exportMismatch ? "This export's classes do not match the source run's classes."
           : null;
   const effectiveProblem = sourceRun !== null ? fromCheckpointProblem : problem;
+  // "Estimate VRAM" is for one model: the source run's, or one of the picked ones (the first unless chosen).
+  const estimateModel = sourceRun !== null ? sourceRun.model
+    : vramModel !== null && chosen.includes(vramModel) ? vramModel : (chosen[0] ?? null);
+  const estimateGpu = sourceRun !== null || estimateModel === null ? (batchGpu ?? 0) : gpuOf(estimateModel);
 
   const start = async () => {
     if (effectiveProblem !== null || starting || exportId === null) return;
@@ -427,12 +433,28 @@ export function TrainSidebar({
         )}
         {paramsLocked && <p className="note">Continue keeps the run's own settings.</p>}
         {PARAM_FIELDS.map((f) => (
-          <label key={f.key} className="flex items-center justify-between gap-2 text-sm text-dim">
-            {f.label}
-            <input aria-label={f.label} type="number" className="field w-24" min={f.min} max={f.max} step={f.step}
-              disabled={paramsLocked}
-              value={displayParams[f.key]} onChange={(e) => setParams({ ...params, [f.key]: Number(e.target.value) || f.min })} />
-          </label>
+          <div key={f.key} className="flex flex-col gap-1.5">
+            <label className="flex items-center justify-between gap-2 text-sm text-dim">
+              {f.label}
+              <input aria-label={f.label} type="number" className="field w-24" min={f.min} max={f.max} step={f.step}
+                disabled={paramsLocked}
+                value={displayParams[f.key]} onChange={(e) => setParams({ ...params, [f.key]: Number(e.target.value) || f.min })} />
+            </label>
+            {f.key === "batch" && sourceRun === null && chosen.length > 1 && (
+              <label className="flex items-center justify-between gap-2 text-sm text-dim">
+                Estimate VRAM for
+                <select aria-label="Estimate VRAM for" className="field py-0.5" value={estimateModel ?? ""}
+                  onChange={(e) => setVramModel(e.target.value)}>
+                  {chosen.map((m) => <option key={m} value={m}>{m}</option>)}
+                </select>
+              </label>
+            )}
+            {f.key === "batch" && (
+              <VramEstimatePanel status={status} runs={runs} model={estimateModel} imgsz={displayParams.imgsz}
+                gpu={estimateGpu}
+                onPickBatch={paramsLocked ? undefined : (batch) => setParams((p) => (p === null ? p : { ...p, batch }))} />
+            )}
+          </div>
         ))}
         <label className="flex flex-col gap-1 text-sm text-dim">
           Augmentation
