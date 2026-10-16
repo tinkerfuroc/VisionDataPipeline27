@@ -53,7 +53,9 @@ STALE_SLACK_BYTES = 2**29
 # factor covers that plus run-to-run variation (object counts, allocator fragmentation over a long run); the
 # fixed part covers what a process holds outside PyTorch's allocator, which neither GPU_mem nor the probe counts
 # but the GPU's free memory does: the CUDA context and libraries, measured at 0.25 GiB (NVML per-process usage
-# minus reserved memory) on the 2080 Ti, rounded up for other GPUs and drivers. Validation (batch x 2, no gradients,
+# minus reserved memory) on the 2080 Ti, rounded up for other GPUs and drivers. Rechecked after objects per image
+# came from the export: for those runs' export (at most 4 objects per image, so 16 after MOSAIC_FACTOR and bucketing)
+# the probe reads 7.06 GiB at batch 8, ~2% above the worst logged GPU_mem, so the margin errs on the safe side. Validation (batch x 2, no gradients,
 # after Ultralytics empties the cache) peaks lower than training at these settings -- those runs' GPU_mem after
 # validation epochs stayed within the first epoch's range -- so the margin needs no allowance for it.
 MARGIN_FACTOR = 1.10

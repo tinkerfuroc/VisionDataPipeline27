@@ -41,23 +41,36 @@ propagation rewrites the very masks an export reads.
 
 ## VRAM estimate
 
-`POST /api/train/vram-estimate` body `{model, imgsz, gpu, remeasure}` (`remeasure` optional, default `false`) → `202
-{job_id}`, a job of kind `vram_estimate` whose result is `{model, imgsz, gpu, gpu_name, total_bytes, free_bytes,
-estimates: [{batch, bytes}], measured_at, cached}` for batch 1, 2, 4, 8 and 12. `bytes` is the estimated VRAM a run
-takes at that batch (calibration margin included); `null` means that batch ran out of memory when it was measured
-(and so did every larger one). `free_bytes` is the GPU's free memory read when the answer is given (NVML; `null` when
-unknown). While it measures, the job emits `{type: "progress", done, total, batch}` per batch size.
+`POST /api/train/vram-estimate` body `{model, imgsz, gpu, export_id, remeasure}` (`export_id` optional, `remeasure`
+optional, default `false`) → `202 {job_id}`, a job of kind `vram_estimate` whose result is `{model, imgsz, gpu,
+gpu_name, total_bytes, free_bytes, estimates: [{batch, bytes, over_bytes}], measured_at, cached, objects_per_image,
+objects_from_export}` for batch 1, 2, 4, 8 and 12. `bytes` is the estimated VRAM a run takes at that batch
+(calibration margin included). The probe may only use the GPU's free memory at its start minus 1 GiB (left for
+SAM3 and other processes); `bytes: null` means that batch needed more than that (and so did every larger one), and
+`over_bytes` is that limit with the margin: the batch needs more than `over_bytes`, which says nothing about whether
+it fits in more memory than that. `free_bytes` is the GPU's free memory read when the answer is given (NVML; `null`
+when unknown). While it measures, the job emits `{type: "progress", done, total, batch}` per batch size.
 
-Answers are cached per model, image size and GPU name in `data/train_weights/vram_estimates.json`. The endpoint is
-always a job: a cached answer's job finishes at once (`cached: true`) without measuring, unless `remeasure` is
-true. A measurement runs `python -m vdp.train.vram_probe` at low priority on that GPU (output in
-`data/train_weights/vram_probe.log`) and takes about half a minute plus any checkpoint download; only one runs at a
-time (409 with its `job_id` otherwise). Cancelling the job kills the probe.
+The probe's synthetic labels carry `objects_per_image` objects per image: with `export_id`, the most objects in any
+one of that export's train images times 3 (mosaic tiles four images into one), rounded up to a power of two, at least
+8 and at most 300 (`objects_from_export: true`); without it, 8.
 
-It returns 400 for an unknown model or GPU, 422 for an image size outside 320-1920 or not a multiple of 32, 503 when
-Ultralytics is not installed (as the other train endpoints), and 409 while that GPU has a training run queued or
-running (the measurement would be wrong and could make the run run out of memory). If a run is queued on the GPU
-while it measures, the probe is stopped and the job ends with an error; nothing is cached.
+Answers are cached per model, image size, objects per image and GPU name in
+`data/train_weights/vram_estimates.json` (an entry from another probe version, or a malformed one, is ignored). The
+endpoint is always a job: a cached answer's job finishes at once (`cached: true`) without measuring, unless
+`remeasure` is true, or the answer has batches that did not fit and the GPU now has clearly more free memory than the
+probe had (then it is measured again). A measurement runs `python -m vdp.train.vram_probe` at low priority on that
+GPU (output in `data/train_weights/vram_probe.log`) and takes about half a minute plus any checkpoint download; only
+one runs at a time (409 with its `job_id` otherwise). Cancelling the job, or stopping the server, kills the probe.
+
+It returns 400 for an unknown model or GPU, 404 for an unknown export, 422 for an image size outside 320-1920 or not a
+multiple of 32, 503 when Ultralytics is not installed (as the other train endpoints), and 409 while that GPU has a
+training run or an ONNX export queued or running (the measurement would be wrong and could make the run run out of
+memory) or while SAM3 is loading onto it. A probe never overlaps a run: before the scheduler starts anything on a GPU
+it stops a probe there and waits for its process to exit, and a probe also stops when a `vdp train` process starts
+training on its GPU or SAM3 starts loading onto it; the job then ends with an error and nothing is cached.
+`GET /api/train/status` reports `sam3_loaded` (false while SAM3 is paused or loading), so a client knows whether
+pausing it would free `sam3_vram_bytes` now.
 
 ## Augmented copies
 

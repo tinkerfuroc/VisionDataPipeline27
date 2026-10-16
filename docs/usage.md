@@ -185,12 +185,16 @@ or with "Pause SAM3 while training" ticked if SAM3 shares that GPU.
 
 "Estimate VRAM", under the Batch field, measures how much GPU memory the chosen model (the first picked one, or
 pick it in "Estimate VRAM for") takes at the current image size on the chosen GPU, for batch 1, 2, 4, 8 and 12: a
-short background process runs one real training step per batch size on random images. Each batch is shown as "about
-X GiB" and marked fits, tight (within 10 % of the GPU's free memory now) or doesn't fit, plus a "With SAM3 paused"
-column when SAM3 shares that GPU; click a row to use that batch. The numbers include a margin for what a whole run
-holds beyond one step (calibrated against this machine's past runs: about 10 % plus 0.4 GiB). Answers are remembered
-per model, image size and GPU model in `data/train_weights/vram_estimates.json`, so asking again is instant;
-"Re-measure" measures anew. The button is off while that GPU is training.
+short background process runs one real training step per batch size on random images, with as many objects per
+image as the selected export's busiest training image can produce after mosaic (8 when no export is selected). It
+never takes the last 1 GiB of free memory, so SAM3 keeps room to work. Each batch is shown as "about X GiB" and
+marked fits, tight (within 10 % of the GPU's free memory now) or doesn't fit; a batch that did not fit in the memory
+the measurement had shows "unknown — re-measure" once more is free. A "With SAM3 paused" column appears when SAM3 is
+loaded on that GPU; click a row to use that batch. The numbers include a margin for what a whole run holds beyond
+one step (calibrated against this machine's past runs: about 10 % plus 0.4 GiB). Answers are remembered per model,
+image size, objects per image and GPU model in `data/train_weights/vram_estimates.json`, so asking again is
+instant; "Re-measure" measures anew. The button is off while that GPU is training or exporting, and a run that
+starts on the GPU stops a measurement first.
 
 The server keeps one queue per GPU: one run at a time per GPU, GPUs in parallel. GPUs are ranked fastest first by
 estimated compute throughput — SM count × cores per SM (from compute capability) × max SM clock (from NVML), not a
