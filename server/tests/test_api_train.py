@@ -92,7 +92,8 @@ def test_status_and_exports(client):
     exports = client.get("/api/exports").json()
     assert exports == [{"id": EXPORT_ID, "project_name": "Bench", "created_at": "2026-01-01T00:00:00+00:00",
                         "classes": ["Module"], "train_images": 2, "val_images": 2,
-                        "formats": ["yolo_seg"], "derived_from": None, "name": None}]
+                        "formats": ["yolo_seg"], "derived_from": None, "name": None,
+                        "augment_limits": None}]
 
 
 def test_status_orders_gpus_best_first_regardless_of_index(tmp_path):

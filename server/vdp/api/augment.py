@@ -10,7 +10,7 @@ from PIL import Image
 from pydantic import BaseModel, Field
 
 from ..augment.backgrounds import POOLS, FetchCancelled, fetch_pool, list_images, pool_dir
-from ..augment.derive import MAX_LIGHTING, AugmentOptions, check_augment, run_augment
+from ..augment.derive import MAX_LIGHTING, MAX_TRAIN_IMAGES, AugmentOptions, check_augment, run_augment
 from ..export import ExportCancelled
 from ..jobs import Job
 from ..train.models import find_export
@@ -33,7 +33,7 @@ class AugmentBody(BaseModel):
     seed: int = Field(default=0, ge=0)
     pool: str = "dtd"
     lighting: int = Field(default=0, ge=0, le=MAX_LIGHTING)
-    max_train_images: int | None = Field(default=None, ge=1)
+    max_train_images: int | None = Field(default=None, ge=1, le=MAX_TRAIN_IMAGES)
     time_limit_s: int | None = Field(default=None, ge=10, le=86400)
 
 

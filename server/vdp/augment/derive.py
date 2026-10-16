@@ -58,6 +58,7 @@ from .limits import GenerationPlan, plan_generation
 from .parallel import run_units
 
 MAX_LIGHTING = 3
+MAX_TRAIN_IMAGES = 10_000_000  # upper bound on `max_train_images` (keeps the export id and name short)
 UNIT_STEMS = 64  # mask files per cutout work unit
 UNIT_COMPOSITES = 16  # composites per work unit
 UNIT_LIGHTING = 16  # source frames per lighting work unit
@@ -91,7 +92,7 @@ def _derived_name(
     if time_limit_s is not None:
         suffix += f" ≤{math.ceil(time_limit_s / 60)} min"
     base = source_name
-    max_base = MAX_NAME - len(suffix)
+    max_base = max(0, MAX_NAME - len(suffix))
     if len(base) > max_base:
         base = base[:max_base].rstrip()
     return f"{base}{suffix}"
@@ -122,6 +123,8 @@ def check_augment(data_root: Path, export_id: str, opts: AugmentOptions) -> dict
         raise BadRequest("time_limit_s must be between 10 and 86400")
     manifest = json.loads((info.dir / "export.json").read_text())
     real = manifest["counts"]["train"]["images"]
+    if opts.max_train_images is not None and opts.max_train_images > MAX_TRAIN_IMAGES:
+        raise BadRequest(f"max_train_images must be at most {MAX_TRAIN_IMAGES}")
     if opts.max_train_images is not None and opts.max_train_images <= real:
         raise BadRequest(
             f"this export already has {real} training frames; set a limit above that, or leave it empty"
@@ -595,10 +598,11 @@ def run_augment(
             cutouts, sizes, cutout_mode = _cutouts_and_sizes(
                 source_dir, formats, min_area_px, tick, workers, cancel or (lambda: False),
             )
-            pack_cutouts(cutouts, work)  # for the composite workers to memory-map
+            if gen.composites:  # an image limit can leave none: then no worker needs the cutouts or backgrounds
+                pack_cutouts(cutouts, work)  # for the composite workers to memory-map
+                composite_initargs = (work, list_images(data_root, opts.pool), sizes, asdict(opts), formats,
+                                      min_area_px, palette_for(classes), out)
             del cutouts
-            composite_initargs = (work, list_images(data_root, opts.pool), sizes, asdict(opts), formats,
-                                  min_area_px, palette_for(classes), out)
 
         train_stems = sorted(p.stem for p in (source_dir / "masks" / "masks" / "train").glob("*.png"))
         units = _generation_units(gen, train_stems)

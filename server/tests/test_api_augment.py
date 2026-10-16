@@ -194,7 +194,15 @@ def test_augment_limits_are_validated_and_accepted(client, store, make_clip, tmp
     assert r.status_code == 400 and "already has" in r.json()["detail"]
     assert client.post(url, json={"per_image": 1, "time_limit_s": 5}).status_code == 422
     assert client.post(url, json={"per_image": 1, "max_train_images": 0}).status_code == 422
+    assert client.post(url, json={"per_image": 1, "max_train_images": 10_000_001}).status_code == 422
 
     ok = client.post(url, json={"per_image": 1, "max_train_images": real + 2, "time_limit_s": 60})
     assert ok.status_code == 202, ok.text
-    wait_job(client, ok.json()["job_id"])
+    snap = wait_job(client, ok.json()["job_id"])
+    assert snap["status"] == "done", snap
+
+    # the export list carries the derived copy's limits block, so the web can say how the copy was cut
+    listed = {e["id"]: e for e in client.get("/api/exports").json()}
+    assert listed[snap["result"]["export_id"]]["augment_limits"] == snap["result"]["limits"]
+    assert listed[snap["result"]["export_id"]]["augment_limits"]["stopped_by"] == "images"
+    assert listed[src["export_id"]]["augment_limits"] is None

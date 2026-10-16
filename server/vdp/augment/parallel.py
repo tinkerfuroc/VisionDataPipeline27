@@ -57,7 +57,8 @@ def run_units(
     running ones and raises ExportCancelled. A unit's exception propagates once the pool is shut down. Pool
     workers exit if this process dies, and run niced with one OpenCV thread (see `_init_worker`).
     `deadline` (a time.monotonic() value) is a soft stop: once reached, queued units are dropped, running ones
-    finish and are kept, and the result has None for every dropped unit; no exception. Cancel wins over it."""
+    finish and are kept, and the result has None for every dropped unit; no exception. Cancel wins over it.
+    A deadline already passed runs nothing (and starts no pool)."""
     n = min(workers or default_workers(), len(units))
     if n <= 1:
         if initializer:
@@ -72,6 +73,10 @@ def run_units(
             results.append(fn(unit))
             on_done(weight(unit))
         return results
+    if cancel():  # before the deadline check below: cancel wins over it, as in the inline loop
+        raise ExportCancelled()
+    if deadline is not None and time.monotonic() >= deadline:  # the inline loop above checks before each unit
+        return [None] * len(units)
     # spawn, not fork: the server runs jobs in threads and may hold a CUDA context
     pool = ProcessPoolExecutor(
         max_workers=n, mp_context=multiprocessing.get_context("spawn"), initializer=_init_worker,

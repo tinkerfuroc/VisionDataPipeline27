@@ -22,9 +22,9 @@ propagation rewrites the very masks an export reads.
 ## Augmented copies
 
 `POST /api/exports/{id}/augment` starts an augment job; body `{per_image, max_objects, seed, pool, lighting}` plus the
-optional limits `max_train_images` (integer ≥ 1, a cap on the whole train split: real + composite + lighting) and
+optional limits `max_train_images` (integer 1 to 10 000 000, a cap on the whole train split: real + composite + lighting) and
 `time_limit_s` (10 to 86 400 seconds, measured from the job start) → `202 {job_id}`. Leaving a limit out (or `null`)
-means no limit. A `time_limit_s` outside 10 to 86 400 or a `max_train_images` below 1 is a 422 (schema bounds). A
+means no limit. A `time_limit_s` outside 10 to 86 400 or a `max_train_images` outside 1 to 10 000 000 is a 422 (schema bounds). A
 `max_train_images` at or below the export's train frame count is a 400: "this export already has N training frames; set a limit above that, or leave it empty". When
 both limits are set, whichever is reached first ends the run. At the time limit queued work is dropped and running
 work finishes; cancelling still ends the job as cancelled.
@@ -33,12 +33,13 @@ The finished export's `export.json` has `augment.limits`, and the job result car
 
     {"max_train_images": 2000 | null, "time_limit_s": 600 | null,
      "requested": {"composites": 2394, "lighting": 1596},
-     "planned":   {"composites": 800,  "lighting": 402},     # after the image cap
-     "produced":  {"composites": 800,  "lighting": 402},     # after the time limit
+     "planned":   {"composites": 721,  "lighting": 481},     # after the image cap
+     "produced":  {"composites": 721,  "lighting": 481},     # after the time limit
      "stopped_by": "images" | "time" | null}
 
 `stopped_by` is `"time"` when the deadline cut the run short, otherwise `"images"` when the cap reduced the plan,
-otherwise `null`.
+otherwise `null`. `GET /api/exports` gives each export's block as `augment_limits` (`null` for an ordinary export),
+so a client can say how a derived copy was cut long after its job is gone.
 
 ## Several objects per clip
 

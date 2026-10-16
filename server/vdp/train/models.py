@@ -89,6 +89,7 @@ class ExportInfo:
     formats: tuple[str, ...] = ()
     derived_from: str | None = None
     name: str | None = None
+    augment_limits: dict | None = None  # a derived copy's `augment.limits` (what was asked for, made, and why it stopped)
 
     @property
     def yolo_dir(self) -> Path:
@@ -99,6 +100,7 @@ class ExportInfo:
             "id": self.id, "project_name": self.project_name, "created_at": self.created_at,
             "classes": list(self.classes), "train_images": self.train_images, "val_images": self.val_images,
             "formats": list(self.formats), "derived_from": self.derived_from, "name": self.name,
+            "augment_limits": self.augment_limits,
         }
 
 
@@ -125,6 +127,7 @@ def find_export(data_root: Path, export_id: str) -> ExportInfo:
         created_at=manifest.get("created_at", ""), classes=classes,
         train_images=int(fmt["images"]["train"]), val_images=int(fmt["images"]["val"]),
         formats=formats, derived_from=manifest.get("derived_from"), name=manifest.get("name"),
+        augment_limits=(manifest.get("augment") or {}).get("limits"),
     )
 
 

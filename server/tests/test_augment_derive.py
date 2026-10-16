@@ -242,6 +242,9 @@ def test_list_exports_reports_formats_and_derived_from(store, make_clip, tmp_pat
     assert by_id[src["export_id"]].formats == ("yolo_seg", "masks")
     derived = by_id[result["export_id"]]
     assert derived.derived_from == src["export_id"] and "masks" in derived.formats
+    assert by_id[src["export_id"]].augment_limits is None
+    assert derived.augment_limits == result["limits"]
+    assert derived.to_json()["augment_limits"] == result["limits"]
 
 
 def test_multi_object_labels_are_copied_verbatim_not_relabelled(store, make_clip, tmp_path):
@@ -982,7 +985,8 @@ def test_a_time_cut_keeps_a_mix_of_composites_and_lighting(store, make_clip, tmp
     src = _export(store, project, clip, ["yolo_seg", "coco", "masks"], data_root)
     _make_pool(data_root)
     real = src["counts"]["train"]["images"]  # 8: four composite units and four lighting units, alternating
-    _fake_clocks(monkeypatch, derive_calls=1, pool_calls=4)  # the inline runner checks the clock per unit
+    # assumes the inline runner reads parallel.time.monotonic() exactly once per unit (before running it)
+    _fake_clocks(monkeypatch, derive_calls=1, pool_calls=4)
     result = run_augment(data_root, src["export_id"],
                          AugmentOptions(per_image=1, seed=4, lighting=1, time_limit_s=60), workers=1)
 
@@ -1030,7 +1034,7 @@ def test_a_generous_time_limit_changes_only_the_name_and_id(store, make_clip, tm
 
 
 def test_the_derived_name_with_limits_stays_within_max_name():
-    from vdp.augment.derive import _derived_name
+    from vdp.augment.derive import MAX_TRAIN_IMAGES, _derived_name
     from vdp.export.naming import MAX_NAME
 
     assert _derived_name("src", 2, 1, max_train_images=2000, time_limit_s=601) == \
@@ -1038,3 +1042,50 @@ def test_the_derived_name_with_limits_stays_within_max_name():
     assert _derived_name("src", 0, 1, time_limit_s=600) == "src +1 lighting ≤10 min"
     long = _derived_name("x" * 200, 3, 2, max_train_images=12345, time_limit_s=86400)
     assert len(long) <= MAX_NAME and long.endswith(" ×3 augmented +2 lighting ≤12345 images ≤1440 min")
+    widest = _derived_name("x" * 200, 10, 3, max_train_images=MAX_TRAIN_IMAGES, time_limit_s=86400)
+    assert len(widest) == MAX_NAME and widest.startswith("x")  # the largest allowed limits still fit
+    # past the bounds (direct callers skipping check_augment) the base is dropped, never sliced from its end
+    assert _derived_name("src", 3, 2, max_train_images=10**60).startswith(" ×3 augmented")
+
+
+def test_check_augment_bounds_the_image_limit(store, make_clip, tmp_path):
+    project, clip = _labelled(store, make_clip)
+    data_root = tmp_path / "data"
+    src = _export(store, project, clip, ["yolo_seg", "masks"], data_root)
+    _make_pool(data_root)
+    with pytest.raises(BadRequest, match="max_train_images must be at most 10000000"):
+        check_augment(data_root, src["export_id"], AugmentOptions(per_image=1, max_train_images=10_000_001))
+    check_augment(data_root, src["export_id"], AugmentOptions(per_image=1, max_train_images=10_000_000))
+
+
+def test_interleave_mixes_in_proportion_and_keeps_each_order():
+    from vdp.augment.derive import _interleave
+
+    assert _interleave(["a1", "a2", "a3"], ["b1", "b2"]) == ["a1", "b1", "a2", "b2", "a3"]
+    assert _interleave([1, 2], [10, 20, 30, 40]) == [10, 1, 20, 30, 2, 40]
+    assert _interleave([1, 2, 3], []) == [1, 2, 3]
+    assert _interleave([], ["x", "y"]) == ["x", "y"]
+    assert _interleave([], []) == []
+
+
+def test_no_composite_worker_state_when_the_cap_leaves_no_composites(store, make_clip, tmp_path, monkeypatch):
+    from vdp.augment import derive
+
+    calls = []
+    real_init = derive._init_composite_worker
+    monkeypatch.setattr(derive, "_init_composite_worker", lambda *a: (calls.append(a), real_init(*a)))
+    project, clip = _labelled(store, make_clip)
+    data_root = tmp_path / "data"
+    src = _export(store, project, clip, ["yolo_seg", "masks"], data_root)
+    _make_pool(data_root)
+    real = src["counts"]["train"]["images"]
+    # room 1 split 1:2 between composites and lighting rounds to 0 composites and 1 lighting copy
+    capped = run_augment(data_root, src["export_id"],
+                         AugmentOptions(per_image=1, lighting=2, seed=3, max_train_images=real + 1), workers=1)
+    assert capped["limits"]["planned"] == {"composites": 0, "lighting": 1}
+    assert capped["limits"]["produced"] == {"composites": 0, "lighting": 1}
+    assert calls == []
+    assert capped["cutouts"] == "per_class_region"  # cutouts still run
+
+    run_augment(data_root, src["export_id"], AugmentOptions(per_image=1, lighting=2, seed=3), workers=1)
+    assert len(calls) == 1

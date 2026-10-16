@@ -182,3 +182,15 @@ def test_cancel_wins_over_the_deadline():
     with pytest.raises(ExportCancelled):
         run_units(slow, list(range(200)), workers=2, cancel=lambda: True, deadline=time.monotonic() - 1)
     assert multiprocessing.active_children() == []
+
+
+def test_pool_deadline_already_passed_starts_no_pool(monkeypatch):
+    from vdp.augment import parallel
+
+    def no_pool(*args, **kwargs):
+        raise AssertionError("a pool was started after the deadline")
+
+    monkeypatch.setattr(parallel, "ProcessPoolExecutor", no_pool)
+    done = []
+    results = run_units(square, [1, 2, 3], workers=2, on_done=done.append, deadline=time.monotonic() - 1)
+    assert results == [None, None, None] and done == []
