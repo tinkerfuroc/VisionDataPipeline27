@@ -39,6 +39,26 @@ empty list, a repeated id or an unknown class id is a 400. It returns 400 for an
 format, no clips, a bad option) and 409 (with the running `job_id`) while a propagation job runs, since
 propagation rewrites the very masks an export reads.
 
+## VRAM estimate
+
+`POST /api/train/vram-estimate` body `{model, imgsz, gpu, remeasure}` (`remeasure` optional, default `false`) → `202
+{job_id}`, a job of kind `vram_estimate` whose result is `{model, imgsz, gpu, gpu_name, total_bytes, free_bytes,
+estimates: [{batch, bytes}], measured_at, cached}` for batch 1, 2, 4, 8 and 12. `bytes` is the estimated VRAM a run
+takes at that batch (calibration margin included); `null` means that batch ran out of memory when it was measured
+(and so did every larger one). `free_bytes` is the GPU's free memory read when the answer is given (NVML; `null` when
+unknown). While it measures, the job emits `{type: "progress", done, total, batch}` per batch size.
+
+Answers are cached per model, image size and GPU name in `data/train_weights/vram_estimates.json`. The endpoint is
+always a job: a cached answer's job finishes at once (`cached: true`) without measuring, unless `remeasure` is
+true. A measurement runs `python -m vdp.train.vram_probe` at low priority on that GPU (output in
+`data/train_weights/vram_probe.log`) and takes about half a minute plus any checkpoint download; only one runs at a
+time (409 with its `job_id` otherwise). Cancelling the job kills the probe.
+
+It returns 400 for an unknown model or GPU, 422 for an image size outside 320-1920 or not a multiple of 32, 503 when
+Ultralytics is not installed (as the other train endpoints), and 409 while that GPU has a training run queued or
+running (the measurement would be wrong and could make the run run out of memory). If a run is queued on the GPU
+while it measures, the probe is stopped and the job ends with an error; nothing is cached.
+
 ## Augmented copies
 
 `POST /api/exports/{id}/augment` starts an augment job; body `{per_image, max_objects, seed, pool, lighting}` plus the
