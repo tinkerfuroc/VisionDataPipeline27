@@ -46,6 +46,21 @@ mAPs come from the final evaluation of `best.pt` on the whole val split and `bes
 that was (`best.epoch` is still the best epoch on the subset); the per-epoch `metrics` rows are on the subset.
 `vdp train` takes the same sizes as `--images-per-epoch` and `--val-images-per-epoch`.
 
+## Optimizer settings (training params)
+
+`params` also takes `optimizer` (`"AdamW"`, the default; `"SGD"`; or `"auto"`: Ultralytics picks MuSGD or AdamW and
+their learning rate by the run's step count, as every run did before this field), `lr0` (`null`, the default: AdamW
+round(0.002 × 5 / (4 + classes), 6) clamped to 0.0003–0.001, SGD 0.003; else 0.000001–0.1, else 422; ignored for
+`"auto"`), `warmup_passes` (warm-up in full passes over the train set, 0–10, default 1; with a train size per epoch
+it is scaled into that run's `sampling.warmup_epochs`, capped at 30 % of the epochs but not below `warmup_passes`, and
+never into the last epoch) and `cos_lr` (default `false`). `GET /api/train/status` lists them in `defaults`. A new run
+stores what it trains with in `run.json` as `optim`: `{optimizer, lr0, warmup_epochs, cos_lr}` (`lr0` resolved,
+`null` for `"auto"`; `warmup_epochs` in the run's own epochs), and the run view always carries `optim`: for a run
+from before these fields (its stored `params` lack them) `{"optimizer": "auto", "lr0": null, "warmup_epochs": 3.0, "cos_lr": false}` (the scaled
+warm-up for a sampled one) — what it trained with. A resume keeps the run's settings (Ultralytics restores them from
+the checkpoint); a `"continue"` run copies the source's params (an older source's as `"auto"`, `warmup_passes` 3)
+and its `optim`; `"finetune"` uses the given `params`.
+
 ## Pausing SAM3 for training
 
 `POST /api/train/runs`, `POST /api/train/runs/{id}/from-checkpoint`, `.../resume` and `.../complete` accept an

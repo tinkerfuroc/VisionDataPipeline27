@@ -265,10 +265,11 @@ from the terminal):
   once before any is seen again; then it is shuffled anew. Which slice an epoch gets depends only on the seed, the
   epoch number and the sizes, so Resume and Continue pick up exactly where training was (Continue keeps the source's
   epoch counter, on its new export's images; Fine-tune starts again at epoch 1). Augmentation is unchanged (a mosaic
-  still pulls its three extra images from the whole set). Ultralytics' warmup (3 epochs) and "close mosaic" (mosaic
-  off for the last 10 epochs) are measured in epochs; they are scaled by train images / N so they still cover as many
-  images as with whole epochs. Warmup is capped at 30 % of the run's epochs (but never below Ultralytics' own 3), so a
-  short run does not warm up for most of its epochs; close mosaic never exceeds the run's epochs (with many short
+  still pulls its three extra images from the whole set). The warm-up (**Warm-up (passes)**, below) and Ultralytics'
+  "close mosaic" (mosaic off for the last 10 epochs) are measured in epochs; they are scaled by train images / N so
+  they still cover as many images as with whole epochs. Warm-up is capped at 30 % of the run's epochs (but never below
+  the asked number of passes counted in short epochs, and never into the last epoch), so a short run does not warm up
+  for most of its epochs; close mosaic never exceeds the run's epochs (with many short
   epochs, mosaic may be off for a large share of them, just as for the last 10 whole passes). Optimizer "auto" picks
   by the number of optimizer steps the sampled epochs actually make. Continuing a run onto an export no bigger than
   its images per epoch trains whole epochs again, with Ultralytics' unscaled close mosaic. Patience stays in (short) epochs, which is the point; the LR
@@ -289,6 +290,34 @@ size on the same GPU: every run records its measured training and validation ima
 (after each epoch); without such a run the times are left out. A run trained this way says so in its detail ("Each
 epoch trains on the next 7,000 of 28,000 images (warmup 12 epochs, mosaic off for the last 40). …"). Training stays
 on one GPU per run, as always.
+
+## Optimizer, learning rate and warm-up
+
+The New-runs form's **Optimizer**, **Learning rate**, **Warm-up (passes)** and **Cosine LR** fields set how the
+weights are updated:
+
+- **Optimizer**: AdamW (the default, recommended for fine-tuning from pretrained weights), SGD, or Auto (Ultralytics
+  picks). Before these fields every run used Auto, and Ultralytics then chooses by the run's number of optimizer
+  steps: MuSGD with learning rate 0.01 above 10,000 steps, else AdamW with round(0.002 × 5 / (4 + classes), 6). So the
+  choice flipped with the epoch settings rather than with the data, and on the long runs MuSGD's 0.01 plus a 3-pass
+  warm-up knocked the pretrained model off its good start (training loss rose for about ten epochs and val mAP dipped
+  before recovering), while the AdamW runs trained smoothly and ended best. AdamW with a low learning rate keeps the
+  pretrained features and is the safe default for fine-tuning.
+- **Learning rate** (lr0, the start of the decay): empty uses the default shown as the placeholder: for AdamW
+  Ultralytics' own fit for the export's class count, kept within 0.0003–0.001 (0.000625 for 12 classes); for SGD
+  0.003. Allowed 0.000001–0.1. Off for Auto, which picks its own.
+- **Warm-up (passes)**: how long the learning rate ramps up from zero, in full passes over the train set (default 1;
+  0 = no warm-up; at most 10). With whole epochs that is the same number of epochs; with images per epoch it is scaled
+  (see above). Ultralytics never warms up through the last epoch. For AdamW the warm-up's bias learning rate starts at 0
+  (Ultralytics' 0.1 start is meant for SGD), as Ultralytics' own Auto pick does for AdamW.
+- **Cosine LR**: a cosine instead of a linear decay from lr0 to lr0 × 0.01 over the epochs.
+
+The run detail names what a run trains with ("Optimizer AdamW, lr0 0.000625, warm-up 1 epoch, linear LR decay.");
+`run.json` records it as `optim`. Runs from before these settings read as Auto, 3 warm-up passes and a linear decay —
+what they trained with — so Resume and Continue of them behave exactly as before. Resume always keeps a run's own
+settings (Ultralytics restores them from the checkpoint, together with the optimizer state, which only loads into the
+same optimizer), and so does Continue (it resumes the source's checkpoint; the fields show the source's settings,
+disabled). Fine-tune uses the fields like a new run.
 
 ## Train from a previous run on new data
 
