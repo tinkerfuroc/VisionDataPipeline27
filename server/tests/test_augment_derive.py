@@ -846,3 +846,25 @@ def test_an_unreadable_background_fails_the_job_and_removes_output(store, make_c
     with pytest.raises(Exception, match="cannot identify image"):
         run_augment(data_root, src["export_id"], AugmentOptions(per_image=3), workers=2)
     assert sorted(p.name for p in (data_root / "exports").iterdir()) == [src["export_id"]]
+
+
+def test_lighting_copies_are_identical_for_one_and_three_workers(store, make_clip, tmp_path, monkeypatch):
+    from vdp.augment import derive
+
+    assert hasattr(derive, "_lighting_unit")
+    monkeypatch.setattr(derive, "UNIT_LIGHTING", 2)  # several lighting units even for a small fixture
+    project, clip = _multi(store, make_clip, n=10)
+    data_root = tmp_path / "data"
+    src = _export(store, project, clip, ["yolo_seg", "coco", "masks"], data_root)
+    opts = AugmentOptions(per_image=0, seed=6, lighting=2)
+
+    one = run_augment(data_root, src["export_id"], opts, workers=1)
+    three = run_augment(data_root, src["export_id"], opts, workers=3)
+
+    a, b = _files(Path(one["path"])), _files(Path(three["path"]))
+    a.pop("export.json")
+    b.pop("export.json")
+    assert any(name.startswith("images/lit_") for name in a)
+    assert a.keys() == b.keys()
+    assert [k for k in a if a[k] != b[k]] == []
+    assert _comparable_manifest(one["path"]) == _comparable_manifest(three["path"])

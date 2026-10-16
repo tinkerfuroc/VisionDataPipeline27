@@ -354,28 +354,50 @@ def _merge_real_frames(source_dir: Path, out: Path, formats: list[str], tick: Ca
     return linked
 
 
-def _write_lighting_variants(
-    source_dir: Path, out: Path, formats: list[str], opts: AugmentOptions, tick: Callable[[], None],
-) -> list[tuple[str, str]]:
-    """`opts.lighting` relit copies of every real train frame: the image is written into `out/images/` and
-    placed into each format's train images, and its per-format labels are the source frame's, copied under the
-    new stem (COCO's are added in `_merge_coco`). Returns `(source stem, new stem)` pairs, in order."""
+UNIT_LIGHTING = 16  # source frames per lighting work unit
+
+
+def _lighting_unit(args: tuple[Path, Path, list[str], list[tuple[int, str]], int, int]) -> list[tuple[str, str]]:
+    """(source_dir, out, formats, [(frame index i in the full sorted list, stem), ...], seed, lighting) -> the
+    unit's `(stem, new_stem)` pairs, in order. Module-level so the process pool can pickle it."""
+    source_dir, out, formats, frames, seed, lighting = args
     pairs: list[tuple[str, str]] = []
-    stems = sorted(p.stem for p in (source_dir / "masks" / "masks" / "train").glob("*.png"))
-    for i, stem in enumerate(stems):
+    for i, stem in frames:
         image = np.array(Image.open(source_dir / "images" / f"{stem}.jpg").convert("RGB"))
-        for k in range(opts.lighting):
-            rng = np.random.default_rng([opts.seed, LIGHTING_STREAM, i, k])
+        for k in range(lighting):
+            rng = np.random.default_rng([seed, LIGHTING_STREAM, i, k])
             kind = "low" if rng.random() < LOW_SHARE else "over"
-            new_stem = f"lit_{opts.seed}_{stem}_{k}"
+            new_stem = f"lit_{seed}_{stem}_{k}"
             image_path = out / "images" / f"{new_stem}.jpg"
             Image.fromarray(relight(image, rng, kind)).save(image_path, quality=95)
             for fmt in formats:
                 place_image(image_path, out / fmt / "images" / "train" / f"{new_stem}.jpg")
                 _copy_label(source_dir, out, fmt, "train", stem, new_stem)
             pairs.append((stem, new_stem))
-            tick()
     return pairs
+
+
+def _write_lighting_variants(
+    source_dir: Path, out: Path, formats: list[str], opts: AugmentOptions, tick: Callable[[], None],
+    workers: int | None = None, cancel: Callable[[], bool] | None = None,
+) -> list[tuple[str, str]]:
+    """`opts.lighting` relit copies of every real train frame: the image is written into `out/images/` and
+    placed into each format's train images, and its per-format labels are the source frame's, copied under the
+    new stem (COCO's are added in `_merge_coco`). Returns `(source stem, new stem)` pairs, in order."""
+    stems = sorted(p.stem for p in (source_dir / "masks" / "masks" / "train").glob("*.png"))
+    indexed = list(enumerate(stems))  # i is the index in the full list, whatever unit a frame lands in
+    units = [(source_dir, out, formats, indexed[j:j + UNIT_LIGHTING], opts.seed, opts.lighting)
+             for j in range(0, len(indexed), UNIT_LIGHTING)]
+
+    def on_done(n: int) -> None:
+        for _ in range(n):
+            tick()
+
+    results = run_units(
+        _lighting_unit, units, workers=workers, weight=lambda u: len(u[3]) * opts.lighting, on_done=on_done,
+        cancel=cancel or (lambda: False),
+    )
+    return [pair for unit in results for pair in unit]
 
 
 def _lighting_annotations(source_dir: Path, fmt: str, pairs: list[tuple[str, str]]) -> int:
@@ -533,7 +555,7 @@ def run_augment(
         synth_linked = all(s.linked for s in synth_summaries)
 
         real_linked = _merge_real_frames(source_dir, out, formats, tick)
-        lit = _write_lighting_variants(source_dir, out, formats, opts, tick)
+        lit = _write_lighting_variants(source_dir, out, formats, opts, tick, workers, cancel)
         lit_counts = {
             fmt: (len(lit), _lighting_annotations(source_dir, fmt, lit)) for fmt in formats if fmt != "coco"
         }
