@@ -50,7 +50,7 @@ def run_units(
             for fut in finished:
                 results[futures[fut]] = fut.result()  # raises the unit's error
                 on_done(weight(units[futures[fut]]))
-            if cancel():
+            if pending and cancel():  # a cancel after the last unit finished is too late
                 raise ExportCancelled()
     except BaseException:
         pool.shutdown(wait=True, cancel_futures=True)

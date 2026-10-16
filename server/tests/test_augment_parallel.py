@@ -1,4 +1,6 @@
+import multiprocessing
 import os
+import time
 
 import pytest
 from vdp.augment.parallel import default_workers, run_units
@@ -35,15 +37,24 @@ def test_worker_error_propagates():
         run_units(boom, list(range(8)), workers=2)
 
 
-def test_cancel_stops_and_raises():
-    calls = {"n": 0}
+def slow(x):
+    time.sleep(0.05)
+    return x
 
-    def cancel():
-        calls["n"] += 1
-        return calls["n"] > 2
 
+def test_pool_cancel_stops_and_raises():
+    start = time.monotonic()
     with pytest.raises(ExportCancelled):
-        run_units(square, list(range(200)), workers=2, cancel=cancel)
+        run_units(slow, list(range(100)), workers=2, cancel=lambda: True)
+    assert time.monotonic() - start < 100 * 0.05 / 2
+    assert multiprocessing.active_children() == []
+
+
+def test_inline_cancel_stops_before_further_units():
+    done = []
+    with pytest.raises(ExportCancelled):
+        run_units(square, list(range(10)), workers=1, on_done=done.append, cancel=lambda: len(done) >= 3)
+    assert sum(done) == 3
 
 
 def test_default_workers():
