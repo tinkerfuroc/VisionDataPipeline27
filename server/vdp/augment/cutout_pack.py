@@ -1,13 +1,15 @@
 """Cutouts packed into one flat file that worker processes memory-map (one page-cache copy for all).
 
-`cutouts.bin` holds every cutout's RGB bytes, then every cutout's mask bytes, back to back; `cutouts.json`
-lists, per cutout, its class id, shape and the byte offsets of its image and mask in the `.bin`.
+`cutouts.bin` holds the cutouts' RGB and mask bytes; `cutouts.json` lists, per cutout and in cutout order, its class
+id, shape and the byte offsets of its image and mask in the `.bin`. `CutoutPackWriter` appends groups of cutouts as
+they are made, in any order, so they never all need to be in memory at once.
 """
 from __future__ import annotations
 
 import json
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Self
 
 import numpy as np
 
@@ -17,23 +19,56 @@ BIN = "cutouts.bin"
 INDEX = "cutouts.json"
 
 
-def pack_cutouts(cutouts: Sequence[Cutout], directory: Path) -> None:
-    directory = Path(directory)
-    entries = []
-    offset = 0
-    for c in cutouts:
-        entries.append({"class_id": int(c.class_id), "shape": [int(c.image.shape[0]), int(c.image.shape[1])],
-                        "image": offset})
-        offset += c.image.nbytes
-    with open(directory / BIN, "wb") as f:
+class CutoutPackWriter:
+    """Writes `cutouts.bin` as groups arrive (`add(key, cutouts)`, keys unique) and, on `close()`, `cutouts.json`
+    listing every group's cutouts in ascending key order, which is the order `load_cutouts` returns them in."""
+
+    def __init__(self, directory: Path) -> None:
+        self.directory = Path(directory)
+        self._bin = open(self.directory / BIN, "wb")  # noqa: SIM115 -- open across add() calls; close() closes it
+        self._offset = 0
+        self._groups: dict[int, list[dict]] = {}
+
+    def add(self, key: int, cutouts: Sequence[Cutout]) -> None:
+        if key in self._groups:
+            raise ValueError(f"cutout group {key} added twice")
+        entries = []
         for c in cutouts:
-            f.write(np.ascontiguousarray(c.image, dtype=np.uint8).tobytes())
-        for entry, c in zip(entries, cutouts, strict=True):
-            entry["mask"] = offset
+            image = np.ascontiguousarray(c.image, dtype=np.uint8)
             mask = np.ascontiguousarray(c.mask, dtype=bool)
-            f.write(mask.tobytes())
-            offset += mask.nbytes
-    (directory / INDEX).write_text(json.dumps(entries))
+            entry = {"class_id": int(c.class_id), "shape": [int(image.shape[0]), int(image.shape[1])]}
+            entry["image"] = self._write(image)
+            entry["mask"] = self._write(mask)
+            entries.append(entry)
+        self._groups[key] = entries
+
+    def _write(self, a: np.ndarray) -> int:
+        offset = self._offset
+        self._bin.write(a.tobytes())
+        self._offset += a.nbytes
+        return offset
+
+    @property
+    def count(self) -> int:
+        return sum(len(g) for g in self._groups.values())
+
+    def close(self) -> None:
+        if self._bin.closed:
+            return
+        self._bin.close()
+        entries = [e for key in sorted(self._groups) for e in self._groups[key]]
+        (self.directory / INDEX).write_text(json.dumps(entries))
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
+
+
+def pack_cutouts(cutouts: Sequence[Cutout], directory: Path) -> None:
+    with CutoutPackWriter(directory) as writer:
+        writer.add(0, cutouts)
 
 
 def load_cutouts(directory: Path) -> list[Cutout]:

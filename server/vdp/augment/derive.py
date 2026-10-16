@@ -26,6 +26,7 @@ and keeps what was made. The manifest's `augment.limits` records what was asked 
 
 from __future__ import annotations
 
+import contextlib
 import json
 import math
 import shutil
@@ -46,14 +47,14 @@ from ..export.coco import coco_annotations
 from ..export.mask_png import MaskSummary, paint, palette_for, write_semantic_png
 from ..export.naming import MAX_NAME
 from ..export.plan import ExportPlan, classes_from_manifest, options_from_manifest
-from ..export.polygons import Polygon, clean_mask, polygons_to_mask
+from ..export.polygons import clean_mask, polygons_to_mask
 from ..export.yolo import yolo_det_lines, yolo_seg_lines
 from ..labeling.errors import BadRequest
 from ..parallel import run_units
 from ..train.models import find_export
 from .backgrounds import POOLS, list_images
 from .composite import Cutout, cutout_from, make_composite
-from .cutout_pack import load_cutouts, pack_cutouts
+from .cutout_pack import CutoutPackWriter, load_cutouts
 from .lighting import LOW_SHARE, relight
 from .limits import GenerationPlan, plan_generation
 
@@ -137,15 +138,18 @@ def check_augment(data_root: Path, export_id: str, opts: AugmentOptions) -> dict
 CutoutMode = Literal["per_object", "per_class_region"]
 
 
-def _coco_train_objects(source_dir: Path) -> dict[str, list[tuple[int, list[Polygon]]]]:
+def _coco_train_objects(source_dir: Path) -> dict[str, list[tuple[int, list[np.ndarray]]]]:
     """Each train image's objects, by image stem: `(export class id, polygons)`, in annotation order. The COCO
-    exporter writes one annotation per object, so objects that touch or overlap stay apart."""
+    exporter writes one annotation per object, so objects that touch or overlap stay apart. Each polygon is an
+    (n, 2) float64 array (the same values as Python floats, at an eighth of their memory: a large export's
+    train JSON is hundreds of MB, several GB as lists of floats)."""
     data = json.loads((source_dir / "coco" / "annotations" / "instances_train.json").read_text())
     stems = {im["id"]: Path(im["file_name"]).stem for im in data["images"]}
-    out: dict[str, list[tuple[int, list[Polygon]]]] = {}
+    out: dict[str, list[tuple[int, list[np.ndarray]]]] = {}
     for ann in sorted(data["annotations"], key=lambda a: a["id"]):
-        polygons = [[(float(p[i]), float(p[i + 1])) for i in range(0, len(p) - 1, 2)] for p in ann["segmentation"]]
+        polygons = [np.asarray(p[:len(p) // 2 * 2], dtype=np.float64).reshape(-1, 2) for p in ann["segmentation"]]
         out.setdefault(stems[ann["image_id"]], []).append((int(ann["category_id"]) - 1, polygons))
+    del data
     return out
 
 
@@ -201,9 +205,12 @@ def _cutout_unit(
 
 def _cutouts_and_sizes(
     source_dir: Path, formats: list[str], min_area_px: int, tick: Callable[[], None],
-    workers: int | None = None, cancel: Callable[[], bool] = lambda: False,
-) -> tuple[list[Cutout], list[tuple[int, int]], CutoutMode]:
+    sink: Callable[[int, list[Cutout]], None], workers: int | None = None, cancel: Callable[[], bool] = lambda: False,
+) -> tuple[list[tuple[int, int]], CutoutMode]:
     """Cutouts and `(width, height)` of every real train frame (the frames are listed from the `masks` format).
+    The cutouts go to `sink(unit_index, cutouts)` as each unit of frames finishes, in completion order (a large
+    export's cutouts are tens of GB: they are never all held here); the cutout order is units by index, each
+    unit's cutouts in order. Returns the sizes, in frame order, and the cutout mode.
     Per object from the COCO train annotations when the source has `coco`, else per class region of the indexed
     mask PNGs (touching objects of one class then come out as one). Feeds composites only.
 
@@ -237,11 +244,18 @@ def _cutouts_and_sizes(
         for _ in range(n):
             tick()
 
-    results = run_units(_cutout_unit, units, workers=workers, weight=lambda u: len(u[1]), on_done=on_done,
-                        cancel=cancel)
-    cutouts = [c for unit_cutouts, _sizes in results for c in unit_cutouts]
-    sizes = [s for _cutouts, unit_sizes in results for s in unit_sizes]
-    return cutouts, sizes, "per_object" if per_object else "per_class_region"
+    del by_stem  # each unit holds its own frames' objects
+
+    unit_sizes: dict[int, list[tuple[int, int]]] = {}
+
+    def on_result(i: int, result: tuple[list[Cutout], list[tuple[int, int]]]) -> None:
+        sink(i, result[0])
+        unit_sizes[i] = result[1]
+
+    run_units(_cutout_unit, units, workers=workers, weight=lambda u: len(u[1]), on_done=on_done,
+              cancel=cancel, on_result=on_result)
+    sizes = [s for i in range(len(units)) for s in unit_sizes[i]]
+    return sizes, "per_object" if per_object else "per_class_region"
 
 
 
@@ -595,14 +609,16 @@ def run_augment(
         cutout_mode: CutoutMode | None = None
         composite_initargs = None
         if opts.per_image:  # no deadline: composites need every cutout, and the phase is short
-            cutouts, sizes, cutout_mode = _cutouts_and_sizes(
-                source_dir, formats, min_area_px, tick, workers, cancel or (lambda: False),
-            )
-            if gen.composites:  # an image limit can leave none: then no worker needs the cutouts or backgrounds
-                pack_cutouts(cutouts, work)  # for the composite workers to memory-map
+            # packed straight to disk for the composite workers to memory-map; an image limit can leave no
+            # composites, and then no worker needs the cutouts (or backgrounds)
+            with contextlib.ExitStack() as stack:
+                sink = stack.enter_context(CutoutPackWriter(work)).add if gen.composites else lambda i, c: None
+                sizes, cutout_mode = _cutouts_and_sizes(
+                    source_dir, formats, min_area_px, tick, sink, workers, cancel or (lambda: False),
+                )
+            if gen.composites:
                 composite_initargs = (work, list_images(data_root, opts.pool), sizes, asdict(opts), formats,
                                       min_area_px, palette_for(classes), out)
-            del cutouts
 
         train_stems = sorted(p.stem for p in (source_dir / "masks" / "masks" / "train").glob("*.png"))
         units = _generation_units(gen, train_stems)

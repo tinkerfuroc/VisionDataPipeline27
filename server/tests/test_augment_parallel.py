@@ -9,6 +9,7 @@ from pathlib import Path
 
 import cv2
 import pytest
+from vdp import parallel
 from vdp.export import ExportCancelled
 from vdp.parallel import default_workers, run_units
 
@@ -194,3 +195,71 @@ def test_pool_deadline_already_passed_starts_no_pool(monkeypatch):
     done = []
     results = run_units(square, [1, 2, 3], workers=2, on_done=done.append, deadline=time.monotonic() - 1)
     assert results == [None, None, None] and done == []
+
+
+def test_on_result_receives_each_result_and_none_is_kept():
+    for workers in (1, 3):
+        seen = {}
+        results = run_units(square, list(range(6)), workers=workers, on_result=seen.__setitem__)
+        assert results == [None] * 6
+        assert seen == {i: i * i for i in range(6)}
+
+
+GIB = 2**30
+
+
+def test_memory_cap_limits_workers_to_what_fits(monkeypatch):
+    monkeypatch.setattr(parallel, "available_memory", lambda: parallel.MEMORY_RESERVE + 3 * parallel.WORKER_MEMORY)
+    assert parallel.memory_capped_workers(16) == 3
+    assert parallel.memory_capped_workers(2) == 2  # never raises the count
+
+
+def test_memory_cap_keeps_at_least_one_worker(monkeypatch):
+    monkeypatch.setattr(parallel, "available_memory", lambda: 0)
+    assert parallel.memory_capped_workers(16) == 1
+
+
+def test_memory_cap_is_skipped_when_memory_cannot_be_read(monkeypatch):
+    monkeypatch.setattr(parallel, "available_memory", lambda: None)
+    assert parallel.memory_capped_workers(16) == 16
+
+
+def test_available_memory_reads_memavailable():
+    avail = parallel.available_memory()
+    assert avail is None or 0 < avail < 2**50
+
+
+def test_run_units_applies_the_memory_cap(monkeypatch):
+    monkeypatch.setattr(parallel, "available_memory", lambda: 0)  # room for one: runs inline, in this process
+    assert set(run_units(pid_now, list(range(4)), workers=4)) == {os.getpid()}
+
+
+def pid_now(_):
+    return os.getpid()
+
+
+class Blob:
+    """A result type that can be weakly referenced, to see whether run_units still holds it."""
+
+    def __init__(self, x):
+        self.x = x
+
+
+def make_blob(x):
+    return Blob(x)
+
+
+def test_on_result_results_are_not_kept_alive():
+    import gc
+    import weakref
+
+    for workers in (1, 3):
+        refs = []
+
+        def on_result(i, blob, refs=refs):
+            gc.collect()
+            assert all(r() is None for r in refs), "an earlier result is still referenced"
+            refs.append(weakref.ref(blob))
+
+        run_units(make_blob, list(range(8)), workers=workers, on_result=on_result)
+        assert len(refs) == 8

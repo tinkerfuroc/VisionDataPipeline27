@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 from vdp.augment.composite import Cutout
-from vdp.augment.cutout_pack import load_cutouts, pack_cutouts
+from vdp.augment.cutout_pack import CutoutPackWriter, load_cutouts, pack_cutouts
 
 
 def _cut(rng, class_id, h, w):
@@ -35,3 +36,25 @@ def test_pack_and_load_round_trip(tmp_path):
 def test_pack_and_load_zero_cutouts(tmp_path):
     pack_cutouts([], tmp_path)
     assert load_cutouts(tmp_path) == []
+
+
+def test_writer_packs_units_in_key_order_whatever_order_they_arrive_in(tmp_path):
+    rng = np.random.default_rng(1)
+    units = {0: [_cut(rng, 1, 3, 4)], 1: [], 2: [_cut(rng, 2, 6, 2), _cut(rng, 0, 2, 2)]}
+    with CutoutPackWriter(tmp_path) as writer:
+        for key in (2, 0, 1):  # a pool hands results back in completion order
+            writer.add(key, units[key])
+    assert writer.count == 3
+    loaded = load_cutouts(tmp_path)
+    expected = [c for key in sorted(units) for c in units[key]]
+    assert [c.class_id for c in loaded] == [c.class_id for c in expected]
+    for a, b in zip(expected, loaded, strict=True):
+        assert np.array_equal(a.image, b.image) and np.array_equal(a.mask, b.mask)
+
+
+def test_writer_rejects_a_key_added_twice(tmp_path):
+    rng = np.random.default_rng(2)
+    with CutoutPackWriter(tmp_path) as writer:
+        writer.add(0, [_cut(rng, 1, 2, 2)])
+        with pytest.raises(ValueError):
+            writer.add(0, [])

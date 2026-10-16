@@ -9,10 +9,12 @@ import numpy as np
 import pytest
 from vdp.augment.derive import (
     AugmentOptions,
-    _cutouts_and_sizes,
     _merged_format_summaries,
     check_augment,
     run_augment,
+)
+from vdp.augment.derive import (
+    _cutouts_and_sizes as _stream_cutouts,
 )
 from vdp.export import ExportCancelled, ExportOptions, run_export
 from vdp.export.base import ExportSummary
@@ -21,6 +23,18 @@ from vdp.labeling.errors import BadRequest
 from vdp.store import NotFound
 from vdp.store.models import LabelObject
 from vdp.train.models import list_exports
+
+
+def _cutouts_and_sizes(source_dir, formats, min_area_px, tick, **kw):
+    """`_stream_cutouts` gathered back into (cutouts in cutout order, sizes, mode), checking each unit arrives once."""
+    got = {}
+
+    def sink(i, cutouts):
+        assert i not in got
+        got[i] = cutouts
+
+    sizes, mode = _stream_cutouts(source_dir, formats, min_area_px, tick, sink, **kw)
+    return [c for i in sorted(got) for c in got[i]], sizes, mode
 
 
 def _labelled(store, make_clip, n=6):

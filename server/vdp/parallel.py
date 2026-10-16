@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import contextlib
+import logging
 import multiprocessing
 import os
 import threading
@@ -16,13 +17,42 @@ T = TypeVar("T")
 R = TypeVar("R")
 
 
+log = logging.getLogger(__name__)
+
 WORKER_NICE = 10  # pool workers yield the CPU to a concurrent training run
 PARENT_POLL_S = 1.0
 CANCEL_POLL_S = 0.5
+WORKER_MEMORY = 1 * 2**30  # a pool worker's peak resident memory, budgeted generously (see memory_capped_workers)
+MEMORY_RESERVE = 4 * 2**30  # left free for the parent process (it gathers the results) and the rest of the machine
 
 
 def default_workers() -> int:
     return max(1, len(os.sched_getaffinity(0)) - 4)
+
+
+def available_memory() -> int | None:
+    """MemAvailable from /proc/meminfo in bytes: what can be allocated without swapping; None if unreadable."""
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) * 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    return None
+
+
+def memory_capped_workers(n: int) -> int:
+    """`n`, lowered so that `n` workers of WORKER_MEMORY each fit in the memory available now, after keeping
+    MEMORY_RESERVE for this process and everything else; at least 1 (which runs inline). Unchanged when the
+    available memory cannot be read."""
+    avail = available_memory()
+    if avail is None:
+        return n
+    fit = max(1, (avail - MEMORY_RESERVE) // WORKER_MEMORY)
+    if fit < n:
+        log.warning("only %.1f GiB of memory available: using %d worker(s) instead of %d", avail / 2**30, fit, n)
+    return int(min(n, fit))
 
 
 def _exit_when_orphaned(parent_pid: int) -> None:
@@ -50,6 +80,7 @@ def run_units(
     fn: Callable[[T], R], units: Sequence[T], *, workers: int | None, weight: Callable[[T], int] = lambda u: 1,
     on_done: Callable[[int], None] = lambda n: None, cancel: Callable[[], bool] = lambda: False,
     initializer: Callable[..., None] | None = None, initargs: tuple = (), deadline: float | None = None,
+    on_result: Callable[[int, R], None] | None = None,
 ) -> list[R | None]:
     """Run `fn(unit)` for every unit; return results in unit order. `fn`/`initializer` must be module-level
     (picklable). One worker (or no units) runs inline. `on_done(weight(unit))` follows each unit; `cancel()` is
@@ -58,19 +89,31 @@ def run_units(
     workers exit if this process dies, and run niced with one OpenCV thread (see `_init_worker`).
     `deadline` (a time.monotonic() value) is a soft stop: once reached, queued units are dropped, running ones
     finish and are kept, and the result has None for every dropped unit; no exception. Cancel wins over it.
-    A deadline already passed runs nothing (and starts no pool)."""
+    A deadline already passed runs nothing (and starts no pool).
+    `on_result(i, result)`, when given, gets each unit's result in this process as it arrives (completion order,
+    not unit order) and the returned list holds None for it instead: for results too big to all be kept at once.
+    The worker count is lowered to what fits in the memory available when the pool starts (`memory_capped_workers`).
+    """
     n = min(workers or default_workers(), len(units))
+    if n > 1:
+        n = memory_capped_workers(n)
+
+    def keep(results: list, i: int, result) -> None:
+        if on_result is None:
+            results[i] = result
+        else:
+            on_result(i, result)
+
     if n <= 1:
         if initializer:
             initializer(*initargs)
-        results = []
-        for unit in units:
+        results = [None] * len(units)
+        for i, unit in enumerate(units):
             if cancel():
                 raise ExportCancelled()
             if deadline is not None and time.monotonic() >= deadline:
-                results.extend([None] * (len(units) - len(results)))
                 break
-            results.append(fn(unit))
+            keep(results, i, fn(unit))
             on_done(weight(unit))
         return results
     if cancel():  # before the deadline check below: cancel wins over it, as in the inline loop
@@ -88,16 +131,22 @@ def run_units(
         pending = set(futures)
         while pending:
             finished, pending = wait(pending, timeout=CANCEL_POLL_S, return_when=FIRST_COMPLETED)
-            for fut in finished:
-                results[futures[fut]] = fut.result()  # raises the unit's error
-                on_done(weight(units[futures[fut]]))
+            while finished:
+                # a done future holds its result: drop it once consumed, or `on_result` saves no memory at all
+                fut = finished.pop()
+                i = futures.pop(fut)
+                result = fut.result()  # raises the unit's error
+                del fut
+                keep(results, i, result)
+                del result
+                on_done(weight(units[i]))
             if pending and cancel():  # a cancel after the last unit finished is too late
                 raise ExportCancelled()
             if pending and deadline is not None and time.monotonic() >= deadline:
                 pool.shutdown(wait=True, cancel_futures=True)  # running units finish
                 for fut in pending:
                     if not fut.cancelled():
-                        results[futures[fut]] = fut.result()
+                        keep(results, futures[fut], fut.result())
                         on_done(weight(units[futures[fut]]))
                 break
     except BaseException:
