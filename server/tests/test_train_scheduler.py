@@ -5,7 +5,6 @@ import os
 import subprocess
 import sys
 import time
-from pathlib import Path
 
 import pytest
 from fake_train_worker import HEADER, row
@@ -737,7 +736,9 @@ def test_is_worker_of_true_for_the_actual_worker(tmp_path):
         [sys.executable, "-c", "import time; time.sleep(30)", str(run_dir)], start_new_session=True
     )
     try:
-        wait_for(lambda: Path(f"/proc/{proc.pid}/cmdline").is_file())
+        # /proc/<pid>/cmdline exists from the fork on, but shows the parent's command line until the child
+        # has exec'd; wait for the exec rather than for the file
+        wait_for(lambda: _is_worker_of(proc.pid, run_dir))
         assert _is_worker_of(proc.pid, run_dir) is True
     finally:
         proc.terminate()
