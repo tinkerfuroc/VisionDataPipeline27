@@ -160,3 +160,16 @@ def test_custom_needs_values_and_bounds():
     for bad in ({"degrees": 181}, {"perspective": 0.01}, {"mixup": 1.5}, {"nope": 1}):
         with pytest.raises(ValidationError):
             AugParams(**bad)
+
+
+def test_images_per_epoch_params_are_optional_and_bounded():
+    p = TrainParams()
+    assert p.train_images_per_epoch is None and p.val_images_per_epoch is None  # all, as before
+    p = TrainParams(batch=8, train_images_per_epoch=8, val_images_per_epoch=1)
+    assert (p.train_images_per_epoch, p.val_images_per_epoch) == (8, 1)
+    assert TrainParams(train_images_per_epoch=10**9).train_images_per_epoch == 10**9  # clamped at run start
+    for bad in ({"batch": 8, "train_images_per_epoch": 7}, {"train_images_per_epoch": 0}, {"val_images_per_epoch": 0}):
+        with pytest.raises(ValidationError):
+            TrainParams(**bad)
+    old = {"epochs": 10, "imgsz": 640, "batch": 4, "patience": 30, "workers": 0, "seed": 0}  # a run from before
+    assert TrainParams(**old).train_images_per_epoch is None

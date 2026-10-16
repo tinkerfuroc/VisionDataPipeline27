@@ -30,7 +30,7 @@ from pathlib import Path
 
 from ..labeling.errors import BadRequest, Conflict
 from .models import ExportInfo, TrainParams, check_model, run_classes
-from .results import read_metrics, summarize, tail
+from .results import read_metrics, run_summary, tail
 from .runs import TERMINAL, RunStore, best_weights, last_weights, now_iso, read_json
 from .worker import CANCELLED_EXIT
 
@@ -315,7 +315,7 @@ class TrainScheduler:
         if result is None:
             fields["status"] = "interrupted"
         elif "best" in result:
-            fields.update(status="done", best=result.get("best") or summarize(read_metrics(run_dir)))
+            fields.update(status="done", best=result.get("best") or run_summary(run_dir))
         elif "cancelled" in result:
             fields["status"] = "cancelled"
         elif "error" in result:
@@ -683,7 +683,7 @@ class TrainScheduler:
         # (`complete()`) sets it again, so a later plain Resume does not skip training.
         fields: dict = {"pid": None, "resume": False, "finish": False, "finished_at": now_iso()}
         if code == 0:
-            fields.update(status="done", best=result.get("best") or summarize(read_metrics(run_dir)))
+            fields.update(status="done", best=result.get("best") or run_summary(run_dir))
             if finish_job:
                 fields["completed_early"] = True
         elif self._stopping and not cancelled:

@@ -72,11 +72,21 @@ class TrainParams(BaseModel):
     seed: int = Field(default=0, ge=0)
     augment: Literal["default", "strong", "custom"] = "default"
     aug: AugParams | None = None
+    # Sampled epochs (vdp.train.sampling); None = the whole split, as before. More than the split holds is not an
+    # error: it means all of it (the run's `sampling` plan, worked out at creation, clamps it to the export).
+    train_images_per_epoch: int | None = Field(default=None, ge=1)
+    val_images_per_epoch: int | None = Field(default=None, ge=1)
 
     @model_validator(mode="after")
     def _custom_needs_values(self) -> TrainParams:
         if self.augment == "custom" and self.aug is None:
             raise ValueError("augment 'custom' needs aug values")
+        return self
+
+    @model_validator(mode="after")
+    def _epoch_holds_a_batch(self) -> TrainParams:
+        if self.train_images_per_epoch is not None and self.train_images_per_epoch < self.batch:
+            raise ValueError("train_images_per_epoch must be at least the batch size")
         return self
 
 

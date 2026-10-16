@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
+
 import pytest
-from vdp.train.results import best_row, read_ground_truth, read_metrics, summarize, tail
+from vdp.train.results import best_row, read_ground_truth, read_metrics, run_summary, summarize, tail
 
 # Ultralytics right-aligns header names with spaces; YOLO26 adds l1/sem losses.
 CSV = (
@@ -49,6 +51,21 @@ def test_summarize(tmp_path):
         "train_seconds": pytest.approx(13.5),
     }
     assert summarize([]) is None
+
+
+def test_run_summary_takes_the_final_full_validation_when_there_is_one(tmp_path):
+    """A run validated per epoch on a val subset: its best epoch is picked on the subset, but the numbers shown are
+    the final evaluation of best.pt on the whole val split (final_val.json, written by the worker)."""
+    run_dir = _run_dir(tmp_path)
+    assert run_summary(run_dir) == summarize(read_metrics(run_dir))  # no final_val.json: as before
+    (run_dir / "final_val.json").write_text(json.dumps({"images": 1643, "metrics": {
+        "metrics/mAP50(B)": 0.7, "metrics/mAP50-95(B)": 0.5, "metrics/mAP50(M)": 0.65, "metrics/mAP50-95(M)": 0.45,
+    }}))
+    assert run_summary(run_dir) == {
+        "epoch": 3, "mask_map50": 0.65, "mask_map50_95": 0.45, "box_map50": 0.7, "box_map50_95": 0.5,
+        "train_seconds": pytest.approx(13.5), "val_images": 1643,
+    }
+    assert run_summary(tmp_path / "missing") is None
 
 
 def test_read_ground_truth_one_instance_per_line(tmp_path):

@@ -79,3 +79,17 @@ def test_list_skips_malformed_run_json(tmp_path):
     }))
 
     assert [r["id"] for r in store.list()] == [good["id"]]
+
+
+def test_create_records_the_epoch_plan_for_the_export(tmp_path):
+    export = find_export(tmp_path, make_export(tmp_path, n_train=40, n_val=10).name)
+    store = RunStore(tmp_path / "runs")
+    params = TrainParams(epochs=50, batch=4, train_images_per_epoch=10, val_images_per_epoch=4)
+    run = store.create(export, "yolo26s-seg", 0, params, owner_pid=os.getpid())
+    assert run["sampling"] == {
+        "train_images": 40, "train_images_per_epoch": 10, "val_images": 10, "val_images_per_epoch": 4,
+        "warmup_epochs": 12.0, "close_mosaic": 40,
+    }
+    assert run["params"]["train_images_per_epoch"] == 10  # what was asked, as asked
+    plain = store.create(export, "yolo26s-seg", 0, TrainParams(), owner_pid=os.getpid())
+    assert plain["sampling"] is None

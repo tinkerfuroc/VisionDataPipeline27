@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import json
 from pathlib import Path
 
 import numpy as np
@@ -54,6 +55,27 @@ def summarize(rows: list[dict]) -> dict | None:
         "box_map50": best.get(BOX_MAP50), "box_map50_95": best.get(BOX_MAP),
         "train_seconds": rows[-1].get("time"),
     }
+
+
+FINAL_VAL = "final_val.json"  # in the run dir: best.pt on the whole val split, for a run validated on a subset
+
+
+def run_summary(run_dir: Path) -> dict | None:
+    """`summarize` of the run's results.csv; for a run validated per epoch on a fixed val subset, its mAPs are those
+    of the final evaluation of best.pt on the whole val split (FINAL_VAL, with `val_images` = how many images)."""
+    summary = summarize(read_metrics(run_dir))
+    try:
+        final = json.loads((Path(run_dir) / FINAL_VAL).read_text())
+    except (FileNotFoundError, json.JSONDecodeError):
+        return summary
+    if summary is None:
+        return None
+    metrics = final.get("metrics", {})
+    summary.update(
+        mask_map50=metrics.get(MASK_MAP50), mask_map50_95=metrics.get(MASK_MAP), box_map50=metrics.get(BOX_MAP50),
+        box_map50_95=metrics.get(BOX_MAP), val_images=final.get("images"),
+    )
+    return summary
 
 
 def read_ground_truth(label_path: Path) -> list[dict]:
