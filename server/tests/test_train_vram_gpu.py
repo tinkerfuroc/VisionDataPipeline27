@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from itertools import pairwise
+
 import pytest
 from vdp.train import vram
 from vdp.train.scheduler import detect_gpus
@@ -24,4 +26,4 @@ def test_real_probe_measures_growing_memory_per_batch(tmp_path):
     assert out["gpu_name"] == gpu.name and seen == list(BATCHES)
     sizes = [e["bytes"] for e in out["estimates"] if e["bytes"] is not None]
     assert len(sizes) >= 3, (out, log)  # 1, 2 and 4 fit on any GPU worth training on
-    assert all(a < b for a, b in zip(sizes, sizes[1:])), out
+    assert all(a < b for a, b in pairwise(sizes)), out
