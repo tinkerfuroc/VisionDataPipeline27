@@ -172,8 +172,14 @@ export const valImageUrl = (exportId: string, name: string) => exportImageUrl(ex
 export const wsUrl = (path: string) =>
   `${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.host}${path}`;
 
+/** Resume / Mark complete: no body at all unless a GPU or the SAM3 pause is asked for. */
+const requeueBody = (gpu: number | undefined, pauseSam3: boolean) =>
+  gpu === undefined && !pauseSam3 ? undefined : { ...(gpu === undefined ? {} : { gpu }), ...(pauseSam3 ? { pause_sam3: true } : {}) };
+
 export const api = {
   health: () => request<Health>("/api/health"),
+  /** Loads SAM3 now, ending a training pause; a no-op (`started: false`) when it is loaded or loading. */
+  loadEngine: () => request<{ started: boolean }>("/api/engine/load", post()),
   logout: () => request<void>("/api/auth/logout", post()),
 
   listProjects: () => request<Project[]>("/api/projects"),
@@ -255,10 +261,10 @@ export const api = {
   trainFromCheckpoint: (runId: string, body: FromCheckpointRequest) =>
     request<{ run_id: string }>(`/api/train/runs/${runId}/from-checkpoint`, post(body)),
   cancelRun: (id: string) => request<Run>(`/api/train/runs/${id}/cancel`, post()),
-  resumeRun: (id: string, gpu?: number) =>
-    request<Run>(`/api/train/runs/${id}/resume`, post(gpu === undefined ? undefined : { gpu })),
-  completeRun: (id: string, gpu?: number) =>
-    request<Run>(`/api/train/runs/${id}/complete`, post(gpu === undefined ? undefined : { gpu })),
+  resumeRun: (id: string, gpu?: number, pauseSam3 = false) =>
+    request<Run>(`/api/train/runs/${id}/resume`, post(requeueBody(gpu, pauseSam3))),
+  completeRun: (id: string, gpu?: number, pauseSam3 = false) =>
+    request<Run>(`/api/train/runs/${id}/complete`, post(requeueBody(gpu, pauseSam3))),
   exportOnnx: (id: string) => request<Run>(`/api/train/runs/${id}/onnx`, post()),
   deleteRun: (id: string) => request<void>(`/api/train/runs/${id}`, { method: "DELETE" }),
   predictions: (id: string, offset: number, limit: number, filter: PredictionFilter = "all") =>

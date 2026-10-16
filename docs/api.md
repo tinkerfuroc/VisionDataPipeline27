@@ -13,6 +13,23 @@ request also returns 409 with `job_id: "interactive"` if a prompt/accept/clear-r
 retry. Deleting a clip also returns 409 (with the running `job_id`) while a GPU job runs, so a delete can
 never race a propagation's writes. Cancelling an import job removes the partial clip it had started.
 
+## Pausing SAM3 for training
+
+`POST /api/train/runs`, `POST /api/train/runs/{id}/from-checkpoint`, `.../resume` and `.../complete` accept an
+optional `pause_sam3: true` (default `false`). When at least one of the request's runs goes to SAM3's GPU and the
+engine is loaded, the server unloads SAM3 after validating the request and before queueing anything; otherwise the
+flag is ignored (no error). While a propagation job holds the GPU it returns 409 with that `job_id` instead, the
+engine stays loaded and nothing is queued. While paused, `/api/health` shows `engine.paused: true` (with
+`loaded: false`, `error: null` and `device` still set), and prompting and propagation return 503 with the reason
+"SAM3 is paused for training". `GET /api/train/status` keeps reporting `sam3_gpu` (the GPU SAM3 reloads onto) and
+adds `sam3_vram_bytes`, what the model took when it loaded (`null` when unknown), so a client can say roughly how
+much pausing frees.
+
+SAM3 reloads by itself, in the background, once nothing is queued or running on its GPU any more (done, error or
+cancelled). `POST /api/engine/load` → `202 {started}` reloads it now and ends the pause; it is a no-op
+(`started: false`) when the engine is already loaded or loading. The pause is not persisted: after a restart the
+engine loads at startup as usual.
+
 `POST /api/projects/{id}/export` starts an export job; body `{clips, formats, options, name}` → `202
 {job_id}`. `options.classes` is a list of project class ids to export (null or absent = every class); an
 empty list, a repeated id or an unknown class id is a 400. It returns 400 for an invalid request (unknown

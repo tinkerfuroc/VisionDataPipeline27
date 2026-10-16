@@ -111,7 +111,9 @@ export type ExportResult = {
 export type Health = {
   status: string;
   version: string;
-  engine: { loaded: boolean; device: string | null; error: string | null };
+  /** `paused`: unloaded to free its VRAM for training on its GPU (absent on an older server). `device` stays
+   * set while paused: where it reloads. */
+  engine: { loaded: boolean; device: string | null; error: string | null; paused?: boolean };
   /** Absent on an older server: the GUI then skips its own size check and lets the server refuse. */
   upload?: { max_bytes: number };
   /** Absent on an older server: treated as login off. */
@@ -171,6 +173,8 @@ export type TrainStatus = {
   /** The fastest GPU that is not busy (fastest overall if every GPU is busy); null without GPUs. */
   default_gpu: number | null;
   sam3_gpu: number | null;
+  /** VRAM SAM3 took when it loaded, i.e. about what pausing it frees; null when unknown, absent on an older server. */
+  sam3_vram_bytes?: number | null;
   models: string[];
   default_models: string[];
   defaults: TrainParams;
@@ -265,9 +269,14 @@ export type PredictionPage = {
   counts: { all: number; missed: number; worst: number };
   items: PredictionItem[];
 };
-export type StartRunsRequest = { export_id: string; runs: { model: string; gpu: number }[]; params: TrainParams };
+/** `pause_sam3`: unload SAM3 until training on its GPU is over (ignored by the server unless a run goes there). */
+export type StartRunsRequest = {
+  export_id: string; runs: { model: string; gpu: number }[]; params: TrainParams; pause_sam3?: boolean;
+};
 export type StartMode = "continue" | "finetune";
-export type FromCheckpointRequest = { export_id: string; mode: StartMode; gpu: number; params?: TrainParams };
+export type FromCheckpointRequest = {
+  export_id: string; mode: StartMode; gpu: number; params?: TrainParams; pause_sam3?: boolean;
+};
 
 /** A resumable upload as the server reports it. */
 export type UploadInfo = {

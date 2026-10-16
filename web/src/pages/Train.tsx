@@ -90,13 +90,13 @@ export function Train() {
     status.refresh();
   };
   // Left to reject on failure (the sidebar's Stopped run section shows the error itself, like Start does).
-  const onResume = async (id: string, gpu: number) => {
-    await api.resumeRun(id, gpu);
+  const onResume = async (id: string, gpu: number, pauseSam3?: boolean) => {
+    await (pauseSam3 ? api.resumeRun(id, gpu, true) : api.resumeRun(id, gpu));
     runs.refresh();
     status.refresh();
   };
-  const onComplete = async (id: string, gpu: number) => {
-    await api.completeRun(id, gpu);
+  const onComplete = async (id: string, gpu: number, pauseSam3?: boolean) => {
+    await (pauseSam3 ? api.completeRun(id, gpu, true) : api.completeRun(id, gpu));
     runs.refresh();
     status.refresh();
   };
