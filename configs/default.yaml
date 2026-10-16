@@ -18,3 +18,4 @@ sam3:
 propagate: {chunk_size: 24, min_chunk_size: 4, lost_after: 15}
 export:    {val_fraction: 0.2, min_area_px: 64, workers: null}   # export processes; null = CPU cores minus 4 (min 1), 1 = no worker processes
 augment:   {workers: null}   # augmentation processes; null = CPU cores minus 4 (min 1), 1 = no worker processes
+train:     {warm_label_cache: true}   # after an export/augment job, scan its YOLO labels in the background (low priority) so the first training on it starts sooner

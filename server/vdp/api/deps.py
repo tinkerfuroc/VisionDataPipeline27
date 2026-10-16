@@ -24,6 +24,7 @@ class AppState:
     train: Any = None  # a TrainScheduler
     uploads: Any = None  # a ResumableStore
     engine_ctl: Any = None  # an engine.EngineControl: background loading and the training pause
+    warmer: Any = None  # a train.warm_cache.LabelCacheWarmer: warms a finished export's label cache
 
 
 def get_state(request: Request) -> AppState:

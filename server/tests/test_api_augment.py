@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import time
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -10,7 +11,7 @@ from fastapi.testclient import TestClient
 from vdp.api.app import create_app
 from vdp.config import Settings
 from vdp.engine.fake import FakeEngine
-from vdp.export import ExportOptions, run_export
+from vdp.export import ExportCancelled, ExportOptions, run_export
 from vdp.store.models import LabelObject
 
 
@@ -206,3 +207,35 @@ def test_augment_limits_are_validated_and_accepted(client, store, make_clip, tmp
     assert listed[snap["result"]["export_id"]]["augment_limits"] == snap["result"]["limits"]
     assert listed[snap["result"]["export_id"]]["augment_limits"]["stopped_by"] == "images"
     assert listed[src["export_id"]]["augment_limits"] is None
+
+
+class _RecordingWarmer:
+    def __init__(self) -> None:
+        self.requested = []
+
+    def request(self, export_dir) -> bool:
+        self.requested.append(Path(export_dir))
+        return True
+
+    def shutdown(self) -> None:
+        pass
+
+
+def test_a_finished_augment_job_warms_the_new_exports_label_cache(store, make_clip, tmp_path, monkeypatch):
+    project, clip = _labelled(store, make_clip)
+    data_root = tmp_path / "data"
+    src = run_export(store, project.id, [clip.id], ["yolo_seg", "masks"], ExportOptions(), data_root / "exports")
+    _make_pool(data_root)
+    warmer = _RecordingWarmer()
+    with TestClient(create_app(_settings(tmp_path), engine=FakeEngine(), load_engine=False, warmer=warmer)) as c:
+        snap = wait_job(c, c.post(f"/api/exports/{src['export_id']}/augment", json={"per_image": 1}).json()["job_id"])
+        assert snap["status"] == "done"
+        assert warmer.requested == [Path(snap["result"]["path"])]
+
+        def cancelled(*a, **k):
+            raise ExportCancelled()
+
+        monkeypatch.setattr("vdp.api.augment.run_augment", cancelled)
+        snap = wait_job(c, c.post(f"/api/exports/{src['export_id']}/augment", json={"per_image": 1}).json()["job_id"])
+        assert snap["status"] == "cancelled"
+        assert len(warmer.requested) == 1

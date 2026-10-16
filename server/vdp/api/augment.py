@@ -76,7 +76,7 @@ def augment(export_id: str, state: State, body: AugmentBody | None = None) -> di
 
     def work(job: Job) -> dict:
         try:
-            return run_augment(
+            result = run_augment(
                 data_root, export_id, opts,
                 progress=lambda done, total: job.emit({"type": "progress", "done": done, "total": total}),
                 cancel=job.cancel_requested,
@@ -84,6 +84,8 @@ def augment(export_id: str, state: State, body: AugmentBody | None = None) -> di
             )
         except ExportCancelled:
             return {"cancelled": True}
+        state.warmer.request(Path(result["path"]))  # so training on it starts sooner; never raises or blocks
+        return result
 
     return {"job_id": state.jobs.start(AUGMENT, work, exclusive=EXCLUSIVE).id}
 

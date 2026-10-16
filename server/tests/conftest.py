@@ -24,6 +24,15 @@ def is_white(frame: np.ndarray) -> bool:
     return bool(frame[0, 0, 0] > 250)
 
 
+@pytest.fixture(autouse=True)
+def _no_label_cache_warmup(monkeypatch):
+    """Export and augment jobs never start a real Ultralytics label-cache warm-up in tests; a test that wants one
+    passes `spawn=` to LabelCacheWarmer, or a fake `warmer=` to create_app."""
+    from vdp.train import warm_cache
+
+    monkeypatch.setattr(warm_cache, "default_spawn", lambda export_dir: None)
+
+
 @pytest.fixture
 def store(tmp_path):
     return ProjectStore(tmp_path / "data")

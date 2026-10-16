@@ -69,6 +69,10 @@ class AugmentCfg(_Cfg):
     workers: int | None = Field(default=None, ge=1)  # None: cpu_count - 4 (min 1); 1 = in-process
 
 
+class TrainCfg(_Cfg):
+    warm_label_cache: bool = True  # scan a new export's YOLO labels in the background so training starts sooner
+
+
 class Settings(_Cfg):
     server: ServerCfg = Field(default_factory=ServerCfg)
     project: ProjectCfg = Field(default_factory=ProjectCfg)
@@ -77,6 +81,7 @@ class Settings(_Cfg):
     propagate: PropagateCfg = Field(default_factory=PropagateCfg)
     export: ExportCfg = Field(default_factory=ExportCfg)
     augment: AugmentCfg = Field(default_factory=AugmentCfg)
+    train: TrainCfg = Field(default_factory=TrainCfg)
 
     @classmethod
     def load(cls, path: str | Path | None = None) -> Settings:

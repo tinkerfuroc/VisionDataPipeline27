@@ -100,7 +100,7 @@ faster for already-compressed footage, and `-o ServerAliveInterval=30` keeps a N
 ## Configuration
 
 Settings live in [`configs/default.yaml`](configs/default.yaml) (server address, data root, SAM3 model directory
-and thresholds, upload limits, export defaults); pass another file with `vdp --config <file> ...`. Relative paths
+and thresholds, upload limits, export defaults, training's background label-cache warm-up); pass another file with `vdp --config <file> ...`. Relative paths
 are resolved against the repository root, so `vdp` can be run from any directory.
 
 ## Documentation

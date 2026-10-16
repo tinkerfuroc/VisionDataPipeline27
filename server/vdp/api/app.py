@@ -20,6 +20,7 @@ from ..jobs import JobBusy, JobManager, JobNotFound
 from ..labeling.errors import BadRequest, Conflict, PropagationFailed
 from ..store import NotFound, ProjectStore, StoreError
 from ..train.scheduler import TrainScheduler, detect_gpus
+from ..train.warm_cache import LabelCacheWarmer
 from . import augment as augment_api
 from . import clips, export, jobs, labeling, projects
 from . import engine as engine_api
@@ -55,6 +56,7 @@ def _build_engine(settings: Settings):
 
 def create_app(
     settings: Settings, *, engine=None, load_engine: bool = True, train=None, auth_store: AuthStore | None = None,
+    warmer=None,
 ) -> FastAPI:
     state = AppState(
         settings=settings,
@@ -63,6 +65,9 @@ def create_app(
         jobs=JobManager(),
         train=train if train is not None else TrainScheduler(settings.project.data_root, detect_gpus()),
         uploads=ResumableStore(settings.project.data_root / "uploads" / "resumable", settings.ingest.max_upload_bytes),
+        warmer=warmer if warmer is not None else LabelCacheWarmer(
+            enabled=settings.train.warm_label_cache, available=lambda: train_api.ultralytics_error() is None,
+        ),
     )
     state.engine_ctl = engine_api.EngineControl(state.engine, state.jobs, state.train)
     state.train.on_gpu_idle = state.engine_ctl.gpu_idle  # reloads SAM3 after a training pause
@@ -78,6 +83,7 @@ def create_app(
         for job in state.jobs.cancel_all():
             if job.kind in SHUTDOWN_JOIN_KINDS:
                 job.join(max(0.0, deadline - time.monotonic()))
+        state.warmer.shutdown()
         state.train.shutdown()
 
     app = FastAPI(title="VisionDataPipeline27", version=__version__, lifespan=lifespan)

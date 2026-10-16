@@ -190,3 +190,61 @@ def test_export_class_selection_is_validated_before_the_job_and_applied(client, 
     manifest = json.loads((Path(snap["result"]["path"]) / "export.json").read_text())
     assert manifest["options"]["class_ids"] == [0]
     assert [c["name"] for c in manifest["classes"]] == ["part"]
+
+
+class _RecordingWarmer:
+    def __init__(self) -> None:
+        self.requested: list[Path] = []
+        self.shut_down = False
+
+    def request(self, export_dir) -> bool:
+        self.requested.append(Path(export_dir))
+        return True
+
+    def shutdown(self) -> None:
+        self.shut_down = True
+
+
+def _warmed_client(tmp_path):
+    warmer = _RecordingWarmer()
+    return TestClient(create_app(_settings(tmp_path), engine=FakeEngine(), load_engine=False, warmer=warmer)), warmer
+
+
+def test_a_finished_export_starts_a_label_cache_warmup_for_it(tmp_path):
+    c, warmer = _warmed_client(tmp_path)
+    with c:
+        project_id = _project(c)
+        clip_id = _clip_with_masks(c, tmp_path, project_id)
+        started = c.post(f"/api/projects/{project_id}/export", json={"clips": [clip_id], "formats": ["yolo_seg"]})
+        snap = wait_job(c, started.json()["job_id"])
+        assert snap["status"] == "done"
+        assert warmer.requested == [Path(snap["result"]["path"])]
+    assert warmer.shut_down  # the server's shutdown stops it
+
+
+def test_a_failed_or_cancelled_export_starts_no_warmup(tmp_path, monkeypatch):
+    from vdp.export import ExportCancelled
+
+    c, warmer = _warmed_client(tmp_path)
+    with c:
+        project_id = _project(c)
+        clip_id = _clip_with_masks(c, tmp_path, project_id)
+        for exc in (RuntimeError("disk full"), ExportCancelled()):
+            def fail(*a, exc=exc, **k):
+                raise exc
+
+            monkeypatch.setattr("vdp.api.export.run_export", fail)
+            started = c.post(f"/api/projects/{project_id}/export", json={"clips": [clip_id], "formats": ["yolo_seg"]})
+            assert wait_job(c, started.json()["job_id"])["status"] in ("error", "cancelled")
+        assert warmer.requested == []
+
+
+def test_the_default_warmer_follows_the_config_and_ultralytics_availability(tmp_path, monkeypatch):
+    s = _settings(tmp_path)
+    s.train.warm_label_cache = False
+    assert create_app(s, engine=FakeEngine(), load_engine=False).state.vdp.warmer.request(tmp_path) is False
+    warmer = create_app(_settings(tmp_path), engine=FakeEngine(), load_engine=False).state.vdp.warmer
+    monkeypatch.setattr("vdp.api.train.ultralytics_error", lambda: "ultralytics is not installed")
+    assert warmer.request(tmp_path) is False
+    monkeypatch.setattr("vdp.api.train.ultralytics_error", lambda: None)
+    assert warmer.request(tmp_path) is True  # (the suite's spawn is a no-op)

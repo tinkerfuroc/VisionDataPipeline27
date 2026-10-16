@@ -20,6 +20,7 @@ def test_defaults():
     assert s.propagate.lost_after == 15
     assert s.ingest.allowed_roots == ["~"]
     assert s.export.val_fraction == 0.2
+    assert s.train.warm_label_cache is True
 
 
 def test_relative_paths_resolve_against_repo_root_regardless_of_cwd(monkeypatch, tmp_path):
@@ -65,6 +66,7 @@ def test_repo_default_yaml_is_valid():
     repo_root = Path(__file__).resolve().parents[2]
     s = Settings.load(repo_root / "configs" / "default.yaml")
     assert s.sam3.score_mode == "native"
+    assert s.train.warm_label_cache is True
 
 
 def test_augment_workers_setting():

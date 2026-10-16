@@ -169,6 +169,14 @@ Each run lives in `data/runs/<run_id>/`: `run.json` (request and status), `worke
 (`python -m vdp.train.worker`) with `CUDA_VISIBLE_DEVICES` set to its GPU, so a crash or out-of-memory error ends
 that run only.
 
+Before its first batch, Ultralytics scans a new export's labels (opening every image to verify it) and saves the
+result as `labels/train.cache` and `val.cache` in the export's YOLO folders; on a 30 000-image export that takes
+about a minute, while a later run on the same export loads the cache in under a second. So when an export or
+augmentation job finishes, the server does that scan in the background at low priority
+(`python -m vdp.train.warm_cache <export_dir>`, one export at a time, output in the export's `warm_cache.log`) for its
+`yolo_seg` and `yolo_det` folders; a run started before it is done simply scans as before. Turn it off with
+`train.warm_label_cache: false` in the config.
+
 Training never lowers the batch size on its own: Ultralytics would silently halve it (up to three times) when the
 first epoch runs out of GPU memory, but here the run stops instead, with status `error` and the message "Out of GPU
 memory on cuda:N at batch B (image size S)…". Start it again with a smaller batch or image size, on another GPU,
