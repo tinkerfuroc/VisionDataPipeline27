@@ -26,6 +26,12 @@ def palette_for(classes: Iterable[ClassDef]) -> list[int]:
     return palette
 
 
+def check_mask_classes(classes: Iterable[ClassDef]) -> None:
+    """The mask image format's limit, checked before anything is written."""
+    if any(c.id + 1 > 255 for c in classes):
+        raise BadRequest("the mask image format holds at most 255 classes (8-bit pixels, 0 is the background)")
+
+
 @dataclass
 class MaskSummary(ExportSummary):
     overlap_px: int = 0  # pixels claimed by more than one object, over every frame of both splits
@@ -57,8 +63,7 @@ class MaskPng:
     name = "masks"
 
     def write(self, plan: ExportPlan, out_dir: Path, tick: Tick) -> MaskSummary:
-        if any(c.id + 1 > 255 for c in plan.classes):
-            raise BadRequest("the mask image format holds at most 255 classes (8-bit pixels, 0 is the background)")
+        check_mask_classes(plan.classes)
         root = out_dir / self.name
         summary = MaskSummary(self.name)
         palette = palette_for(plan.classes)

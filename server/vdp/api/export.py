@@ -56,7 +56,7 @@ def start_export(project_id: str, body: ExportBody, state: State) -> dict:
             return run_export(
                 state.store, project_id, body.clips, body.formats, options, exports_root,
                 progress=lambda done, total: job.emit({"type": "progress", "done": done, "total": total}),
-                cancel=job.cancel_requested, name=name,
+                cancel=job.cancel_requested, name=name, workers=state.settings.export.workers,
             )
         except ExportCancelled:
             return {"cancelled": True}

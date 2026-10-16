@@ -1,4 +1,5 @@
-"""Run one export: plan, copy each image once, let every chosen exporter serialise the plan, write the manifest."""
+"""Run one export: plan, then one pass per frame (on the process pool) that places its image and writes every chosen
+format's files for it, then the per-split files and the manifest."""
 
 from __future__ import annotations
 
@@ -8,28 +9,20 @@ from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
 
-import cv2
-
-from ..labeling.regions import apply_to_image, crop_to
 from ..store import ProjectStore, now_iso
-from .base import ExportSummary, place_image, shared_image
+from .base import ExportSummary
+from .frame_unit import FrameJob, FrameResult, write_frames
+from .mask_png import MaskSummary, check_mask_classes, palette_for
 from .naming import clean_name, reserve_export_dir
-from .plan import ExportOptions, ExportPlan, PlanFrame, build_plan, check_request
+from .plan import ExportOptions, ExportPlan, build_plan, check_request
+from .yolo import data_yaml
 
-JPEG_QUALITY = 95
+EXPORT_UNIT = 32  # frames per pool unit: enough work to amortise a unit's pickling and dispatch
+INLINE_BELOW = 64  # a plan with fewer frames runs in-process: a pool's spawn cost would outweigh the work
 
 
 class ExportCancelled(Exception):
     pass
-
-
-def _write_region_image(frame: PlanFrame, dst: Path) -> None:
-    image = cv2.imread(str(frame.image_path), cv2.IMREAD_COLOR)
-    if image is None:
-        raise OSError(f"cannot read {frame.image_path}")
-    out = crop_to(apply_to_image(image, frame.region), frame.region)
-    if not cv2.imwrite(str(dst), out, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY]):
-        raise OSError(f"cannot write {dst}")
 
 
 def _counts(plan: ExportPlan) -> dict:
@@ -41,25 +34,87 @@ def _counts(plan: ExportPlan) -> dict:
     return out
 
 
+def _make_dirs(out: Path, formats: list[str]) -> None:
+    """Every directory the exporters' `write` makes, including those of a split with no frame."""
+    (out / "images").mkdir()
+    for name in formats:
+        root = out / name
+        if name == "coco":
+            (root / "annotations").mkdir(parents=True, exist_ok=True)
+        for split in ("train", "val"):
+            (root / "images" / split).mkdir(parents=True, exist_ok=True)
+            if name in ("yolo_seg", "yolo_det"):
+                (root / "labels" / split).mkdir(parents=True, exist_ok=True)
+            elif name == "masks":
+                (root / "masks" / split).mkdir(parents=True, exist_ok=True)
+
+
+def _write_coco(plan: ExportPlan, out: Path, results: list[FrameResult]) -> None:
+    """`instances_<split>.json`, ids numbered in the plan's frame order per split, exactly as `Coco.write`."""
+    categories = [{"id": c.id + 1, "name": c.name, "supercategory": "object"} for c in sorted(plan.classes, key=lambda c: c.id)]
+    for split in ("train", "val"):
+        images, annotations = [], []
+        for frame, result in zip(plan.frames, results, strict=True):
+            if frame.split != split:
+                continue
+            image_id = len(images) + 1
+            images.append({"id": image_id, "file_name": f"{frame.stem}.jpg", "width": frame.width, "height": frame.height})
+            for ann in result.coco:
+                annotations.append({"id": len(annotations) + 1, "image_id": image_id, **ann})
+        body = {"info": {"description": plan.project_name}, "licenses": [], "images": images,
+                "annotations": annotations, "categories": categories}
+        (out / "coco" / "annotations" / f"instances_{split}.json").write_text(json.dumps(body))
+
+
 def write_dataset(
     plan: ExportPlan, formats: list[str], out: Path, tick: Callable[[], None], *, link_images: bool = False,
+    workers: int | None = 1, advance: Callable[[int], None] | None = None, cancel: Callable[[], bool] | None = None,
 ) -> tuple[list[ExportSummary], dict, bool]:
-    """Place each frame image at `out/images/<stem>.jpg` (copied, or hard-linked when `link_images`), then
-    let every chosen exporter serialise the plan. `run_export` places store frames by copy; a derived
-    export places frames it already owns (in another export, or freshly written composites) by hard link."""
-    from . import EXPORTERS  # here, not at module level: the package __init__ imports this module
+    """Place each frame image at `out/images/<stem>.jpg` (copied, or hard-linked when `link_images`) and write
+    every chosen format's files for it, one frame unit at a time (`frame_unit.write_frames`) on the process pool
+    (`workers`; None = default, a small plan runs in-process). The files are those the exporters' `write` makes.
+    Progress: `advance(n)` per completed unit, n = frames x (1 + formats); without `advance`, `tick` once per
+    step. `cancel` is polled by the pool while units run (`advance`/`tick` raise to cancel between units).
+    `run_export` places store frames by copy; a derived export places frames it already owns by hard link."""
+    # here, not at module level: vdp.parallel imports ExportCancelled from this package
+    from .. import parallel
 
-    (out / "images").mkdir()
-    for frame in plan.frames:
-        if link_images:
-            place_image(frame.image_path, shared_image(out, frame))
-        elif frame.region is not None:
-            _write_region_image(frame, shared_image(out, frame))  # greyed and cropped: its own image
-        else:
-            # a copy: store frames are never linked outside
-            shutil.copy2(frame.image_path, shared_image(out, frame))
-        tick()
-    summaries = [EXPORTERS[name].write(plan, out, tick) for name in formats]
+    if "masks" in formats:
+        check_mask_classes(plan.classes)  # before any file is written
+    _make_dirs(out, formats)
+    if advance is None:
+        def advance(n: int) -> None:
+            for _ in range(n):
+                tick()
+
+    frames = list(plan.frames)
+    n = 1 if len(frames) < INLINE_BELOW else min(workers or parallel.default_workers(), -(-len(frames) // EXPORT_UNIT))
+    size = 1 if n <= 1 else EXPORT_UNIT
+    job = FrameJob(
+        out=out, formats=tuple(formats), link_images=link_images,
+        palette=tuple(palette_for(plan.classes)) if "masks" in formats else None,
+    )
+    units = [(job, frames[i : i + size]) for i in range(0, len(frames), size)]
+    per_unit = parallel.run_units(
+        write_frames, units, workers=n, weight=lambda u: len(u[1]) * len(formats) + len(u[1]),
+        on_done=advance, cancel=cancel or (lambda: False),
+    )
+    results: list[FrameResult] = [r for unit_results in per_unit for r in unit_results]
+
+    summaries: list[ExportSummary] = []
+    for name in formats:
+        summary = MaskSummary(name) if name == "masks" else ExportSummary(name)
+        for frame, result in zip(frames, results, strict=True):
+            summary.images[frame.split] += 1
+            summary.annotations[frame.split] += result.annotations[name]
+            summary.linked = summary.linked and result.linked[name]
+            if isinstance(summary, MaskSummary):
+                summary.overlap_px += result.overlap_px
+        summaries.append(summary)
+        if name in ("yolo_seg", "yolo_det"):
+            (out / name / "data.yaml").write_text(data_yaml(plan.classes))
+    if "coco" in formats:
+        _write_coco(plan, out, results)
     counts = _counts(plan)
     linked = all(s.linked for s in summaries)
     return summaries, counts, linked
@@ -104,7 +159,7 @@ def manifest_for(
 def run_export(
     store: ProjectStore, project_id: str, clip_ids: list[str], formats: list[str], options: ExportOptions,
     exports_root: Path, progress: Callable[[int, int], None] | None = None, cancel: Callable[[], bool] | None = None,
-    name: str | None = None,
+    name: str | None = None, workers: int | None = None,
 ) -> dict:
     check_request(store, project_id, clip_ids, formats, options)
     name = clean_name(name)
@@ -114,19 +169,24 @@ def run_export(
     )
     state = {"done": 0, "total": max(1, n_candidates * (2 + len(formats)))}
 
-    def tick() -> None:
+    def advance(n: int) -> None:
         if cancel is not None and cancel():
             raise ExportCancelled
-        state["done"] += 1
+        state["done"] += n
         if progress is not None:
             progress(min(state["done"], state["total"]), state["total"])
+
+    def tick() -> None:
+        advance(1)
 
     export_id, out = reserve_export_dir(exports_root, name)
     try:
         plan = build_plan(store, project_id, clip_ids, options, tick=tick)
         # include_empty=False may have dropped frames: shrink the total so the bar still ends at 100%
         state["total"] = state["done"] + len(plan.frames) * (1 + len(formats))
-        summaries, counts, linked = write_dataset(plan, formats, out, tick)
+        summaries, counts, linked = write_dataset(
+            plan, formats, out, tick, workers=workers, advance=advance, cancel=cancel,
+        )
         manifest = manifest_for(plan, export_id, summaries, counts, linked, name=name)
         (out / "export.json").write_text(json.dumps(manifest, indent=2))
     except BaseException:

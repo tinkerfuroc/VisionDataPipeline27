@@ -140,10 +140,10 @@ def test_a_failed_export_is_a_job_error_and_leaves_no_directory(client, tmp_path
     project_id = _project(client)
     clip_id = _clip_with_masks(client, tmp_path, project_id)
 
-    def boom(self, plan, out_dir, tick):
+    def boom(unit):
         raise RuntimeError("disk full")
 
-    monkeypatch.setattr("vdp.export.coco.Coco.write", boom)
+    monkeypatch.setattr("vdp.export.runner.write_frames", boom)  # a frame unit fails (run inline: a small export)
     started = client.post(f"/api/projects/{project_id}/export", json={"clips": [clip_id], "formats": ["yolo_det", "coco"]})
     snap = wait_job(client, started.json()["job_id"])
     assert snap["status"] == "error" and "disk full" in snap["error"]
@@ -156,16 +156,16 @@ def test_a_clip_cannot_be_deleted_while_an_export_reads_it(client, tmp_path, mon
     project_id = _project(client)
     clip_id = _clip_with_masks(client, tmp_path, project_id)
     entered, release = threading.Event(), threading.Event()
-    from vdp.export.coco import Coco
+    from vdp.export import runner
 
-    real = Coco.write
+    real = runner.write_frames
 
-    def gated(self, plan, out_dir, tick):
+    def gated(unit):  # the frame units run inline here: a small export
         entered.set()
         assert release.wait(10)
-        return real(self, plan, out_dir, tick)
+        return real(unit)
 
-    monkeypatch.setattr(Coco, "write", gated)
+    monkeypatch.setattr(runner, "write_frames", gated)
     job_id = client.post(f"/api/projects/{project_id}/export", json={"clips": [clip_id], "formats": ["coco"]}).json()["job_id"]
     assert entered.wait(10)
     refused = client.delete(f"/api/clips/{clip_id}")
