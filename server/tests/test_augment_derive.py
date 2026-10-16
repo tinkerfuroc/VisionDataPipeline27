@@ -781,3 +781,68 @@ def test_cutout_frames_keep_the_sorted_path_order(tmp_path):
         cv2.imwrite(str(masks / f"{stem}.png"), np.zeros((h, w), np.uint8))
     _cutouts, sizes, _mode = _cutouts_and_sizes(tmp_path, ["yolo_seg", "masks"], 0, lambda: None, workers=1)
     assert sizes == [(30, 40), (10, 20)]
+
+
+def _files(root: Path) -> dict[str, bytes]:
+    return {str(p.relative_to(root)): p.read_bytes() for p in sorted(root.rglob("*")) if p.is_file()}
+
+
+def _comparable_manifest(path: Path) -> dict:
+    m = json.loads((Path(path) / "export.json").read_text())
+    return {k: v for k, v in m.items() if k not in ("export_id", "name", "created_at")}
+
+
+def test_composites_are_identical_for_one_and_three_workers(store, make_clip, tmp_path, monkeypatch):
+    from vdp.augment import derive
+
+    monkeypatch.setattr(derive, "UNIT_COMPOSITES", 2)  # several composite units even for a small fixture
+    project, clip = _multi(store, make_clip, n=10)
+    data_root = tmp_path / "data"
+    src = _export(store, project, clip, ["yolo_seg", "yolo_det", "coco", "masks"], data_root)
+    _make_pool(data_root)
+    opts = AugmentOptions(per_image=2, max_objects=3, seed=4, lighting=1)
+
+    one = run_augment(data_root, src["export_id"], opts, workers=1)
+    three = run_augment(data_root, src["export_id"], opts, workers=3)
+
+    a, b = _files(Path(one["path"])), _files(Path(three["path"]))
+    a.pop("export.json")
+    b.pop("export.json")
+    assert any(name.startswith("images/syn_") for name in a)
+    assert a.keys() == b.keys()
+    assert [k for k in a if a[k] != b[k]] == []
+    assert _comparable_manifest(one["path"]) == _comparable_manifest(three["path"])
+    assert not (Path(one["path"]) / ".work").exists()
+
+
+def test_cancel_mid_composites_on_the_pool_removes_output(store, make_clip, tmp_path, monkeypatch):
+    from vdp.augment import derive
+
+    monkeypatch.setattr(derive, "UNIT_COMPOSITES", 1)
+    project, clip = _labelled(store, make_clip, n=10)
+    data_root = tmp_path / "data"
+    src = _export(store, project, clip, ["yolo_seg", "masks"], data_root)
+    _make_pool(data_root)
+    seen = {"done": 0}
+    stop_at = src["counts"]["train"]["images"] + 3  # past the cutout ticks: inside the composite phase
+
+    def progress(done, total):
+        seen["done"] = done
+
+    with pytest.raises(ExportCancelled):
+        run_augment(data_root, src["export_id"], AugmentOptions(per_image=3), progress=progress,
+                    cancel=lambda: seen["done"] >= stop_at, workers=2)
+    assert sorted(p.name for p in (data_root / "exports").iterdir()) == [src["export_id"]]
+
+
+def test_an_unreadable_background_fails_the_job_and_removes_output(store, make_clip, tmp_path):
+    project, clip = _labelled(store, make_clip)
+    data_root = tmp_path / "data"
+    src = _export(store, project, clip, ["yolo_seg", "masks"], data_root)
+    _make_pool(data_root)
+    for p in (data_root / "backgrounds" / "dtd" / "x").glob("*.jpg"):
+        p.write_bytes(b"not a jpeg")
+
+    with pytest.raises(Exception, match="cannot identify image"):
+        run_augment(data_root, src["export_id"], AugmentOptions(per_image=3), workers=2)
+    assert sorted(p.name for p in (data_root / "exports").iterdir()) == [src["export_id"]]

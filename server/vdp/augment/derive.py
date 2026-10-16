@@ -2,10 +2,11 @@
 
 Real frames are never re-labelled: their images are hard-linked in (as for any export) and their per-format
 label artifacts (`yolo_seg`/`yolo_det` label files, `masks` PNGs, COCO images+annotations) are copied
-verbatim from the source, for both splits. Only synthetic (composite) frames go through the ordinary export
-pipeline (`write_dataset`, i.e. the same exporters every export uses); their output is then merged with the
-copied real output (COCO's train JSON gets the synthetic images/annotations appended; everything else lives
-in its own per-stem file, so "merge" is just placing more files side by side).
+verbatim from the source, for both splits. Synthetic (composite) frames are made on a process pool
+(`vdp.augment.parallel`); each worker writes its composites' images and per-format label files itself, with the
+same per-frame label functions every exporter uses (`yolo_seg_lines`, `write_semantic_png`, ...), and the main
+process appends their COCO images/annotations to the train JSON (everything else lives in its own per-stem
+file, so "merge" is just placing more files side by side).
 
 Lighting variants (`lighting` per real train frame, named `lit_<seed>_<stem>_<k>`) are the source frame relit as
 low light or mild over-exposure (`vdp.augment.lighting`); since only pixels change, each one's labels are its
@@ -26,23 +27,25 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal
+from typing import Literal, NamedTuple
 from uuid import uuid4
 
 import numpy as np
 from PIL import Image
 
-from ..export import ExportCancelled, manifest_for, write_dataset
+from ..export import ExportCancelled, manifest_for
 from ..export.base import ExportSummary, place_image
-from ..export.mask_png import paint
+from ..export.coco import coco_annotations
+from ..export.mask_png import MaskSummary, paint, palette_for, write_semantic_png
 from ..export.naming import MAX_NAME
-from ..export.plan import ExportPlan, PlanFrame, PlanObject, classes_from_manifest, options_from_manifest
+from ..export.plan import ExportPlan, classes_from_manifest, options_from_manifest
 from ..export.polygons import Polygon, clean_mask, polygons_to_mask
+from ..export.yolo import yolo_det_lines, yolo_seg_lines
 from ..labeling.errors import BadRequest
 from ..train.models import find_export
 from .backgrounds import POOLS, list_images
 from .composite import Cutout, cutout_from, make_composite
-from .cutout_pack import pack_cutouts
+from .cutout_pack import load_cutouts, pack_cutouts
 from .lighting import LOW_SHARE, relight
 from .parallel import run_units
 
@@ -211,6 +214,115 @@ def _cutouts_and_sizes(
     return cutouts, sizes, "per_object" if per_object else "per_class_region"
 
 
+UNIT_COMPOSITES = 16  # composites per work unit
+
+
+class SynthResult(NamedTuple):
+    """What a worker reports for one composite with objects (its files are already written)."""
+    n: int
+    stem: str
+    width: int
+    height: int
+    coco: list[dict]  # per-object COCO annotations, without id / image_id ([] unless the coco format is chosen)
+    yolo_seg_lines: int
+    yolo_det_lines: int
+    objects: int
+    overlap_px: int  # the masks format's overlapping pixels
+    linked: bool  # every format's image was hard-linked (not copied)
+
+
+_worker: dict = {}  # a composite worker's state, set by _init_composite_worker
+
+
+def _init_composite_worker(
+    work_dir: Path, pool_images: list[Path], sizes: list[tuple[int, int]], opts_dict: dict, formats: list[str],
+    min_area_px: int, palette: list[int], out: Path,
+) -> None:
+    """Pool initializer (also called in-process for one worker): memory-maps the packed cutouts and sets up a
+    per-worker background cache."""
+
+    @lru_cache(maxsize=64)  # per worker: gone with the worker (or cleared by run_augment when run in-process)
+    def load_background(path: Path) -> np.ndarray:
+        return np.array(Image.open(path).convert("RGB"))
+
+    _worker.clear()
+    _worker.update(
+        cutouts=load_cutouts(work_dir), pool_images=pool_images, sizes=sizes, opts=AugmentOptions(**opts_dict),
+        formats=formats, min_area_px=min_area_px, palette=palette, out=out, load_background=load_background,
+    )
+
+
+def _composite_unit(ns: list[int]) -> list[SynthResult | None]:
+    """Make composites `ns` (each from its own `default_rng([seed, n])`) and write each one's image into
+    `out/images/`, place it into every format's train images, and write its per-format label files. `None` for
+    a composite that came out without objects (nothing is written for it)."""
+    w = _worker
+    opts, formats, out = w["opts"], w["formats"], w["out"]
+    results: list[SynthResult | None] = []
+    for n in ns:
+        rng = np.random.default_rng([opts.seed, n])
+        width, height = w["sizes"][int(rng.integers(len(w["sizes"])))]
+        background = w["load_background"](w["pool_images"][int(rng.integers(len(w["pool_images"])))])
+        composite = make_composite(
+            rng, width, height, background, w["cutouts"], opts.max_objects, w["min_area_px"],
+        )
+        if not composite.objects:
+            results.append(None)
+            continue
+        objects = composite.objects  # (export class id, mask), already cleaned by make_composite
+        stem = f"syn_{opts.seed}_{n:06d}"
+        image_path = out / "images" / f"{stem}.jpg"
+        Image.fromarray(composite.image).save(image_path, quality=90)
+        linked = True
+        for fmt in formats:
+            linked = place_image(image_path, out / fmt / "images" / "train" / f"{stem}.jpg") and linked
+        seg = yolo_seg_lines(objects, width, height) if "yolo_seg" in formats else []
+        det = yolo_det_lines(objects, width, height) if "yolo_det" in formats else []
+        for fmt, lines in (("yolo_seg", seg), ("yolo_det", det)):
+            if fmt in formats:  # an empty file would be YOLO's "background image"; never the case here
+                (out / fmt / "labels" / "train" / f"{stem}.txt").write_text("".join(f"{ln}\n" for ln in lines))
+        overlap = 0
+        if "masks" in formats:
+            overlap = write_semantic_png(
+                objects, height, width, w["palette"], out / "masks" / "masks" / "train" / f"{stem}.png",
+            )
+        coco = coco_annotations(objects) if "coco" in formats else []
+        results.append(SynthResult(n, stem, width, height, coco, len(seg), len(det), len(objects), overlap, linked))
+    return results
+
+
+def _make_format_dirs(out: Path, formats: list[str]) -> None:
+    """The directories every format's exporter creates, so a split without frames still has its (empty) dirs."""
+    (out / "images").mkdir()
+    sub = {"yolo_seg": ("images", "labels"), "yolo_det": ("images", "labels"), "masks": ("images", "masks"),
+           "coco": ("images",)}
+    for fmt in formats:
+        for kind in sub[fmt]:
+            for split in ("train", "val"):
+                (out / fmt / kind / split).mkdir(parents=True, exist_ok=True)
+        if fmt == "coco":
+            (out / fmt / "annotations").mkdir(parents=True, exist_ok=True)
+
+
+def _synth_summaries(formats: list[str], synthetic: list[SynthResult]) -> list[ExportSummary]:
+    """The composites' per-format summaries, counted as each exporter counts its frames."""
+    linked = all(s.linked for s in synthetic)
+    images = {"train": len(synthetic), "val": 0}
+    counted = {
+        "yolo_seg": lambda s: s.yolo_seg_lines, "yolo_det": lambda s: s.yolo_det_lines,
+        "masks": lambda s: s.objects, "coco": lambda s: len(s.coco),
+    }
+    summaries: list[ExportSummary] = []
+    for fmt in formats:
+        annotations = {"train": sum(counted[fmt](s) for s in synthetic), "val": 0}
+        if fmt == "masks":
+            summaries.append(MaskSummary(fmt, dict(images), annotations, linked,
+                                         sum(s.overlap_px for s in synthetic)))
+        else:
+            summaries.append(ExportSummary(fmt, dict(images), annotations, linked))
+    return summaries
+
+
 def _copy_label(
     source_dir: Path, out: Path, fmt: str, split: str, stem: str, new_stem: str | None = None,
 ) -> None:
@@ -276,14 +388,15 @@ def _lighting_annotations(source_dir: Path, fmt: str, pairs: list[tuple[str, str
     return sum(len((labels / f"{stem}.txt").read_text().splitlines()) for stem, _new in pairs)
 
 
-def _merge_coco(source_dir: Path, out: Path, lighting: list[tuple[str, str]]) -> int:
+def _merge_coco(
+    source_dir: Path, out: Path, lighting: list[tuple[str, str]], synthetic: list[SynthResult],
+) -> int:
     """`instances_train.json` = the source's train JSON, then a copy of each lighting variant's source image
-    entry and annotations, then the synthetic-only run's images/annotations (ids renumbered past the source's
-    own); `instances_val.json` = the source's, copied verbatim. Returns the lighting copies' annotation count."""
+    entry and annotations, then the composites' images/annotations in `n` order (ids continuing past the
+    source's own); `instances_val.json` = the source's, copied verbatim. Returns the lighting copies'
+    annotation count."""
     annotations_dir = Path("coco") / "annotations"
     src_train = json.loads((source_dir / annotations_dir / "instances_train.json").read_text())
-    synth_path = out / annotations_dir / "instances_train.json"
-    synth_train = json.loads(synth_path.read_text())
 
     next_image_id = max((im["id"] for im in src_train["images"]), default=0) + 1
     next_ann_id = max((a["id"] for a in src_train["annotations"]), default=0) + 1
@@ -304,16 +417,14 @@ def _merge_coco(source_dir: Path, out: Path, lighting: list[tuple[str, str]]) ->
             lighting_annotations += 1
         next_image_id += 1
 
-    id_map: dict[int, int] = {}
-    for im in sorted(synth_train["images"], key=lambda im: im["id"]):
-        id_map[im["id"]] = next_image_id
-        images.append({**im, "id": next_image_id})
+    for s in synthetic:
+        images.append({"id": next_image_id, "file_name": f"{s.stem}.jpg", "width": s.width, "height": s.height})
+        for ann in s.coco:
+            annotations.append({"id": next_ann_id, "image_id": next_image_id, **ann})
+            next_ann_id += 1
         next_image_id += 1
-    for ann in sorted(synth_train["annotations"], key=lambda a: a["id"]):
-        annotations.append({**ann, "id": next_ann_id, "image_id": id_map[ann["image_id"]]})
-        next_ann_id += 1
 
-    synth_path.write_text(json.dumps({**src_train, "images": images, "annotations": annotations}))
+    (out / annotations_dir / "instances_train.json").write_text(json.dumps({**src_train, "images": images, "annotations": annotations}))
     val_name = annotations_dir / "instances_val.json"
     shutil.copy2(source_dir / val_name, out / val_name)
     return lighting_annotations
@@ -372,8 +483,7 @@ def run_augment(
         merge_ticks = real_train_n + real_val_n
         cutout_ticks = real_train_n if opts.per_image else 0
         lighting_ticks = opts.lighting * real_train_n
-        total = (cutout_ticks + total_composites + total_composites * (1 + len(formats)) + merge_ticks
-                 + lighting_ticks)
+        total = cutout_ticks + total_composites + merge_ticks + lighting_ticks
         state = {"done": 0, "total": max(1, total)}
 
         def tick() -> None:
@@ -383,57 +493,44 @@ def run_augment(
             if progress is not None:
                 progress(min(state["done"], state["total"]), state["total"])
 
-        @lru_cache(maxsize=64)  # per run: freed once run_augment returns, never serves a stale re-download
-        def load_background(path: Path) -> np.ndarray:
-            return np.array(Image.open(path).convert("RGB"))
+        def on_done(k: int) -> None:
+            for _ in range(k):
+                tick()
 
+        classes, class_map = classes_from_manifest(manifest)
+        _make_format_dirs(out, formats)
+        work = out / ".work"
+        work.mkdir()
         cutout_mode: CutoutMode | None = None
+        synthetic: list[SynthResult] = []
         if opts.per_image:
             cutouts, sizes, cutout_mode = _cutouts_and_sizes(
                 source_dir, formats, min_area_px, tick, workers, cancel or (lambda: False),
             )
-            pool_images = list_images(data_root, opts.pool)
-
-        work = out / ".work"
-        work_masks, work_images = work / "masks", work / "images"
-        work_masks.mkdir(parents=True)
-        work_images.mkdir(parents=True)
-        if opts.per_image:
             pack_cutouts(cutouts, work)  # for the composite workers to memory-map
+            del cutouts
+            units = [list(range(i, min(i + UNIT_COMPOSITES, total_composites)))
+                     for i in range(0, total_composites, UNIT_COMPOSITES)]
+            initargs = (work, list_images(data_root, opts.pool), sizes, asdict(opts), formats, min_area_px,
+                        palette_for(classes), out)
+            try:
+                results = run_units(
+                    _composite_unit, units, workers=workers, weight=len, on_done=on_done,
+                    cancel=cancel or (lambda: False), initializer=_init_composite_worker, initargs=initargs,
+                )
+            finally:
+                _worker.clear()  # a one-worker run initialised this process: drop its memmap and cache
+            synthetic = [r for unit in results for r in unit if r is not None]  # units and results in n order
 
-        synthetic: list[PlanFrame] = []
-        for n in range(total_composites):
-            rng = np.random.default_rng([opts.seed, n])
-            width, height = sizes[int(rng.integers(len(sizes)))]
-            background = load_background(pool_images[int(rng.integers(len(pool_images)))])
-            composite = make_composite(rng, width, height, background, cutouts, opts.max_objects, min_area_px)
-            tick()
-            if not composite.objects:
-                continue
-            stem = f"syn_{opts.seed}_{n:06d}"
-            image_path = work_images / f"{stem}.jpg"
-            Image.fromarray(composite.image).save(image_path, quality=90)
-            objects = []
-            for j, (class_id, mask) in enumerate(composite.objects):
-                mask_path = work_masks / f"{stem}_{j}.png"
-                Image.fromarray((mask * 255).astype(np.uint8)).save(mask_path)
-                objects.append(PlanObject(j, class_id, mask_path, min_area_px))
-            synthetic.append(PlanFrame(
-                clip_id="synthetic", frame_idx=len(synthetic), stem=stem, split="train",
-                image_path=image_path, width=width, height=height, objects=tuple(objects),
-            ))
-
-        classes, class_map = classes_from_manifest(manifest)
         options = options_from_manifest(manifest["options"])
-        plan = ExportPlan(
+        plan = ExportPlan(  # for manifest_for only: no frames (real ones are copied, composites written above)
             project_id=manifest["project"]["id"], project_name=manifest["project"]["name"], classes=classes,
             class_map=class_map, options=options, clip_ids=tuple(c["id"] for c in manifest["clips"]),
             clip_names={c["id"]: c["name"] for c in manifest["clips"]}, val_clip_ids=options.val_clip_ids or (),
-            frames=tuple(synthetic),  # the exporters run on the synthetic frames only; real ones are copied
+            frames=(),
         )
-        synth_summaries, _synth_counts, synth_linked = write_dataset(
-            plan, formats, out, tick, link_images=True,
-        )
+        synth_summaries = _synth_summaries(formats, synthetic)
+        synth_linked = all(s.linked for s in synth_summaries)
 
         real_linked = _merge_real_frames(source_dir, out, formats, tick)
         lit = _write_lighting_variants(source_dir, out, formats, opts, tick)
@@ -441,7 +538,7 @@ def run_augment(
             fmt: (len(lit), _lighting_annotations(source_dir, fmt, lit)) for fmt in formats if fmt != "coco"
         }
         if "coco" in formats:
-            lit_counts["coco"] = (len(lit), _merge_coco(source_dir, out, lit))
+            lit_counts["coco"] = (len(lit), _merge_coco(source_dir, out, lit, synthetic))
         yolo_labels = source_dir / "yolo_seg" / "labels" / "train"
         lit_annotated = sum(1 for stem, _new in lit if (yolo_labels / f"{stem}.txt").read_text().strip())
         for fmt in ("yolo_seg", "yolo_det"):
