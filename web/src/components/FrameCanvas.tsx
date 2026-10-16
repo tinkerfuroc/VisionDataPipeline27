@@ -55,6 +55,14 @@ type RegionEdit = { crop: Rect | null; blocks: Rect[] };
 
 const DRAG_PX = 4;
 const MAX_SCALE = 40;
+/** How long a frame load may hold back the next one before that one starts anyway. */
+export const LOAD_STALL_MS = 3000;
+
+/** One frame with its masks, as asked for by the props. */
+type LoadRequest = { store: FrameStore; frameUrl: string; masks: MaskPart[] };
+/** `busy`: a load is in flight and not yet stalled; `waiting`: the newest request held back meanwhile; `seq`: the
+ * last load started; `drawn`: the latest load drawn, so an older one landing late is not drawn over it. */
+type LoadState = { busy: boolean; waiting: LoadRequest | null; seq: number; drawn: number; mounted: boolean };
 
 /** Decoded preview layers together with the exact candidate list they belong to, so a redraw never mixes
  * one request's layers with another's candidates while new ones are still decoding. */
@@ -116,6 +124,7 @@ export function FrameCanvas(props: Props) {
   const view = useRef<View>({ scale: 1, tx: 0, ty: 0 });
   const fitScale = useRef(1);
   const assets = useRef<{ frame: HTMLImageElement | null; mask: HTMLCanvasElement | null }>({ frame: null, mask: null });
+  const loader = useRef<LoadState>({ busy: false, waiting: null, seq: 0, drawn: 0, mounted: true });
   const layers = useRef<LayerState>({ owner: null, items: [] });
   const drag = useRef<Drag | null>(null);
   const dragBox = useRef<Box | null>(null);
@@ -321,17 +330,48 @@ export function FrameCanvas(props: Props) {
     refit();
   }, [fitSignal, refit]);
 
-  // Swap the frame and its masks in together so an overlay never shows on the wrong frame.
+  // Swap the frame and its masks in together so an overlay never shows on the wrong frame. One load is in flight at a
+  // time; what is asked for meanwhile waits, and only the newest wait survives. A load that lands is drawn unless a
+  // later one was drawn first. On a slow link this keeps the view moving during a propagation (frames streamed
+  // faster than they load are skipped, not each started and then dropped) and keeps abandoned requests from piling
+  // up on the browser's few connections. A load still pending after LOAD_STALL_MS stops holding back the next.
   useEffect(() => {
-    let live = true;
-    void Promise.all([store.image(frameUrl), store.composite(stableMasks)]).then(([frame, layer]) => {
-      if (!live) return;
-      assets.current = { frame, mask: layer };
-      draw();
-    });
+    const loads = loader.current;
+    loads.mounted = true;
     return () => {
-      live = false;
+      loads.mounted = false;
+      loads.waiting = null;
     };
+  }, []);
+
+  useEffect(() => {
+    const loads = loader.current;
+    const start = (want: LoadRequest) => {
+      const seq = ++loads.seq;
+      loads.busy = true;
+      let released = false;
+      const release = () => {
+        if (released) return;
+        released = true;
+        clearTimeout(stall);
+        loads.busy = false;
+        const next = loads.waiting;
+        loads.waiting = null;
+        if (next !== null && loads.mounted) start(next);
+      };
+      const stall = setTimeout(release, LOAD_STALL_MS);
+      void Promise.all([want.store.image(want.frameUrl), want.store.composite(want.masks)]).then(([frame, layer]) => {
+        if (loads.mounted && seq > loads.drawn) {
+          loads.drawn = seq;
+          assets.current = { frame, mask: layer };
+          draw();
+        }
+        release();
+      });
+    };
+    const want = { store, frameUrl, masks: stableMasks };
+    if (loads.busy) loads.waiting = want;
+    else start(want);
   }, [store, frameUrl, stableMasks, draw]);
 
   useEffect(() => {

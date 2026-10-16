@@ -1,12 +1,12 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ComponentProps } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { FrameStore, MaskPart } from "../lib/frameCache";
 import { fitView, toImage } from "../lib/geometry";
 import { emptyDraft } from "../lib/promptState";
 import { stubCanvasAndObservers } from "../test/setup-dom";
-import { FrameCanvas } from "./FrameCanvas";
+import { FrameCanvas, LOAD_STALL_MS } from "./FrameCanvas";
 
 // jsdom does no layout, so wrap.clientWidth/clientHeight are always 0: fitView(width, height, 0, 0) is exactly the
 // view FrameCanvas computes on mount, with no extra stubbing needed.
@@ -52,7 +52,7 @@ describe("FrameCanvas brush pointer handling", () => {
 });
 
 describe("FrameCanvas stored masks", () => {
-  it("asks the store for one composite of the given masks, and again only when they change", () => {
+  it("asks the store for one composite of the given masks, and again only when they change", async () => {
     const composite = vi.fn(async () => null);
     const s = { image: async () => null, composite, preview: async () => null } as unknown as FrameStore;
     const parts: MaskPart[] = [
@@ -64,7 +64,96 @@ describe("FrameCanvas stored masks", () => {
     rerender(<FrameCanvas {...baseProps({ store: s, masks: parts.map((p) => ({ ...p })) })} />); // equal content
     expect(composite).toHaveBeenCalledTimes(1);
     rerender(<FrameCanvas {...baseProps({ store: s, masks: [parts[0]] })} />);
-    expect(composite).toHaveBeenLastCalledWith([parts[0]]);
+    // the first load is still in flight here; the change is loaded as soon as it lands
+    await waitFor(() => expect(composite).toHaveBeenLastCalledWith([parts[0]]));
+  });
+});
+
+/** A promise resolved from outside, for controlling when a frame or composite finishes loading. */
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((r) => (resolve = r));
+  return { promise, resolve };
+}
+
+describe("FrameCanvas load scheduling", () => {
+  /** A store whose frame loads stay pending until resolved by URL; composites resolve at once. */
+  function pendingStore() {
+    const loads = new Map<string, ReturnType<typeof deferred<HTMLImageElement | null>>>();
+    const image = vi.fn((url: string) => {
+      const d = deferred<HTMLImageElement | null>();
+      loads.set(url, d);
+      return d.promise;
+    });
+    const s = { image, composite: async () => null, preview: async () => null } as unknown as FrameStore;
+    const finish = async (url: string) => {
+      const img = { src: url } as unknown as HTMLImageElement;
+      await act(async () => loads.get(url)!.resolve(img));
+    };
+    return { s, image, finish };
+  }
+
+  /** Records the `src` of every frame image drawn on the canvas. */
+  function recordDrawn(): string[] {
+    const drawn: string[] = [];
+    const ctx = new Proxy({} as Record<string, unknown>, {
+      get: (t, k) => (k in t ? t[k as string] : k === "drawImage"
+        ? (img: { src?: string }) => { if (img?.src !== undefined) drawn.push(img.src); }
+        : () => undefined),
+      set: (t, k, v) => { t[k as string] = v; return true; },
+    });
+    HTMLCanvasElement.prototype.getContext = (() => ctx) as unknown as HTMLCanvasElement["getContext"];
+    return drawn;
+  }
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("draws a frame that finished loading even though a newer one was asked for meanwhile", async () => {
+    const drawn = recordDrawn();
+    const { s, finish } = pendingStore();
+    const { rerender } = render(<FrameCanvas {...baseProps({ store: s, frameUrl: "a" })} />);
+    rerender(<FrameCanvas {...baseProps({ store: s, frameUrl: "b" })} />);
+    await finish("a");
+    expect(drawn).toContain("a");
+    await finish("b");
+    expect(drawn.at(-1)).toBe("b");
+  });
+
+  it("keeps one load in flight and then skips to the newest frame asked for", async () => {
+    recordDrawn();
+    const { s, image, finish } = pendingStore();
+    const { rerender } = render(<FrameCanvas {...baseProps({ store: s, frameUrl: "a" })} />);
+    for (const url of ["b", "c", "d"]) rerender(<FrameCanvas {...baseProps({ store: s, frameUrl: url })} />);
+    expect(image.mock.calls.map((c) => c[0])).toEqual(["a"]);
+    await finish("a");
+    expect(image.mock.calls.map((c) => c[0])).toEqual(["a", "d"]);
+  });
+
+  it("stops waiting on a stalled load after a while, and never draws it over a newer frame", async () => {
+    vi.useFakeTimers();
+    const drawn = recordDrawn();
+    const { s, image, finish } = pendingStore();
+    const { rerender } = render(<FrameCanvas {...baseProps({ store: s, frameUrl: "a" })} />);
+    rerender(<FrameCanvas {...baseProps({ store: s, frameUrl: "b" })} />);
+    act(() => vi.advanceTimersByTime(LOAD_STALL_MS - 1));
+    expect(image).toHaveBeenCalledTimes(1);
+    act(() => vi.advanceTimersByTime(1));
+    expect(image).toHaveBeenLastCalledWith("b");
+    await finish("b");
+    await finish("a"); // the stalled load lands late
+    expect(drawn).not.toContain("a");
+    expect(drawn.at(-1)).toBe("b");
+  });
+
+  it("does not draw after unmounting", async () => {
+    const drawn = recordDrawn();
+    const { s, finish } = pendingStore();
+    const { unmount } = render(<FrameCanvas {...baseProps({ store: s, frameUrl: "a" })} />);
+    unmount();
+    await finish("a");
+    expect(drawn).toEqual([]);
   });
 });
 
