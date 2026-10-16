@@ -281,10 +281,16 @@ export type Run = {
   sampling?: EpochPlan | null;
   /** The worker's last throughput measurement; null before its first epoch (and for runs from before it measured). */
   speed?: RunSpeed | null;
+  /** "segment" (a -seg model: masks) or "detect" (boxes only). Absent on an older server: see `runTask`. */
+  task?: ModelTask;
+  /** The export dataset it trains on: yolo_det (a box model on an export that has it) or yolo_seg. */
+  data_format?: "yolo_seg" | "yolo_det";
 };
+export type ModelTask = "segment" | "detect";
 export type MetricRow = { epoch: number } & Record<string, number>;
 export type RunDetail = Run & { metrics: MetricRow[] };
-export type Instance = { class_id: number; score?: number; polygons: number[][] };
+/** `box` (normalised x1, y1, x2, y2) marks a box of a detection run; its `polygons` then hold the same rectangle. */
+export type Instance = { class_id: number; score?: number; polygons: number[][]; box?: number[] };
 export type PredictionFilter = "all" | "missed" | "worst";
 export type PredictionItem = {
   index: number;

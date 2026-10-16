@@ -7,7 +7,7 @@ import type {
 import { exportLabel } from "../lib/exportName";
 import {
   checkpointSources, classesCompatible, continueModeLabel, defaultGpu, defaultMode, epochEstimate, finetuneModeLabel,
-  gpuOptionLabel, measuredSpeed, modeDisabledReason, paramsProblem, sendableParams, sourceRunLabel, startProblem, statusText,
+  gpuOptionLabel, measuredSpeed, modeDisabledReason, modelKind, paramsProblem, sendableParams, sourceRunLabel, startProblem, statusText,
 } from "../lib/train";
 import { AugmentPanel } from "./AugmentPanel";
 import { VramEstimatePanel } from "./VramEstimate";
@@ -95,7 +95,8 @@ function stoppedAt(run: Run, status: TrainStatus): string {
  * it if a future caller ever supplies one) before the fixed description of what the action does. */
 function markCompleteNote(best: Run["best"]): string {
   if (best === null) return "Keeps the best epoch so far, runs the validation predictions on that GPU, then marks the run done.";
-  const mask = best.mask_map50_95 !== null ? `, mask mAP50-95 ${best.mask_map50_95.toFixed(3)}` : "";
+  const mask = best.mask_map50_95 !== null ? `, mask mAP50-95 ${best.mask_map50_95.toFixed(3)}`
+    : best.box_map50_95 != null ? `, box mAP50-95 ${best.box_map50_95.toFixed(3)}` : "";
   return `Keeps the best epoch so far (epoch ${best.epoch}${mask}), runs the validation predictions on that GPU, then marks the run done.`;
 }
 
@@ -416,6 +417,7 @@ export function TrainSidebar({
                   <input type="checkbox" aria-label={m} checked={picks[m]?.checked ?? false}
                     onChange={(e) => setPicks((p) => ({ ...p, [m]: { ...p[m], checked: e.target.checked } }))} />
                   {m}
+                  <span className="note font-cond text-dim">{modelKind(m)}</span>
                 </label>
                 {perModelGpu && (
                   <select aria-label={`GPU for ${m}`} className="field py-0.5" value={picks[m]?.gpu ?? batchGpu ?? 0}

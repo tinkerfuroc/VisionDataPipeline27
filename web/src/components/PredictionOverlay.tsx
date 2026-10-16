@@ -4,6 +4,14 @@ import { polygonPoints } from "../lib/train";
 
 const PRED = SERIES_COLORS[0];
 
+function boxRect(box: number[], w: number, h: number, key: string, style: { stroke: string; strokeDasharray?: string }) {
+  const [x1, y1, x2, y2] = box;
+  return (
+    <rect key={key} x={x1 * w} y={y1 * h} width={(x2 - x1) * w} height={(y2 - y1) * h} fill="none" strokeWidth={2}
+      vectorEffect="non-scaling-stroke" {...style} />
+  );
+}
+
 type Props = {
   width: number;
   height: number;
@@ -14,7 +22,8 @@ type Props = {
   scores: boolean;
 };
 
-/** Ground truth outlined in ink (dashed), predictions filled in blue; an absolutely positioned SVG over the image. */
+/** Ground truth outlined in ink (dashed), predictions filled in blue; an absolutely positioned SVG over the image. A
+ * detection run's instances are boxes (`box`): drawn as rectangle outlines, never filled like masks. */
 export function PredictionOverlay({ width, height, groundTruth, predictions, showGt, showPred, scores }: Props) {
   return (
     <svg
@@ -24,12 +33,13 @@ export function PredictionOverlay({ width, height, groundTruth, predictions, sho
       aria-hidden
     >
       {showPred && predictions.flatMap((inst, i) =>
-        inst.polygons.map((poly, j) => (
+        inst.box !== undefined ? [boxRect(inst.box, width, height, `p${i}`, { stroke: PRED })] : inst.polygons.map((poly, j) => (
           <polygon key={`p${i}-${j}`} points={polygonPoints(poly, width, height)} fill={PRED} fillOpacity={0.35}
             stroke={PRED} strokeWidth={2} vectorEffect="non-scaling-stroke" />
         )))}
       {showGt && groundTruth.flatMap((inst, i) =>
-        inst.polygons.map((poly, j) => (
+        inst.box !== undefined ? [boxRect(inst.box, width, height, `g${i}`, { stroke: TEXT_INK, strokeDasharray: "6 4" })]
+          : inst.polygons.map((poly, j) => (
           <polygon key={`g${i}-${j}`} points={polygonPoints(poly, width, height)} fill="none" stroke={TEXT_INK}
             strokeWidth={2} strokeDasharray="6 4" vectorEffect="non-scaling-stroke" />
         )))}

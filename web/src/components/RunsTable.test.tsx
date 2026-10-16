@@ -113,4 +113,15 @@ describe("RunsTable", () => {
     expect(within(rowDefault).getByText("default")).toBeTruthy();
     expect(within(rowStrong).getByText("strong")).toBeTruthy();
   });
+  it("shows a box model's box mAP in the mAP columns, bolded only against other box models", () => {
+    const det: Run = { ...base, id: "20260924-120000-yolo26n-dddd", model: "yolo26n", task: "detect",
+      best: { epoch: 5, mask_map50: null, mask_map50_95: null, box_map50: 0.61, box_map50_95: 0.42, train_seconds: 60 } };
+    const on = { onSelect: vi.fn(), onToggleCompare: vi.fn(), onCancel: vi.fn(), onAskStopped: vi.fn(), onOnnx: vi.fn(), onDelete: vi.fn() };
+    render(<RunsTable runs={[base, det]} selectedId={null} compareIds={[]} {...on} />);
+    const row = screen.getByText("yolo26n").closest("tr")!;
+    expect(within(row).getByText("boxes")).toBeTruthy();
+    expect(within(row).getByText("0.610").tagName).toBe("STRONG");  // the only box model: best of its kind
+    expect(within(row).getAllByText("box")).toHaveLength(2);
+    expect(within(screen.getByText("yolo26s-seg").closest("tr")!).getByText("0.700").tagName).toBe("STRONG");
+  });
 });

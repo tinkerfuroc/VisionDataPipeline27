@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { ExportInfo, GpuQueue, Run, TrainStatus } from "../api/types";
 import {
-  bestRunIds, checkpointSources, classesCompatible, continueModeLabel, defaultGpu, defaultMode, epochEstimate, finalMetricsNote,
-  finetuneModeLabel, formatDuration, gpuOptionLabel, measuredSpeed, metricSeries, modeDisabledReason, polygonPoints,
+  bestMapIds, bestRunIds, checkpointSources, classesCompatible, continueModeLabel, defaultGpu, defaultMode, epochEstimate, finalMetricsNote,
+  finetuneModeLabel, formatDuration, modelKind, modelTask, runMap, gpuOptionLabel, measuredSpeed, metricSeries, modeDisabledReason, polygonPoints,
   samplingNote, sendableParams, sourceRunLabel, startModeHeaderNote, startModeNote, startProblem, statusText, valSubsetNote,
   vramBusyReason, vramFit, vramLabel,
 } from "./train";
@@ -25,6 +25,21 @@ describe("train helpers", () => {
     const runs = [run("a", { best: best(0.7) }), run("b", { best: best(0.8) }), run("c", { best: best(0.8) }), run("d")];
     expect([...bestRunIds(runs, "mask_map50_95")].sort()).toEqual(["b", "c"]);
     expect(bestRunIds([run("d")], "mask_map50_95").size).toBe(0);
+  });
+  it("model task and kind: -seg models draw masks, plain YOLO26 models boxes", () => {
+    expect(modelTask("yolo26s-seg")).toBe("segment");
+    expect(modelTask("yolo26s")).toBe("detect");
+    expect(modelKind("yolo11m-seg")).toBe("masks");
+    expect(modelKind("yolo26x")).toBe("boxes");
+  });
+  it("runMap is mask mAP for a mask model and box mAP for a box model; bestMapIds compares like with like", () => {
+    const seg = run("a", { best: { ...best(0.5), box_map50_95: 0.9 } });
+    const det = run("b", { model: "yolo26n", task: "detect", best: { ...best(0.6), mask_map50_95: null, mask_map50: null } });
+    const det2 = run("c", { model: "yolo26s", best: { ...best(0.4), mask_map50_95: null, mask_map50: null } });
+    expect(runMap(seg, "map50_95")).toBe(0.5);
+    expect(runMap(det, "map50_95")).toBe(0.6);
+    expect(runMap(run("d"), "map50")).toBeNull();
+    expect([...bestMapIds([seg, det, det2], "map50_95")].sort()).toEqual(["a", "b"]);
   });
   it("formatDuration", () => {
     expect(formatDuration(null)).toBe("—");
@@ -233,6 +248,9 @@ describe("sampled epochs", () => {
     expect(finalMetricsNote(run("a", { best: best(0.5) }))).toBeNull();
     expect(finalMetricsNote(run("b", { best: { ...best(0.5), epoch: 12, mask_map50_95: 0.7123, val_images: 1643 } }))).toBe(
       "Final, best.pt (epoch 12) on all 1,643 val images: mask mAP50-95 0.712 · mask mAP50 0.500 · box mAP50-95 0.500",
+    );
+    expect(finalMetricsNote(run("c", { model: "yolo26n", best: { ...best(0.5), epoch: 3, box_map50: 0.8, val_images: 10 } }))).toBe(
+      "Final, best.pt (epoch 3) on all 10 val images: box mAP50-95 0.500 · box mAP50 0.800",
     );
   });
 });

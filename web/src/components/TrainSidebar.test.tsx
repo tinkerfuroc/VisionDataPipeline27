@@ -389,3 +389,16 @@ describe("TrainSidebar images per epoch", () => {
     expect(screen.getByText("1 epoch = 7,000 images · 100 epochs ≈ 25 full passes")).toBeTruthy();
   });
 });
+
+describe("TrainSidebar model picker", () => {
+  it("labels each model with what it draws: masks or boxes", () => {
+    render(
+      <TrainSidebar status={{ ...status, models: ["yolo11s-seg", "yolo26n"], default_models: ["yolo11s-seg", "yolo26n"] }}
+        exports={[]} runs={[]} exportId={null} onExportChange={() => {}} onExportsChanged={() => {}} onStart={noop}
+        onCancel={() => {}} selectedRun={null} onResume={noop} onComplete={noop} sourceRunId={null}
+        onSourceRunChange={() => {}} onStartFromCheckpoint={noop} onTrainOnNewData={() => {}} />,
+    );
+    expect(within(screen.getByLabelText("yolo11s-seg").closest("label")!).getByText("masks")).toBeTruthy();
+    expect(within(screen.getByLabelText("yolo26n").closest("label")!).getByText("boxes")).toBeTruthy();
+  });
+});

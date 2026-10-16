@@ -1,12 +1,17 @@
-import type { ExportInfo, Run, RunBest } from "../api/types";
+import type { ExportInfo, Run } from "../api/types";
 import { weightsUrl } from "../api/rest";
 import { exportLabel } from "../lib/exportName";
-import { bestRunIds, formatDuration, startModeNote, statusText } from "../lib/train";
+import { bestMapIds, bestRunIds, formatDuration, runMap, runTask, startModeNote, statusText } from "../lib/train";
 
-const METRICS: { key: keyof RunBest; label: string }[] = [
-  { key: "mask_map50", label: "Mask mAP50" },
-  { key: "mask_map50_95", label: "Mask mAP50-95" },
-  { key: "box_map50_95", label: "Box mAP50-95" },
+// mAP50 / mAP50-95 are each run's own kind: mask mAP for a mask model, box mAP (tagged "box") for a box model; the
+// best value is bolded among runs of the same kind only.
+const METRICS: { key: string; label: string; title?: string; value: (r: Run) => number | null; best: (runs: Run[]) => Set<string> }[] = [
+  { key: "map50", label: "mAP50", title: "Mask mAP50 for mask models, box mAP50 for box models",
+    value: (r) => runMap(r, "map50"), best: (runs) => bestMapIds(runs, "map50") },
+  { key: "map50_95", label: "mAP50-95", title: "Mask mAP50-95 for mask models, box mAP50-95 for box models",
+    value: (r) => runMap(r, "map50_95"), best: (runs) => bestMapIds(runs, "map50_95") },
+  { key: "box_map50_95", label: "Box mAP50-95", value: (r) => r.best?.box_map50_95 ?? null,
+    best: (runs) => bestRunIds(runs, "box_map50_95") },
 ];
 const MAX_COMPARE = 4;
 const stop = (e: React.SyntheticEvent) => e.stopPropagation();
@@ -39,7 +44,7 @@ function OnnxCell({ run, onOnnx }: { run: Run; onOnnx: (id: string) => void }) {
 }
 
 export function RunsTable({ runs, selectedId, compareIds, exports = [], onSelect, onToggleCompare, onCancel, onAskStopped, onOnnx, onDelete }: Props) {
-  const best = Object.fromEntries(METRICS.map((m) => [m.key, bestRunIds(runs, m.key)]));
+  const best = Object.fromEntries(METRICS.map((m) => [m.key, m.best(runs)]));
   if (runs.length === 0) return <p className="note">No training runs yet. Start one from the panel on the right.</p>;
   return (
     <div className="overflow-x-auto rounded border border-line">
@@ -54,7 +59,7 @@ export function RunsTable({ runs, selectedId, compareIds, exports = [], onSelect
             <th className="px-2 py-1.5 font-medium">Status</th>
             <th className="px-2 py-1.5 text-right font-medium">Epochs</th>
             {METRICS.map((m) => (
-              <th key={m.key} className="px-2 py-1.5 text-right font-medium">{m.label}</th>
+              <th key={m.key} title={m.title} className="px-2 py-1.5 text-right font-medium">{m.label}</th>
             ))}
             <th className="px-2 py-1.5 text-right font-medium">Best epoch</th>
             <th className="px-2 py-1.5 text-right font-medium">Time</th>
@@ -79,6 +84,7 @@ export function RunsTable({ runs, selectedId, compareIds, exports = [], onSelect
                 <td className="px-2 py-1.5 font-medium">
                   <div className="flex flex-col">
                     <span>{r.model}</span>
+                    {runTask(r) === "detect" && <span className="note font-cond text-dim">boxes</span>}
                     {startModeNote(r) !== null && <span className="note font-cond text-dim">{startModeNote(r)}</span>}
                   </div>
                 </td>
@@ -100,11 +106,13 @@ export function RunsTable({ runs, selectedId, compareIds, exports = [], onSelect
                 </td>
                 <td className="px-2 py-1.5 text-right font-cond">{r.epochs_done}/{r.params.epochs}</td>
                 {METRICS.map((m) => {
-                  const v = r.best?.[m.key];
+                  const v = m.value(r);
                   const text = typeof v === "number" ? v.toFixed(3) : "—";
+                  const boxTag = m.key !== "box_map50_95" && v !== null && runTask(r) === "detect";
                   return (
                     <td key={m.key} className="px-2 py-1.5 text-right font-cond">
                       {best[m.key].has(r.id) ? <strong className="font-semibold text-ink">{text}</strong> : <span className="text-dim">{text}</span>}
+                      {boxTag && <span className="note ml-1 text-dim">box</span>}
                     </td>
                   );
                 })}

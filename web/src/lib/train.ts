@@ -1,10 +1,38 @@
-import type { EpochPlan, ExportInfo, GpuQueue, MetricRow, Run, RunBest, RunSpeed, StartMode, TrainParams, TrainStatus } from "../api/types";
+import type {
+  EpochPlan, ExportInfo, GpuQueue, MetricRow, ModelTask, Run, RunBest, RunSpeed, StartMode, TrainParams, TrainStatus,
+} from "../api/types";
 import { exportLabel } from "./exportName";
 import type { Pt } from "./chart";
 
 export const MASK_MAP = "metrics/mAP50-95(M)";
 export const MASK_MAP50 = "metrics/mAP50(M)";
 export const BOX_MAP = "metrics/mAP50-95(B)";
+export const BOX_MAP50 = "metrics/mAP50(B)";
+
+/** A -seg model segments (masks); the plain YOLO26 models detect (boxes only). Mirrors the server's `model_task`. */
+export const modelTask = (model: string): ModelTask => (model.endsWith("-seg") ? "segment" : "detect");
+export const modelKind = (model: string): "masks" | "boxes" => (modelTask(model) === "detect" ? "boxes" : "masks");
+export const runTask = (run: Pick<Run, "model" | "task">): ModelTask => run.task ?? modelTask(run.model);
+
+/** A run's headline mAP: masks for a mask model, boxes for a box model (which has no mask metrics). */
+export function runMap(run: Run, which: "map50" | "map50_95"): number | null {
+  const b = run.best;
+  if (b == null) return null;
+  const detect = runTask(run) === "detect";
+  return (which === "map50" ? (detect ? b.box_map50 : b.mask_map50) : (detect ? b.box_map50_95 : b.mask_map50_95)) ?? null;
+}
+
+/** Ids of the runs with the top `runMap`, among runs of the same task only (box and mask mAP do not compare). */
+export function bestMapIds(runs: Run[], which: "map50" | "map50_95"): Set<string> {
+  const out = new Set<string>();
+  for (const task of ["segment", "detect"] as const) {
+    const scored = runs.filter((r) => runTask(r) === task && runMap(r, which) !== null);
+    if (scored.length === 0) continue;
+    const top = Math.max(...scored.map((r) => runMap(r, which)!));
+    scored.filter((r) => Math.abs(runMap(r, which)! - top) < 1e-9).forEach((r) => out.add(r.id));
+  }
+  return out;
+}
 
 /** Ids of the runs whose `best[key]` equals the maximum over all runs that have one. */
 export function bestRunIds(runs: Run[], key: keyof RunBest): Set<string> {
@@ -236,6 +264,10 @@ export function finalMetricsNote(run: Run): string | null {
   const b = run.best;
   if (b == null || b.val_images == null) return null;
   const f = (v: number | null) => (v === null ? "—" : v.toFixed(3));
+  if (runTask(run) === "detect") {
+    return `Final, best.pt (epoch ${b.epoch}) on all ${count(b.val_images)} val images: box mAP50-95 ${f(b.box_map50_95)} · ` +
+      `box mAP50 ${f(b.box_map50)}`;
+  }
   return `Final, best.pt (epoch ${b.epoch}) on all ${count(b.val_images)} val images: mask mAP50-95 ${f(b.mask_map50_95)} · ` +
     `mask mAP50 ${f(b.mask_map50)} · box mAP50-95 ${f(b.box_map50_95)}`;
 }
