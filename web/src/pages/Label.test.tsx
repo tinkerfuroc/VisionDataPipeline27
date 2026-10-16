@@ -257,6 +257,17 @@ describe("Label page (prompting)", () => {
     expect(api.prompt).not.toHaveBeenCalled();
   });
 
+  it("says SAM3 is paused for training instead of 'not loaded' while it is paused", async () => {
+    vi.mocked(api.getClip).mockResolvedValue(detail);
+    renderLabel({
+      health: { status: "ok", version: "0", engine: { loaded: false, device: "cuda:0", error: null, paused: true } },
+      unreachable: false,
+    });
+    await screen.findByText("bench.mp4");
+    expect(screen.getAllByText(/SAM3 is paused for training/).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/engine is not loaded/i)).toBeNull();
+  });
+
   it("creates a new object from its first accepted mask and makes it active", async () => {
     vi.mocked(api.getClip).mockResolvedValue(detail);
     vi.mocked(api.prompt).mockResolvedValue({

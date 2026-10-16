@@ -17,11 +17,14 @@ from typing import TypeVar
 from fastapi import APIRouter
 
 from ..engine.types import EngineNotLoaded
+from ..labeling.errors import Conflict
 from .deps import GPU, State
 
 log = logging.getLogger(__name__)
 router = APIRouter(tags=["engine"])
 T = TypeVar("T")
+
+STILL_LOADING = "SAM3 is still loading; wait for it to finish, or untick Pause SAM3"
 
 
 def sam3_gpu(engine) -> int | None:
@@ -72,27 +75,33 @@ class EngineControl:
         `pause` asks for it and any of `gpus` is SAM3's. The release happens in `before_queue`, once the
         request has been validated (a bad request never unloads SAM3), and fails with JobBusy (409),
         queueing nothing, while a propagation job holds the GPU: the lease also keeps one from starting
-        mid-release. `pause` is ignored when no run goes to SAM3's GPU or the engine is not loaded."""
+        mid-release. While SAM3 is loading (at startup, or reloading after a pause) a pause is a 409 too:
+        it would land on the GPU moments after the training started. `pause` is ignored when no run goes
+        to SAM3's GPU, or when the engine is neither loaded nor loading (nothing to free)."""
         if not pause:
             return submit(None)
         with self._lock:
             gpu = sam3_gpu(self.engine)
+            if self._loading and (gpu is None or gpu in gpus):  # None: a first load, its GPU not known yet
+                raise Conflict(STILL_LOADING)
             if gpu is None or gpu not in gpus or not self.engine.is_loaded() or not hasattr(self.engine, "release"):
                 return submit(None)
-            released = False
 
             def release() -> None:
-                nonlocal released
                 with self.jobs.lease(GPU):  # a propagation holds the engine lock for its whole run
                     self.engine.release()
-                released = True
                 self.paused_gpu = gpu
 
             try:
                 return submit(release)
             except BaseException:
-                if released:  # released, then nothing was queued after all: bring SAM3 back now
-                    self._start_load_locked()
+                # Unloaded (or a release that raised half-way), then the request failed. Reload now
+                # unless part of it got queued after all: then reload when that training ends.
+                if not self.engine.is_loaded():
+                    if self.train.gpu_idle(gpu):
+                        self._start_load_locked()
+                    else:
+                        self.paused_gpu = gpu
                 raise
 
     def gpu_idle(self, gpu: int) -> None:

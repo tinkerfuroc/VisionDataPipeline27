@@ -14,6 +14,7 @@ from train_fixtures import EXPORT_ID, FAKE_WORKER, make_export, wait_for
 from vdp.api.app import create_app
 from vdp.api.deps import GPU
 from vdp.engine.fake import FakeEngine
+from vdp.engine.types import EngineNotLoaded
 from vdp.train.scheduler import Gpu, TrainScheduler
 
 SAM3_GPU = 1
@@ -179,3 +180,107 @@ def test_manual_load_is_a_noop_while_the_engine_is_already_loading(tmp_path):
         gate.set()
         wait_for(lambda: engine.is_loaded())
         assert engine.load_calls == 1
+
+
+def _paused_client(tmp_path, engine, *, load_engine=False):
+    s = _settings(tmp_path)
+    make_export(s.project.data_root)
+    sched = TrainScheduler(s.project.data_root, [Gpu(0, "Fast", 12 * 2**30), Gpu(1, "Slow", 11 * 2**30)],
+                           worker_cmd=FAKE_WORKER, kill_after=5.0)
+    return TestClient(create_app(s, engine=engine, load_engine=load_engine, train=sched))
+
+
+@pytest.mark.parametrize("device", [f"cuda:{SAM3_GPU}", None])  # None: the first load, its GPU not known yet
+def test_pause_while_sam3_is_loading_is_a_409_not_ignored(tmp_path, device):
+    gate = threading.Event()
+
+    class SlowLoad(FakeEngine):
+        def load(self):
+            gate.wait(5)
+            super().load()
+
+    engine = SlowLoad(device=device)
+    engine.release()
+    with _paused_client(tmp_path, engine, load_engine=True) as client:
+        r = start(client, SAM3_GPU)
+        assert r.status_code == 409
+        assert r.json()["detail"] == "SAM3 is still loading; wait for it to finish, or untick Pause SAM3"
+        assert client.get("/api/train/runs").json() == []
+        if device is not None:  # a run that does not go to SAM3's GPU does not care
+            assert start(client, 0, epochs=1).status_code == 201
+        assert start(client, SAM3_GPU, epochs=1, pause=False).status_code == 201  # unticked: starts
+        gate.set()
+        wait_for(lambda: engine.is_loaded())
+        assert engine_view(client)["paused"] is False
+
+
+def test_queueing_that_fails_after_the_release_reloads_sam3(env, monkeypatch):
+    client, engine = env
+    sched = client.app.state.vdp.train
+
+    def broken(*a, **k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(sched.runs, "create", broken)
+    with pytest.raises(OSError):  # TestClient re-raises the server's 500
+        start(client, SAM3_GPU)
+    assert engine.release_calls == 1
+    wait_for(lambda: engine.is_loaded())
+    assert engine_view(client)["paused"] is False and client.get("/api/train/runs").json() == []
+
+
+def test_a_partly_queued_request_that_fails_keeps_the_pause_for_the_queued_run(env, monkeypatch):
+    client, engine = env
+    sched = client.app.state.vdp.train
+    create = sched.runs.create
+    calls = []
+
+    def second_fails(*a, **k):
+        calls.append(1)
+        if len(calls) == 2:
+            raise OSError("disk full")
+        return create(*a, **k)
+
+    monkeypatch.setattr(sched.runs, "create", second_fails)
+    with pytest.raises(OSError):
+        start(client, SAM3_GPU, SAM3_GPU)
+    monkeypatch.setattr(sched.runs, "create", create)
+    (queued,) = client.get("/api/train/runs").json()
+    time.sleep(0.2)
+    assert not engine.is_loaded() and engine_view(client)["paused"] is True  # not reloaded under it
+    until(client, queued["id"], "running")
+    client.post(f"/api/train/runs/{queued['id']}/cancel")
+    until(client, queued["id"], "cancelled")
+    wait_for(lambda: engine.is_loaded())
+
+
+def test_a_release_that_raises_fails_the_start_and_reloads(tmp_path):
+    class BadRelease(FakeEngine):
+        def release(self):
+            super().release()  # half-way: the model is gone...
+            raise RuntimeError("CUDA error: empty_cache failed")  # ...then this
+
+    engine = BadRelease(device=f"cuda:{SAM3_GPU}")
+    with _paused_client(tmp_path, engine) as client:
+        with pytest.raises(RuntimeError):
+            start(client, SAM3_GPU)
+        assert client.get("/api/train/runs").json() == []
+        wait_for(lambda: engine.is_loaded())
+        assert engine_view(client)["paused"] is False
+
+
+def test_an_engine_call_racing_the_release_reports_the_pause(env, tmp_path):
+    """The prompt passed require_engine, then the release won the engine lock: the engine's own
+    EngineNotLoaded still reaches the client as the paused reason."""
+    client, engine = env
+    cid = _clip(client, tmp_path, n=4)
+    ctl = client.app.state.vdp.engine_ctl
+
+    def lost_the_race(*a, **k):
+        ctl.paused_gpu = SAM3_GPU
+        raise EngineNotLoaded("Sam3Engine.load() has not been called")
+
+    engine.predict_prompt = lost_the_race
+    r = client.post(f"/api/clips/{cid}/prompt", json={"frame": 0, "prompt": CLICK, "object_id": None})
+    assert r.status_code == 503 and r.json()["detail"] == "SAM3 is paused for training"
+    ctl.paused_gpu = None

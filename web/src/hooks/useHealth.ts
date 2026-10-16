@@ -9,6 +9,12 @@ export const HealthContext = createContext<HealthState>({ health: null, unreacha
 
 export const engineReady = (s: HealthState): boolean => !s.unreachable && s.health !== null && s.health.engine.loaded;
 
+/** Why prompting / propagation is off when `engineReady` is false. */
+export const engineDownReason = (s: HealthState): string =>
+  s.health?.engine.paused
+    ? "SAM3 is paused for training. It reloads by itself when that training ends, or use Reload now at the top."
+    : "The SAM3 engine is not loaded.";
+
 const FAST_MS = 2000; // while the model is still loading
 const SLOW_MS = 15000; // loaded, failed, or paused for training (which lasts until the training ends)
 

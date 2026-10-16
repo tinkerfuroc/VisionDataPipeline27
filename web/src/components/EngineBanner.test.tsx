@@ -52,4 +52,16 @@ describe("EngineBanner", () => {
     await waitFor(() => expect(refresh).toHaveBeenCalled());
     expect(api.loadEngine).toHaveBeenCalledTimes(1);
   });
+  it("offers a retry after a failed load", async () => {
+    vi.mocked(api.loadEngine).mockClear();
+    vi.mocked(api.loadEngine).mockResolvedValue({ started: true });
+    const refresh = vi.fn();
+    render(
+      <EngineBanner health={health({ loaded: false, device: "cuda:0", error: "CUDA out of memory" })} unreachable={false}
+        refresh={refresh} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Retry loading" }));
+    await waitFor(() => expect(refresh).toHaveBeenCalled());
+    expect(api.loadEngine).toHaveBeenCalledTimes(1);
+  });
 });

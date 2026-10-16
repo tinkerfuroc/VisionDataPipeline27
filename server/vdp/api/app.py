@@ -26,7 +26,7 @@ from . import engine as engine_api
 from . import gate as gate_api
 from . import train as train_api
 from . import uploads as uploads_api
-from .deps import AppState, State
+from .deps import PAUSED_REASON, AppState, State
 
 log = logging.getLogger(__name__)
 
@@ -37,7 +37,7 @@ SHUTDOWN_JOIN_KINDS = frozenset({augment_api.AUGMENT, "export"})
 SHUTDOWN_JOIN_S = 30.0
 
 _STATUS = [  # most specific first
-    (UploadNotFound, 404), (NotFound, 404), (JobNotFound, 404), (Conflict, 409), (EngineNotLoaded, 503),
+    (UploadNotFound, 404), (NotFound, 404), (JobNotFound, 404), (Conflict, 409),
     (train_api.TrainUnavailable, 503), (PropagationFailed, 500),
     (UploadTooLarge, 413), (BadRequest, 400), (IngestError, 400), (StoreError, 400),
 ]
@@ -93,6 +93,12 @@ def create_app(
 
     for exc_type, status in _STATUS:
         app.add_exception_handler(exc_type, _handler(status))
+
+    @app.exception_handler(EngineNotLoaded)
+    async def _not_loaded(request: Request, exc: EngineNotLoaded) -> JSONResponse:
+        # Also covers an engine call that lost its lock to a pausing release() after require_engine passed.
+        detail = PAUSED_REASON if state.engine_ctl.paused else (str(exc.args[0]) if exc.args else str(exc))
+        return JSONResponse(status_code=503, content={"detail": detail})
 
     @app.exception_handler(JobBusy)
     async def _busy(request: Request, exc: JobBusy) -> JSONResponse:

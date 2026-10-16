@@ -338,11 +338,13 @@ class TrainScheduler:
         with self._cv:
             if before_queue is not None:
                 before_queue()
-            for model, gpu in specs:
-                run = self.runs.create(export, model, gpu, params, owner_pid=os.getpid())
-                self._queues[gpu].append((run["id"], "train"))
-                ids.append(run["id"])
-            self._cv.notify_all()
+            try:
+                for model, gpu in specs:
+                    run = self.runs.create(export, model, gpu, params, owner_pid=os.getpid())
+                    self._queues[gpu].append((run["id"], "train"))
+                    ids.append(run["id"])
+            finally:  # runs queued before a later one failed to be created still start
+                self._cv.notify_all()
         return ids
 
     def submit_from(
