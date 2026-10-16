@@ -24,8 +24,8 @@ propagation rewrites the very masks an export reads.
 `POST /api/exports/{id}/augment` starts an augment job; body `{per_image, max_objects, seed, pool, lighting}` plus the
 optional limits `max_train_images` (integer ≥ 1, a cap on the whole train split: real + composite + lighting) and
 `time_limit_s` (10 to 86 400 seconds, measured from the job start) → `202 {job_id}`. Leaving a limit out (or `null`)
-means no limit. It returns 400 for an invalid request, including a `max_train_images` at or below the export's
-train frame count: "this export already has N training frames; set a limit above that, or leave it empty". When
+means no limit. A `time_limit_s` outside 10 to 86 400 or a `max_train_images` below 1 is a 422 (schema bounds). A
+`max_train_images` at or below the export's train frame count is a 400: "this export already has N training frames; set a limit above that, or leave it empty". When
 both limits are set, whichever is reached first ends the run. At the time limit queued work is dropped and running
 work finishes; cancelling still ends the job as cancelled.
 

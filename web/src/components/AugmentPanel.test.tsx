@@ -372,11 +372,34 @@ describe("AugmentPanel", () => {
     });
 
     it("shows no limit line when nothing stopped the run", async () => {
-      await ready();
+      m.listBackgrounds.mockResolvedValue([pool({ images: 5640 })]);
+      m.augmentExport.mockResolvedValue({ job_id: "aug1" });
+      const onCreated = vi.fn();
+      render(<AugmentPanel exportInfo={exp()} onCreated={onCreated} />);
+      await screen.findByText("DTD textures · 5,640 images");
       jobs.aug1 = { ...idle, status: "done", result: { export_id: "new", limits: limits({}) } };
       fireEvent.click(screen.getByRole("button", { name: "Make augmented copy" }));
-      await waitFor(() => expect(m.augmentExport).toHaveBeenCalled());
+      await waitFor(() => expect(onCreated).toHaveBeenCalledWith("new"));
       expect(screen.queryByText(/Stopped at the|Capped at/)).toBeNull();
+    });
+
+    it("pins the time-limit line's 'asked for' numbers to planned, not requested", async () => {
+      await ready();
+      jobs.aug1 = {
+        ...idle, status: "done",
+        result: {
+          export_id: "new",
+          limits: limits({
+            time_limit_s: 90, stopped_by: "time",
+            requested: { composites: 5000, lighting: 3000 }, planned: { composites: 3000, lighting: 1000 },
+            produced: { composites: 10, lighting: 4 },
+          }),
+        },
+      };
+      fireEvent.click(screen.getByRole("button", { name: "Make augmented copy" }));
+      expect(
+        await screen.findByText("Stopped at the 2-minute limit: 10 composites and 4 lighting copies (of 3,000 and 1,000 asked for)."),
+      ).toBeTruthy();
     });
   });
 });

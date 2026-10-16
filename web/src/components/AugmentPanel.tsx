@@ -115,6 +115,8 @@ export function AugmentPanel({ exportInfo, onCreated }: Props) {
   // only composites need the background textures; a lighting-only copy can be made without them
   const canMake = !augmentRunning && !addsNothing && (perImage === 0 || poolReady);
 
+  const resultLine = limitsLine(augmentJob.result?.limits as AugmentLimits | undefined);
+
   const onDownload = () => {
     setFetchError(null);
     setFetchPhase(null);
@@ -235,9 +237,7 @@ export function AugmentPanel({ exportInfo, onCreated }: Props) {
       {augmentJob.status === "error" && augmentJob.error !== null && (
         <p role="alert" className="alert">{augmentJob.error}</p>
       )}
-      {augmentJob.status === "done" && limitsLine(augmentJob.result?.limits as AugmentLimits | undefined) !== null && (
-        <p className="note">{limitsLine(augmentJob.result?.limits as AugmentLimits | undefined)}</p>
-      )}
+      {augmentJob.status === "done" && resultLine !== null && <p className="note">{resultLine}</p>}
       {augmentJob.status === "cancelled" && <p className="note">Cancelled. Nothing was written.</p>}
     </section>
   );
