@@ -326,3 +326,57 @@ describe("TrainSidebar VRAM estimate", () => {
     expect((screen.getByLabelText("Batch") as HTMLInputElement).value).toBe("4");
   });
 });
+
+describe("TrainSidebar images per epoch", () => {
+  const big = exportInfo({ train_images: 28000, val_images: 1643 });
+  const statusWithNulls: TrainStatus = {
+    ...status, defaults: { ...status.defaults, train_images_per_epoch: null, val_images_per_epoch: null },
+  };
+
+  function renderForm(opts: { onStart?: (body: unknown) => Promise<void>; runs?: Run[] } = {}) {
+    return render(
+      <TrainSidebar status={statusWithNulls} exports={[big]} runs={opts.runs ?? []} exportId="e1"
+        onExportChange={() => {}} onExportsChanged={() => {}} onStart={(opts.onStart ?? noop) as never}
+        onCancel={() => {}} selectedRun={null} onResume={noop} onComplete={noop} sourceRunId={null}
+        onSourceRunChange={() => {}} onStartFromCheckpoint={noop} onTrainOnNewData={() => {}} />,
+    );
+  }
+
+  it("leaves the sizes out of the request while empty (all) and sends them once set", async () => {
+    const onStart = vi.fn().mockResolvedValue(undefined);
+    renderForm({ onStart });
+    const train = screen.getByLabelText("Images per epoch") as HTMLInputElement;
+    const val = screen.getByLabelText("Validation images per epoch") as HTMLInputElement;
+    expect(train.value).toBe("");
+    expect(train.placeholder).toBe("all");
+    expect(val.placeholder).toBe("all");
+    fireEvent.click(screen.getByRole("button", { name: "Start 1 run" }));
+    await Promise.resolve();
+    const first = onStart.mock.calls[0][0].params;
+    expect(first).not.toHaveProperty("train_images_per_epoch");
+    expect(first).not.toHaveProperty("val_images_per_epoch");
+    fireEvent.change(train, { target: { value: "7000" } });
+    fireEvent.change(val, { target: { value: "400" } });
+    fireEvent.click(screen.getByRole("button", { name: "Start 1 run" }));
+    await Promise.resolve();
+    expect(onStart.mock.calls[1][0].params).toMatchObject({ train_images_per_epoch: 7000, val_images_per_epoch: 400 });
+    fireEvent.change(train, { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: "Start 1 run" }));
+    await Promise.resolve();
+    expect(onStart.mock.calls[2][0].params).not.toHaveProperty("train_images_per_epoch");
+  });
+
+  it("shows the epoch estimate, with minutes from a run measured on the same model, image size and GPU", () => {
+    const measured = run({
+      model: "yolo11s-seg", gpu: 0, status: "done", speed: { train_images_per_s: 65, val_images_per_s: 80 },
+    });
+    renderForm({ runs: [measured] });
+    expect(screen.getByText("1 epoch = 28,000 images (≈ 7 min) · 100 epochs ≈ 100 full passes")).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("Images per epoch"), { target: { value: "7000" } });
+    fireEvent.change(screen.getByLabelText("Validation images per epoch"), { target: { value: "400" } });
+    expect(screen.getByText("1 epoch = 7,000 images (≈ 2 min) · 100 epochs ≈ 25 full passes")).toBeTruthy();
+    expect(screen.getByText("Validation: 400 of 1,643 images per epoch (≈ 5 s)")).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("GPU"), { target: { value: "1" } }); // never measured there
+    expect(screen.getByText("1 epoch = 7,000 images · 100 epochs ≈ 25 full passes")).toBeTruthy();
+  });
+});

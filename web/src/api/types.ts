@@ -149,6 +149,11 @@ export type TrainParams = {
   /** Absent on an older run's stored params: the GUI treats that as "default". */
   augment?: AugmentMode;
   aug?: AugParams | null;
+  /** Sampled epochs: train on this many images per epoch (a new slice of the shuffled train set each epoch);
+   * null/absent = all of them. More than the export holds means all. */
+  train_images_per_epoch?: number | null;
+  /** Validate each epoch on a fixed subset of this many val images (the final metrics still use all); null/absent = all. */
+  val_images_per_epoch?: number | null;
 };
 export type GpuQueue = {
   index: number;
@@ -216,7 +221,23 @@ export type RunBest = {
   box_map50: number | null;
   box_map50_95: number | null;
   train_seconds: number | null;
+  /** Set when the mAPs come from the final evaluation of best.pt on the whole val split (a run validated per epoch
+   * on a subset): how many val images that was. Absent otherwise. */
+  val_images?: number | null;
 };
+/** A run's sampled epochs for its export, worked out when it was created; sizes are null for "all". */
+export type EpochPlan = {
+  train_images: number;
+  train_images_per_epoch: number | null;
+  val_images: number;
+  val_images_per_epoch: number | null;
+  /** Ultralytics' warmup_epochs and close_mosaic, scaled to cover as many images as with whole epochs (only with a
+   * train size). */
+  warmup_epochs?: number;
+  close_mosaic?: number;
+};
+/** What the worker last measured: images per second while training an epoch, and while validating. */
+export type RunSpeed = { train_images_per_s?: number; val_images_per_s?: number; batch?: number; imgsz?: number };
 export type RunProgress = { phase: "setup" | "train" | "val" | "predict"; epoch: number; epochs: number; batch: number; batches: number };
 export type Run = {
   id: string;
@@ -253,6 +274,10 @@ export type Run = {
   continuable?: boolean;
   /** Eligible as a "fine-tune" source (= `has_best`). Absent on an older server. */
   finetunable?: boolean;
+  /** Sampled epochs; null for whole epochs (and absent on an older server). */
+  sampling?: EpochPlan | null;
+  /** The worker's last throughput measurement; null before its first epoch (and for runs from before it measured). */
+  speed?: RunSpeed | null;
 };
 export type MetricRow = { epoch: number } & Record<string, number>;
 export type RunDetail = Run & { metrics: MetricRow[] };

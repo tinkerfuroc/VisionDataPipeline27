@@ -214,6 +214,23 @@ describe("Train page", () => {
     expect(m.getRun).toHaveBeenCalledWith("r1");
   });
 
+  it("describes a run's sampled epochs and labels its per-epoch curves as on the val subset", async () => {
+    const sampled = { ...r1, sampling: {
+      train_images: 798, train_images_per_epoch: 200, val_images: 252, val_images_per_epoch: 50,
+      warmup_epochs: 11.97, close_mosaic: 40,
+    } };
+    m.listRuns.mockResolvedValue([sampled, r2]);
+    m.getRun.mockResolvedValue({ ...sampled, metrics: [{ epoch: 1, "metrics/mAP50-95(M)": 0.2 }] } as RunDetail);
+    renderPage();
+    expect(await screen.findByText(
+      "Each epoch trains on the next 200 of 798 images (warmup 11.97 epochs, mosaic off for the last 40). " +
+      "Per-epoch validation uses a fixed 50 of 252 val images; the final metrics are on all 252.",
+    )).toBeTruthy();
+    expect(await screen.findByRole("img", { name: "Mask mAP (val subset of 50) by epoch" })).toBeTruthy();
+    expect(screen.getByText("Validation loss (val subset of 50)")).toBeTruthy();
+    expect(screen.getByText("Training loss")).toBeTruthy(); // training is not validation: no subset label
+  });
+
   it("explains when training is unavailable", async () => {
     m.trainStatus.mockResolvedValue({ ...status, available: false, error: "ultralytics is not installed in this environment; run `uv sync`" });
     renderPage();

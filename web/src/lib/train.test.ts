@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { ExportInfo, GpuQueue, Run, TrainStatus } from "../api/types";
 import {
-  bestRunIds, checkpointSources, classesCompatible, continueModeLabel, defaultGpu, defaultMode, finetuneModeLabel,
-  formatDuration, gpuOptionLabel, metricSeries, modeDisabledReason, polygonPoints, sourceRunLabel, startModeHeaderNote,
-  startModeNote, startProblem, statusText, vramBusyReason, vramFit, vramLabel,
+  bestRunIds, checkpointSources, classesCompatible, continueModeLabel, defaultGpu, defaultMode, epochEstimate, finalMetricsNote,
+  finetuneModeLabel, formatDuration, gpuOptionLabel, measuredSpeed, metricSeries, modeDisabledReason, polygonPoints,
+  samplingNote, sendableParams, sourceRunLabel, startModeHeaderNote, startModeNote, startProblem, statusText, valSubsetNote,
+  vramBusyReason, vramFit, vramLabel,
 } from "./train";
 
 const gpu = (over: Partial<GpuQueue> = {}): GpuQueue => ({
@@ -167,5 +168,61 @@ describe("VRAM estimate helpers", () => {
     expect(vramBusyReason(st, [], 2)).toMatch(/^cuda:2 has a run queued/);
     expect(vramBusyReason(st, [], 3)).toMatch(/^cuda:3 is exporting/);
     expect(vramBusyReason(st, [run("x", { status: "running", gpu: 0 })], 0)).toMatch(/^cuda:0 is training/);
+  });
+});
+
+describe("sampled epochs", () => {
+  const params = { epochs: 100, imgsz: 960, batch: 8, patience: 30, workers: 8, seed: 0 };
+  const speed = { train_images_per_s: 65, val_images_per_s: 80, batch: 8, imgsz: 960 };
+
+  it("sendableParams leaves out the empty (all) sizes", () => {
+    expect(sendableParams({ ...params, train_images_per_epoch: null, val_images_per_epoch: null })).toEqual(params);
+    expect(sendableParams({ ...params, train_images_per_epoch: 7000, val_images_per_epoch: null }))
+      .toEqual({ ...params, train_images_per_epoch: 7000 });
+  });
+
+  it("measuredSpeed takes the newest run measured with the same model, image size and GPU", () => {
+    const runs = [
+      run("new-other-gpu", { gpu: 0, speed }),
+      run("new", { gpu: 1, speed: { ...speed, train_images_per_s: 70 } }),
+      run("old", { gpu: 1, speed: { ...speed, train_images_per_s: 50 } }),
+      run("unmeasured", { gpu: 1 }),
+    ];
+    expect(measuredSpeed(runs, "yolo26s-seg", 960, 1)?.train_images_per_s).toBe(70);
+    expect(measuredSpeed(runs, "yolo26s-seg", 640, 1)).toBeNull();
+    expect(measuredSpeed(runs, "yolo11s-seg", 960, 1)).toBeNull();
+  });
+
+  it("epochEstimate: images per epoch, minutes from the measured speed, full passes and validation", () => {
+    expect(epochEstimate({ trainImages: 28000, valImages: 1643, epochs: 100, trainPerEpoch: 7000, valPerEpoch: 400, speed }))
+      .toEqual(["1 epoch = 7,000 images (≈ 2 min) · 100 epochs ≈ 25 full passes", "Validation: 400 of 1,643 images per epoch (≈ 5 s)"]);
+    expect(epochEstimate({ trainImages: 28000, valImages: 1643, epochs: 30, trainPerEpoch: null, valPerEpoch: null, speed: null }))
+      .toEqual(["1 epoch = 28,000 images · 30 epochs ≈ 30 full passes", "Validation: all 1,643 images per epoch"]);
+    // more than the split holds means all of it; partial passes keep one decimal
+    expect(epochEstimate({ trainImages: 1000, valImages: 100, epochs: 5, trainPerEpoch: 300, valPerEpoch: 500, speed: null }))
+      .toEqual(["1 epoch = 300 images · 5 epochs ≈ 1.5 full passes", "Validation: all 100 images per epoch"]);
+  });
+
+  it("samplingNote and valSubsetNote describe a run's sampled epochs", () => {
+    expect(samplingNote(run("a"))).toBeNull();
+    const sampled = run("b", { sampling: {
+      train_images: 28000, train_images_per_epoch: 7000, val_images: 1643, val_images_per_epoch: 400,
+      warmup_epochs: 12, close_mosaic: 40,
+    } });
+    expect(samplingNote(sampled)).toBe(
+      "Each epoch trains on the next 7,000 of 28,000 images (warmup 12 epochs, mosaic off for the last 40). " +
+      "Per-epoch validation uses a fixed 400 of 1,643 val images; the final metrics are on all 1,643.",
+    );
+    expect(valSubsetNote(sampled)).toBe("val subset of 400");
+    const valOnly = run("c", { sampling: { train_images: 28000, train_images_per_epoch: null, val_images: 1643, val_images_per_epoch: 400 } });
+    expect(samplingNote(valOnly)).toBe("Per-epoch validation uses a fixed 400 of 1,643 val images; the final metrics are on all 1,643.");
+    const trainOnly = run("d", { sampling: { train_images: 28000, train_images_per_epoch: 7000, val_images: 1643, val_images_per_epoch: null, warmup_epochs: 12, close_mosaic: 40 } });
+    expect(valSubsetNote(trainOnly)).toBeNull();
+  });
+  it("finalMetricsNote names the full-val final evaluation", () => {
+    expect(finalMetricsNote(run("a", { best: best(0.5) }))).toBeNull();
+    expect(finalMetricsNote(run("b", { best: { ...best(0.5), epoch: 12, mask_map50_95: 0.7123, val_images: 1643 } }))).toBe(
+      "Final, best.pt (epoch 12) on all 1,643 val images: mask mAP50-95 0.712 · mask mAP50 0.500 · box mAP50-95 0.500",
+    );
   });
 });

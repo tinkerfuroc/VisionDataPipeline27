@@ -1,4 +1,4 @@
-import type { ExportInfo, GpuQueue, MetricRow, Run, RunBest, StartMode, TrainStatus } from "../api/types";
+import type { ExportInfo, GpuQueue, MetricRow, Run, RunBest, RunSpeed, StartMode, TrainParams, TrainStatus } from "../api/types";
 import { exportLabel } from "./exportName";
 import type { Pt } from "./chart";
 
@@ -158,4 +158,72 @@ export function vramBusyReason(status: Pick<TrainStatus, "gpus">, runs: Run[], g
   if (g.queue.length > 0) return `cuda:${gpu} has a run queued${why}`;
   if (runs.some((r) => r.status === "running" && r.gpu === gpu)) return `cuda:${gpu} is training${why}`;
   return null;
+}
+
+const count = (n: number) => n.toLocaleString("en-US");
+
+/** The params as sent to the server: an empty (all) images-per-epoch size is left out rather than sent as null. */
+export function sendableParams(params: TrainParams): TrainParams {
+  const out = { ...params };
+  if (out.train_images_per_epoch == null) delete out.train_images_per_epoch;
+  if (out.val_images_per_epoch == null) delete out.val_images_per_epoch;
+  return out;
+}
+
+/** The newest measured throughput (`runs` come newest first) of a run with this model and image size on this GPU. */
+export function measuredSpeed(runs: Run[], model: string, imgsz: number, gpu: number): RunSpeed | null {
+  const hit = runs.find((r) => r.model === model && r.params.imgsz === imgsz && r.gpu === gpu && r.speed?.train_images_per_s != null);
+  return hit?.speed ?? null;
+}
+
+/** The Train form's estimate under the images-per-epoch fields: the epoch size (with minutes when a run has measured
+ * this model/image size/GPU), how many full passes over the train set the epochs make, and the validation per epoch. */
+export function epochEstimate(o: {
+  trainImages: number; valImages: number; epochs: number; trainPerEpoch: number | null | undefined;
+  valPerEpoch: number | null | undefined; speed: RunSpeed | null;
+}): string[] {
+  const n = Math.min(o.trainPerEpoch ?? o.trainImages, o.trainImages);
+  const m = Math.min(o.valPerEpoch ?? o.valImages, o.valImages);
+  const minutes = o.speed?.train_images_per_s ? ` (≈ ${formatDuration(n / o.speed.train_images_per_s)})` : "";
+  const passes = Math.round((o.epochs * n / Math.max(o.trainImages, 1)) * 10) / 10;
+  const valTime = o.speed?.val_images_per_s ? ` (≈ ${formatDuration(m / o.speed.val_images_per_s)})` : "";
+  const val = m < o.valImages ? `${count(m)} of ${count(o.valImages)}` : `all ${count(o.valImages)}`;
+  return [
+    `1 epoch = ${count(n)} images${minutes} · ${o.epochs} epochs ≈ ${passes} full passes`,
+    `Validation: ${val} images per epoch${valTime}`,
+  ];
+}
+
+/** The run detail's description of its sampled epochs; null for whole epochs. */
+export function samplingNote(run: Run): string | null {
+  const s = run.sampling;
+  if (s == null) return null;
+  const parts: string[] = [];
+  if (s.train_images_per_epoch != null) {
+    parts.push(
+      `Each epoch trains on the next ${count(s.train_images_per_epoch)} of ${count(s.train_images)} images ` +
+      `(warmup ${s.warmup_epochs} epochs, mosaic off for the last ${s.close_mosaic}).`,
+    );
+  }
+  if (s.val_images_per_epoch != null) {
+    parts.push(
+      `Per-epoch validation uses a fixed ${count(s.val_images_per_epoch)} of ${count(s.val_images)} val images; ` +
+      `the final metrics are on all ${count(s.val_images)}.`,
+    );
+  }
+  return parts.join(" ");
+}
+
+/** "val subset of 400" for a run validated per epoch on a subset (its per-epoch charts), else null. */
+export const valSubsetNote = (run: Run): string | null =>
+  run.sampling?.val_images_per_epoch != null ? `val subset of ${count(run.sampling.val_images_per_epoch)}` : null;
+
+/** "Final, best.pt (epoch 12) on all 252 val images: mask mAP50-95 0.712 · …" for a run whose reported metrics come
+ * from the final evaluation on the whole val split (validated per epoch on a subset); null otherwise. */
+export function finalMetricsNote(run: Run): string | null {
+  const b = run.best;
+  if (b == null || b.val_images == null) return null;
+  const f = (v: number | null) => (v === null ? "—" : v.toFixed(3));
+  return `Final, best.pt (epoch ${b.epoch}) on all ${count(b.val_images)} val images: mask mAP50-95 ${f(b.mask_map50_95)} · ` +
+    `mask mAP50 ${f(b.mask_map50)} · box mAP50-95 ${f(b.box_map50_95)}`;
 }

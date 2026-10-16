@@ -6,8 +6,8 @@ import type {
 } from "../api/types";
 import { exportLabel } from "../lib/exportName";
 import {
-  checkpointSources, classesCompatible, continueModeLabel, defaultGpu, defaultMode, finetuneModeLabel,
-  gpuOptionLabel, modeDisabledReason, sourceRunLabel, startProblem, statusText,
+  checkpointSources, classesCompatible, continueModeLabel, defaultGpu, defaultMode, epochEstimate, finetuneModeLabel,
+  gpuOptionLabel, measuredSpeed, modeDisabledReason, sendableParams, sourceRunLabel, startProblem, statusText,
 } from "../lib/train";
 import { AugmentPanel } from "./AugmentPanel";
 import { VramEstimatePanel } from "./VramEstimate";
@@ -18,6 +18,11 @@ const PARAM_FIELDS: { key: "epochs" | "imgsz" | "batch" | "patience"; label: str
   { key: "imgsz", label: "Image size (px)", min: 320, max: 1920, step: 32 },
   { key: "batch", label: "Batch", min: 1, max: 64, step: 1 },
   { key: "patience", label: "Early-stop patience", min: 0, max: 1000, step: 1 },
+];
+/** Sampled epochs: optional sizes, empty = all images (left out of the request). */
+const SAMPLE_FIELDS: { key: "train_images_per_epoch" | "val_images_per_epoch"; label: string }[] = [
+  { key: "train_images_per_epoch", label: "Images per epoch" },
+  { key: "val_images_per_epoch", label: "Validation images per epoch" },
 ];
 const AUG_FIELDS: { key: keyof Omit<AugParams, "photometric" | "lighting">; min: number; max: number; step: number }[] = [
   { key: "degrees", min: 0, max: 180, step: 1 },
@@ -274,6 +279,13 @@ export function TrainSidebar({
   const estimateModel = sourceRun !== null ? sourceRun.model
     : vramModel !== null && chosen.includes(vramModel) ? vramModel : (chosen[0] ?? null);
   const estimateGpu = sourceRun !== null || estimateModel === null ? (batchGpu ?? 0) : gpuOf(estimateModel);
+  // "1 epoch = N images (≈ X min) · E epochs ≈ P full passes", timed by the newest run measured on the same
+  // model, image size and GPU (the same model and GPU the VRAM estimate is for)
+  const estimate = selectedExport === null ? null : epochEstimate({
+    trainImages: selectedExport.train_images, valImages: selectedExport.val_images, epochs: displayParams.epochs,
+    trainPerEpoch: displayParams.train_images_per_epoch, valPerEpoch: displayParams.val_images_per_epoch,
+    speed: estimateModel === null ? null : measuredSpeed(runs, estimateModel, displayParams.imgsz, estimateGpu),
+  });
 
   const start = async () => {
     if (effectiveProblem !== null || starting || exportId === null) return;
@@ -282,12 +294,12 @@ export function TrainSidebar({
     try {
       if (sourceRun !== null) {
         await onStartFromCheckpoint(sourceRun.id, {
-          export_id: exportId, mode, gpu: batchGpu ?? 0, ...(mode === "finetune" ? { params } : {}),
+          export_id: exportId, mode, gpu: batchGpu ?? 0, ...(mode === "finetune" ? { params: sendableParams(params) } : {}),
           ...(checkpointOnSam3 && pauseSam3 ? { pause_sam3: true } : {}),
         });
       } else {
         await onStart({
-          export_id: exportId, runs: chosen.map((m) => ({ model: m, gpu: gpuOf(m) })), params,
+          export_id: exportId, runs: chosen.map((m) => ({ model: m, gpu: gpuOf(m) })), params: sendableParams(params),
           ...(onSam3 && pauseSam3 ? { pause_sam3: true } : {}),
         });
       }
@@ -456,6 +468,16 @@ export function TrainSidebar({
             )}
           </div>
         ))}
+        {SAMPLE_FIELDS.map((f) => (
+          <label key={f.key} className="flex items-center justify-between gap-2 text-sm text-dim">
+            {f.label}
+            <input aria-label={f.label} type="number" className="field w-24" placeholder="all" step={1}
+              min={f.key === "train_images_per_epoch" ? displayParams.batch : 1} disabled={paramsLocked}
+              value={displayParams[f.key] ?? ""}
+              onChange={(e) => setParams({ ...params, [f.key]: e.target.value === "" ? null : Math.max(1, Math.round(Number(e.target.value))) })} />
+          </label>
+        ))}
+        {estimate !== null && estimate.map((line) => <p key={line} className="note">{line}</p>)}
         <label className="flex flex-col gap-1 text-sm text-dim">
           Augmentation
           <select aria-label="Augmentation" className="field" value={displayParams.augment ?? "default"} disabled={paramsLocked}
