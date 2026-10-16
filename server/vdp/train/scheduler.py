@@ -4,6 +4,12 @@ parallel.
 Locking: one Condition guards the queues, the running table and every run.json write made here. A run
 is popped, marked running and launched inside one critical section, so a concurrent cancel always
 finds it either queued (and drops it) or running with a process to signal.
+
+Hooks (the server's SAM3 pause uses both): `before_queue`, passed to a request, runs under that lock
+once the request has been validated, right before its run(s) are queued; if it raises, nothing is
+queued. `on_gpu_idle(gpu)` fires outside the lock whenever a GPU is left with nothing queued or
+running (and once per GPU at `start()`); it may be stale by the time it runs, so a listener that
+cares re-checks `gpu_idle()`.
 """
 
 from __future__ import annotations
@@ -17,6 +23,7 @@ import subprocess
 import sys
 import threading
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -238,6 +245,7 @@ class TrainScheduler:
         self._cancelled: set[str] = set()
         self._threads: list[threading.Thread] = []
         self._stopping = False
+        self.on_gpu_idle: Callable[[int], None] | None = None  # see the module docstring
 
     # ---- lifecycle ----
 
@@ -316,7 +324,10 @@ class TrainScheduler:
 
     # ---- requests ----
 
-    def submit(self, export: ExportInfo, specs: list[tuple[str, int]], params: TrainParams) -> list[str]:
+    def submit(
+        self, export: ExportInfo, specs: list[tuple[str, int]], params: TrainParams, *,
+        before_queue: Callable[[], None] | None = None,
+    ) -> list[str]:
         if not specs:
             raise BadRequest("choose at least one model")
         for model, gpu in specs:
@@ -325,15 +336,20 @@ class TrainScheduler:
                 raise BadRequest(f"GPU {gpu} does not exist")
         ids = []
         with self._cv:
-            for model, gpu in specs:
-                run = self.runs.create(export, model, gpu, params, owner_pid=os.getpid())
-                self._queues[gpu].append((run["id"], "train"))
-                ids.append(run["id"])
-            self._cv.notify_all()
+            if before_queue is not None:
+                before_queue()
+            try:
+                for model, gpu in specs:
+                    run = self.runs.create(export, model, gpu, params, owner_pid=os.getpid())
+                    self._queues[gpu].append((run["id"], "train"))
+                    ids.append(run["id"])
+            finally:  # runs queued before a later one failed to be created still start
+                self._cv.notify_all()
         return ids
 
     def submit_from(
-        self, source_id: str, export: ExportInfo, mode: str, gpu: int, params: TrainParams | None = None
+        self, source_id: str, export: ExportInfo, mode: str, gpu: int, params: TrainParams | None = None, *,
+        before_queue: Callable[[], None] | None = None,
     ) -> str:
         """A new run that starts from `source_id`'s checkpoint on `export` (which must carry the
         same classes, in the same order) instead of pretrained weights, queued like any `submit`
@@ -365,6 +381,8 @@ class TrainScheduler:
             )
         run_params = TrainParams(**source["params"]) if mode == "continue" else (params or TrainParams())
         with self._cv:
+            if before_queue is not None:
+                before_queue()
             run = self.runs.create(export, source["model"], gpu, run_params, owner_pid=os.getpid())
             run_dir = self.runs.dir(run["id"])
             extra: dict = {"source_run": source_id, "start_mode": mode}
@@ -394,13 +412,17 @@ class TrainScheduler:
                     raise Conflict(f"run {run_id} is queued in another process")
                 self._drop(run_id)
                 self.runs.update(run_id, status="cancelled", finished_at=now_iso())
-                return
-            if run["status"] != "running":
+                proc = None
+            elif run["status"] != "running":
                 raise Conflict(f"run {run_id} is {run['status']}")
-            proc = self._proc_of(run_id)
-            if proc is None:
-                raise Conflict(f"run {run_id} is running in another process")
-            self._cancelled.add(run_id)
+            else:
+                proc = self._proc_of(run_id)
+                if proc is None:
+                    raise Conflict(f"run {run_id} is running in another process")
+                self._cancelled.add(run_id)
+        if proc is None:  # dropped from its queue: no GPU thread wakes up for it, so report here
+            self._report_idle(run["gpu"])
+            return
         _signal_group(proc.pid, signal.SIGTERM)
         timer = threading.Timer(self._kill_after, self._kill_if_alive, args=(proc,))
         timer.daemon = True
@@ -418,7 +440,8 @@ class TrainScheduler:
         return run["status"] in ("cancelled", "interrupted") and weights.is_file()
 
     def _requeue_stopped(
-        self, run_id: str, gpu: int | None, *, eligible, ineligible_message: str, extra_fields: dict
+        self, run_id: str, gpu: int | None, *, eligible, ineligible_message: str, extra_fields: dict,
+        before_queue: Callable[[], None] | None,
     ) -> None:
         """Common to `resume` and `complete`: `gpu` moves the run there (validated like
         `submit`'s: an unknown GPU is a BadRequest, the caller's own bad input); omitted, it
@@ -438,6 +461,8 @@ class TrainScheduler:
                 target = run["gpu"]
                 if target not in self._queues:
                     raise Conflict(f"GPU {target} is not available")
+            if before_queue is not None:
+                before_queue()
             fields: dict = {
                 "status": "queued", "error": None, "finished_at": None, "owner_pid": os.getpid(),
                 **extra_fields,
@@ -448,20 +473,22 @@ class TrainScheduler:
             self._queues[target].append((run_id, "train"))
             self._cv.notify_all()
 
-    def resume(self, run_id: str, gpu: int | None = None) -> None:
+    def resume(self, run_id: str, gpu: int | None = None, *, before_queue: Callable[[], None] | None = None) -> None:
         self._requeue_stopped(
             run_id, gpu, eligible=self.resumable, ineligible_message="run {} cannot be resumed",
-            extra_fields={"resume": True, "finish": False},
+            extra_fields={"resume": True, "finish": False}, before_queue=before_queue,
         )
 
-    def complete(self, run_id: str, gpu: int | None = None) -> None:
+    def complete(
+        self, run_id: str, gpu: int | None = None, *, before_queue: Callable[[], None] | None = None
+    ) -> None:
         """Finishes a stopped run with its best epoch so far instead of training further: the
         worker skips straight to stripping `best.pt`'s optimizer state and running validation
         predictions (see `worker.train`'s `finish` branch)."""
         self._requeue_stopped(
             run_id, gpu, eligible=self.completable,
             ineligible_message="run {} cannot be marked complete",
-            extra_fields={"finish": True, "resume": False},
+            extra_fields={"finish": True, "resume": False}, before_queue=before_queue,
         )
 
     def export_onnx(self, run_id: str) -> None:
@@ -501,6 +528,11 @@ class TrainScheduler:
         with self._cv:
             return not self._running and not any(self._queues.values())
 
+    def gpu_idle(self, gpu: int) -> bool:
+        """Nothing queued or running on `gpu` in this scheduler (another process's runs do not count)."""
+        with self._cv:
+            return self._idle_locked(gpu)
+
     def busy_gpus(self) -> set[int]:
         """GPU indexes this scheduler should not default new runs onto: one with a run queued or
         running here, or with a foreign process's run.json (a `vdp train` elsewhere) reporting
@@ -538,8 +570,25 @@ class TrainScheduler:
         if proc.poll() is None:
             _signal_group(proc.pid, signal.SIGKILL)
 
+    def _report_idle(self, gpu: int) -> None:
+        """Calls `on_gpu_idle(gpu)` (outside the lock) if `gpu` is idle and the scheduler is not stopping."""
+        hook = self.on_gpu_idle
+        with self._cv:
+            report = hook is not None and not self._stopping and self._idle_locked(gpu)
+        if report:
+            try:
+                hook(gpu)
+            except Exception:  # a listener must never take a GPU thread down
+                log.exception("on_gpu_idle(%d) failed", gpu)
+
+    def _idle_locked(self, gpu: int) -> bool:
+        return not self._queues.get(gpu) and gpu not in self._running
+
     def _loop(self, gpu: int) -> None:
         while True:
+            # Once at start, then after every item this thread took (finished, failed to launch, or
+            # skipped as stale): so a GPU whose last run just ended, however, is reported idle.
+            self._report_idle(gpu)
             with self._cv:
                 while not self._stopping and not self._queues[gpu]:
                     self._cv.wait()

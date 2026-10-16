@@ -20,6 +20,8 @@ class FakeEngine:
         is_empty_obj: Callable[[np.ndarray, int], bool] | None = None,
         max_area_frac: float = 0.45,
         min_area_px: int = 64,
+        device: str | None = None,
+        vram_bytes: int | None = None,
     ) -> None:
         self.dx = dx
         self.n_text_candidates = n_text_candidates
@@ -28,6 +30,12 @@ class FakeEngine:
         self.is_empty_obj = is_empty_obj
         self.max_area_frac = max_area_frac
         self.min_area_px = min_area_px
+        # Like Sam3Engine's: both survive release(), so the server still knows where SAM3 reloads to.
+        self.device = device
+        self.vram_bytes = vram_bytes
+        self._loaded = True  # loaded from the start, so tests that never call load() just work
+        self.load_calls = 0
+        self.release_calls = 0
         self.prepare_calls: list[int] = []
         self.propagate_calls: list[int] = []
         self.seed_calls: list[list[int]] = []
@@ -38,7 +46,15 @@ class FakeEngine:
         return is_degenerate_mask(mask, max_area_frac=self.max_area_frac, min_area_px=self.min_area_px)
 
     def is_loaded(self) -> bool:
-        return True
+        return self._loaded
+
+    def load(self) -> None:
+        self.load_calls += 1
+        self._loaded = True
+
+    def release(self) -> None:
+        self.release_calls += 1
+        self._loaded = False
 
     def predict_text(self, image_bgr: np.ndarray, phrase: str, *, frame_key: tuple | None = None) -> list[Detection]:
         self.images.append(image_bgr)

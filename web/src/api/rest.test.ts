@@ -242,3 +242,29 @@ describe("uploadClip", () => {
     await expect(handle.promise).rejects.toBeInstanceOf(UploadCancelled);
   });
 });
+
+describe("SAM3 pause requests", () => {
+  const body = (fn: ReturnType<typeof mockFetch>, i: number) => {
+    const init = fn.mock.calls[i][1] as RequestInit;
+    return init.body === undefined ? undefined : JSON.parse(init.body as string);
+  };
+
+  it("Resume and Mark complete add pause_sam3 only when asked", async () => {
+    const fn = mockFetch(...Array.from({ length: 4 }, () => jsonResponse({})));
+    await api.resumeRun("r1");
+    await api.resumeRun("r1", 1);
+    await api.resumeRun("r1", undefined, true);
+    await api.completeRun("r1", 0, true);
+    expect([0, 1, 2, 3].map((i) => body(fn, i))).toEqual([
+      undefined, { gpu: 1 }, { pause_sam3: true }, { gpu: 0, pause_sam3: true },
+    ]);
+    expect(fn.mock.calls[3][0]).toBe("/api/train/runs/r1/complete");
+  });
+
+  it("loadEngine posts to /api/engine/load", async () => {
+    const fn = mockFetch(jsonResponse({ started: true }, 202));
+    expect(await api.loadEngine()).toEqual({ started: true });
+    expect(fn.mock.calls[0][0]).toBe("/api/engine/load");
+    expect((fn.mock.calls[0][1] as RequestInit).method).toBe("POST");
+  });
+});

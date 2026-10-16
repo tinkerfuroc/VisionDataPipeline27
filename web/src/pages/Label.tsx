@@ -17,7 +17,7 @@ import { ToolRail, type RailTool } from "../components/ToolRail";
 import { Transport } from "../components/Transport";
 import { useBrush } from "../hooks/useBrush";
 import { useClip } from "../hooks/useClip";
-import { HealthContext, engineReady } from "../hooks/useHealth";
+import { HealthContext, engineDownReason, engineReady } from "../hooks/useHealth";
 import { useJob } from "../hooks/useJob";
 import { useKeyboard, type KeyAction } from "../hooks/useKeyboard";
 import { useObjects } from "../hooks/useObjects";
@@ -193,7 +193,7 @@ export function Label() {
   // ---- prompting -------------------------------------------------------------------------------------------------
   const state = detail?.states[frame] ?? "empty";
   const disabledReason = !engineReady(health)
-    ? "The SAM3 engine is not loaded."
+    ? engineDownReason(health)
     : running
       ? "A propagation is running. Stop it to prompt."
       : state === "deleted"
@@ -488,7 +488,7 @@ export function Label() {
   // "Selected" needs the active object's own mask here; "All objects" needs any object's (the server skips the rest)
   const fromState = scope === "selected" ? (activeLane[frame] ?? "empty") : state;
   const propagateBlocked = !engineReady(health)
-    ? "The SAM3 engine is not loaded."
+    ? engineDownReason(health)
     : state === "deleted"
       ? "This frame is deleted. Restore it, or go to a masked frame, to propagate from it."
       : !isLabeled(fromState)

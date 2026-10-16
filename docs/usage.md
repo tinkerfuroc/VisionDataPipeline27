@@ -197,6 +197,13 @@ that GPU, before marking the run `done` (`completed_early: true` in `run.json`, 
 with that best epoch's metrics. `POST /api/train/runs/{run_id}/complete` (optional `{"gpu": N}` body) does the same
 from the API; a 409 means the run is not eligible.
 
+When a run is headed for SAM3's GPU, the "shares memory with SAM3" warning (in New runs and in the Stopped run
+section) has a "Pause SAM3 while training" checkbox, off by default, which also says roughly how much VRAM it frees.
+Checked, the server unloads SAM3 before the run starts and reloads it by itself once that GPU has no training queued
+or running; meanwhile prompting and propagation are unavailable, and the banner at the top offers "Reload now" (which
+brings the memory pressure back while training still runs). With the box checked, starting is refused while a
+propagation is running, or while SAM3 is still loading (untick the box, or wait for it to finish).
+
 `vdp train` runs in the foreground and owns its runs; Ctrl-C,
 SIGTERM and SIGHUP (a closed terminal, `kill`) all cancel them the same way. Do not start it on a GPU the server is
 also training on. Do not set `CUDA_VISIBLE_DEVICES` for the server process itself — GPU indexes (from `vdp doctor`,

@@ -1,18 +1,26 @@
-import { createContext, useEffect, useState } from "react";
+import { createContext, useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api/rest";
 import type { Health } from "../api/types";
 
-export type HealthState = { health: Health | null; unreachable: boolean };
+/** `refresh` polls right away (e.g. after asking the server to load the engine); absent outside `useHealth`. */
+export type HealthState = { health: Health | null; unreachable: boolean; refresh?: () => void };
 
 export const HealthContext = createContext<HealthState>({ health: null, unreachable: false });
 
 export const engineReady = (s: HealthState): boolean => !s.unreachable && s.health !== null && s.health.engine.loaded;
 
+/** Why prompting / propagation is off when `engineReady` is false. */
+export const engineDownReason = (s: HealthState): string =>
+  s.health?.engine.paused
+    ? "SAM3 is paused for training. It reloads by itself when that training ends, or use Reload now at the top."
+    : "The SAM3 engine is not loaded.";
+
 const FAST_MS = 2000; // while the model is still loading
-const SLOW_MS = 15000;
+const SLOW_MS = 15000; // loaded, failed, or paused for training (which lasts until the training ends)
 
 export function useHealth(): HealthState {
   const [state, setState] = useState<HealthState>({ health: null, unreachable: false });
+  const pollNow = useRef<() => void>(() => {});
 
   useEffect(() => {
     let closed = false;
@@ -23,12 +31,16 @@ export function useHealth(): HealthState {
         const health = await api.health();
         if (closed) return;
         setState({ health, unreachable: false });
-        if (health.engine.loaded || health.engine.error !== null) delay = SLOW_MS;
+        if (health.engine.loaded || health.engine.error !== null || health.engine.paused) delay = SLOW_MS;
       } catch {
         if (closed) return;
         setState((s) => ({ health: s.health, unreachable: true }));
       }
       timer = setTimeout(() => void tick(), delay);
+    };
+    pollNow.current = () => {
+      if (timer !== undefined) clearTimeout(timer);
+      void tick();
     };
     void tick();
     return () => {
@@ -37,5 +49,6 @@ export function useHealth(): HealthState {
     };
   }, []);
 
-  return state;
+  const refresh = useCallback(() => pollNow.current(), []);
+  return { ...state, refresh };
 }

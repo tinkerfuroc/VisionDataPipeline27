@@ -23,6 +23,7 @@ class AppState:
     jobs: JobManager
     train: Any = None  # a TrainScheduler
     uploads: Any = None  # a ResumableStore
+    engine_ctl: Any = None  # an engine.EngineControl: background loading and the training pause
 
 
 def get_state(request: Request) -> AppState:
@@ -32,7 +33,12 @@ def get_state(request: Request) -> AppState:
 State = Annotated[AppState, Depends(get_state)]
 
 
+PAUSED_REASON = "SAM3 is paused for training"
+
+
 def require_engine(state: AppState):
+    if state.engine_ctl is not None and state.engine_ctl.paused:
+        raise EngineNotLoaded(PAUSED_REASON)
     if not state.engine.is_loaded():
         reason = getattr(state.engine, "load_error", None) or "the SAM3 engine is still loading"
         raise EngineNotLoaded(reason)

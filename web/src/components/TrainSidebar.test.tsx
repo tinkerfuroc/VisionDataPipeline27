@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AugParams, ExportInfo, Run, TrainStatus } from "../api/types";
 import { TrainSidebar } from "./TrainSidebar";
@@ -211,5 +211,81 @@ describe("TrainSidebar Start from a checkpoint", () => {
     expect(id).toBe(doneRun.id);
     expect(body.mode).toBe("finetune");
     expect(body.params.epochs).toBe(12);
+  });
+});
+
+describe("TrainSidebar Pause SAM3 checkbox", () => {
+  const onSam3: TrainStatus = { ...status, sam3_gpu: 0, sam3_vram_bytes: 3.4e9 };
+  const pauseBox = () => screen.queryByRole("checkbox", { name: /^Pause SAM3 while training/ });
+
+  function renderNewRuns(st: TrainStatus, extra: {
+    onStart?: (body: unknown) => Promise<void>;
+    runs?: Run[];
+    sourceRunId?: string | null;
+    onStartFromCheckpoint?: (id: string, body: unknown) => Promise<void>;
+    selectedRun?: Run | null;
+    onResume?: (id: string, gpu: number, pauseSam3?: boolean) => Promise<void>;
+  } = {}) {
+    return render(
+      <TrainSidebar status={st} exports={[exportInfo()]} runs={extra.runs ?? []} exportId="e1"
+        onExportChange={() => {}} onExportsChanged={() => {}} onStart={(extra.onStart ?? noop) as never}
+        onCancel={() => {}} selectedRun={extra.selectedRun ?? null} onResume={extra.onResume ?? noop} onComplete={noop}
+        sourceRunId={extra.sourceRunId ?? null} onSourceRunChange={() => {}}
+        onStartFromCheckpoint={(extra.onStartFromCheckpoint ?? noop) as never} onTrainOnNewData={() => {}} />,
+    );
+  }
+
+  it("appears only with the SAM3 warning, unchecked, naming the VRAM it frees", () => {
+    renderNewRuns(status); // SAM3's GPU unknown: no warning, no checkbox
+    expect(pauseBox()).toBeNull();
+    cleanup();
+    renderNewRuns(onSam3);
+    expect(screen.getByText(/SAM3 runs on cuda:0/)).toBeTruthy();
+    const box = pauseBox() as HTMLInputElement;
+    expect(box.checked).toBe(false);
+    expect(box.closest("label")?.textContent).toBe("Pause SAM3 while training (frees about 3.4 GB of VRAM)");
+    fireEvent.change(screen.getByLabelText("GPU"), { target: { value: "1" } }); // off SAM3's GPU
+    expect(pauseBox()).toBeNull();
+  });
+
+  it("leaves out the amount when the server does not know it", () => {
+    renderNewRuns({ ...onSam3, sam3_vram_bytes: null });
+    expect(pauseBox()?.closest("label")?.textContent).toBe("Pause SAM3 while training");
+  });
+
+  it("sends pause_sam3 only when checked", async () => {
+    const onStart = vi.fn().mockResolvedValue(undefined);
+    renderNewRuns(onSam3, { onStart });
+    fireEvent.click(screen.getByRole("button", { name: "Start 1 run" }));
+    await Promise.resolve();
+    expect(onStart.mock.calls[0][0]).not.toHaveProperty("pause_sam3");
+    fireEvent.click(pauseBox()!);
+    expect(screen.getByText(/SAM3 reloads by itself/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Start 1 run" }));
+    await Promise.resolve();
+    expect(onStart.mock.calls[1][0]).toMatchObject({ runs: [{ model: "yolo11s-seg", gpu: 0 }], pause_sam3: true });
+  });
+
+  it("sends pause_sam3 when training from a checkpoint", async () => {
+    const source = run({
+      id: "20260924-120000-yolo11s-seg-src2", status: "done", finetunable: true, has_best: true, classes: ["Module"],
+    });
+    const onStartFromCheckpoint = vi.fn().mockResolvedValue(undefined);
+    renderNewRuns(onSam3, { runs: [source], sourceRunId: source.id, onStartFromCheckpoint });
+    fireEvent.click(pauseBox()!);
+    fireEvent.click(screen.getByRole("button", { name: "Fine-tune on new data" }));
+    await Promise.resolve();
+    expect(onStartFromCheckpoint.mock.calls[0][1]).toMatchObject({ gpu: 0, pause_sam3: true });
+  });
+
+  it("passes the choice to Resume in the stopped-run section", async () => {
+    const stopped = run({ resumable: true });
+    const onResume = vi.fn().mockResolvedValue(undefined);
+    renderNewRuns(onSam3, { runs: [stopped], selectedRun: stopped, onResume });
+    const section = screen.getByText("Stopped yolo11s-seg run").closest("section")!;
+    fireEvent.click(within(section).getByRole("checkbox", { name: /^Pause SAM3 while training/ }));
+    fireEvent.click(within(section).getByRole("button", { name: "Resume on cuda:0" }));
+    await Promise.resolve();
+    expect(onResume).toHaveBeenCalledWith(stopped.id, 0, true);
   });
 });

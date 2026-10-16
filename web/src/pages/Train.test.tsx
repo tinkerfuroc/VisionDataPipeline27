@@ -4,6 +4,7 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "../api/rest";
 import type { BackgroundPool, ExportInfo, ExportSample, Run, RunDetail, TrainStatus } from "../api/types";
+import { HealthContext } from "../hooks/useHealth";
 import type { JobHandle } from "../hooks/useJob";
 import { useJob } from "../hooks/useJob";
 import { SERIES_COLORS } from "../lib/chart";
@@ -98,6 +99,25 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("Train page", () => {
+  it("refreshes health right after a start that pauses SAM3, so the header shows it at once", async () => {
+    const refresh = vi.fn();
+    render(
+      <MemoryRouter>
+        <HealthContext.Provider value={{ health: null, unreachable: false, refresh }}>
+          <Train />
+        </HealthContext.Provider>
+      </MemoryRouter>,
+    );
+    const start = await screen.findByRole("button", { name: "Start 4 runs" });
+    fireEvent.click(start);
+    await waitFor(() => expect(m.startRuns).toHaveBeenCalledTimes(1));
+    expect(refresh).not.toHaveBeenCalled(); // nothing paused
+    fireEvent.click(screen.getByRole("checkbox", { name: /^Pause SAM3 while training/ }));
+    fireEvent.click(start);
+    await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
+    expect(m.startRuns.mock.calls[1][0].pause_sam3).toBe(true);
+  });
+
   it("starts the default models on the fastest idle GPU (SAM3's), with the export and params", async () => {
     renderPage();
     const start = await screen.findByRole("button", { name: "Start 4 runs" });

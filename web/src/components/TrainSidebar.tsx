@@ -57,6 +57,26 @@ function gpuBusyNote(status: TrainStatus, runs: Run[], gpu: number): string | nu
   return null;
 }
 
+/** The warning shown when a run is headed for SAM3's GPU, and under it the opt-in to unload SAM3 for as
+ * long as training runs there (the server reloads it once that GPU has no training left). */
+function Sam3Note({ status, pause, onPause }: { status: TrainStatus; pause: boolean; onPause: (pause: boolean) => void }) {
+  const vram = status.sam3_vram_bytes;
+  return (
+    <>
+      <p className="note text-ink">
+        SAM3 runs on cuda:{status.sam3_gpu}. Training there shares its memory; labeling or training may run out of VRAM.
+      </p>
+      <label className="flex items-center gap-2 text-sm text-dim">
+        <input type="checkbox" checked={pause} onChange={(e) => onPause(e.target.checked)} />
+        Pause SAM3 while training{vram != null ? ` (frees about ${(vram / 1e9).toFixed(1)} GB of VRAM)` : ""}
+      </label>
+      {pause && (
+        <p className="note">Labeling stops until training on cuda:{status.sam3_gpu} ends; SAM3 reloads by itself then.</p>
+      )}
+    </>
+  );
+}
+
 /** "Stopped at epoch N of M on cuda:X (<name>)" — the GPU name is skipped if that GPU is no longer listed. */
 function stoppedAt(run: Run, status: TrainStatus): string {
   const g = status.gpus.find((gg) => gg.index === run.gpu);
@@ -86,24 +106,25 @@ function StoppedRunSection({
   run: Run;
   /** changes whenever the table's Resume/Mark complete button is pressed */
   focus: number;
-  onResume: (id: string, gpu: number) => Promise<void>;
-  onComplete: (id: string, gpu: number) => Promise<void>;
+  onResume: (id: string, gpu: number, pauseSam3?: boolean) => Promise<void>;
+  onComplete: (id: string, gpu: number, pauseSam3?: boolean) => Promise<void>;
   onTrainOnNewData: (id: string) => void;
 }) {
   const [gpu, setGpu] = useState(defaultGpu(status) ?? status.gpus[0]?.index ?? 0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [pauseSam3, setPauseSam3] = useState(false);
   const onSam3 = status.sam3_gpu !== null && gpu === status.sam3_gpu;
   const note = gpuBusyNote(status, runs, gpu);
   // the table's Resume/Mark complete button opens this section; bring it into view even if the sidebar was scrolled down
   const ref = useRef<HTMLElement>(null);
   useEffect(() => ref.current?.scrollIntoView?.({ block: "nearest" }), [focus]);
 
-  const act = (action: (id: string, gpu: number) => Promise<void>) => async () => {
+  const act = (action: (id: string, gpu: number, pauseSam3?: boolean) => Promise<void>) => async () => {
     setBusy(true);
     setError(null);
     try {
-      await action(run.id, gpu);
+      await (onSam3 && pauseSam3 ? action(run.id, gpu, true) : action(run.id, gpu));
     } catch (e) {
       setError(message(e));
     } finally {
@@ -123,11 +144,7 @@ function StoppedRunSection({
           ))}
         </select>
       </label>
-      {onSam3 && (
-        <p className="note text-ink">
-          SAM3 runs on cuda:{status.sam3_gpu}. Training there shares its memory; labeling or training may run out of VRAM.
-        </p>
-      )}
+      {onSam3 && <Sam3Note status={status} pause={pauseSam3} onPause={setPauseSam3} />}
       {note !== null && <p className="note text-ink">{note}</p>}
       {error !== null && <p role="alert" className="alert">{error}</p>}
       <div className="flex flex-wrap gap-2">
@@ -158,8 +175,8 @@ type Props = {
   onStart: (body: StartRunsRequest) => Promise<void>;
   onCancel: (id: string) => void;
   selectedRun: Run | null;
-  onResume: (id: string, gpu: number) => Promise<void>;
-  onComplete: (id: string, gpu: number) => Promise<void>;
+  onResume: (id: string, gpu: number, pauseSam3?: boolean) => Promise<void>;
+  onComplete: (id: string, gpu: number, pauseSam3?: boolean) => Promise<void>;
   /** bumped by the table's Resume/Mark complete button: scrolls the Stopped run section into view */
   stoppedFocus?: number;
   /** New-runs form's "Start from": null = "Pretrained weights" (today's behaviour). */
@@ -186,6 +203,7 @@ export function TrainSidebar({
   const [mode, setMode] = useState<StartMode>("continue");
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
+  const [pauseSam3, setPauseSam3] = useState(false);
   const [draftName, setDraftName] = useState("");
   const [renaming, setRenaming] = useState(false);
   const [renameError, setRenameError] = useState<string | null>(null);
@@ -235,6 +253,7 @@ export function TrainSidebar({
   const visible = showAll ? status.models : status.models.filter((m) => status.default_models.includes(m) || picks[m]?.checked);
   const chosen = status.models.filter((m) => picks[m]?.checked);
   const onSam3 = status.sam3_gpu !== null && chosen.some((m) => gpuOf(m) === status.sam3_gpu);
+  const checkpointOnSam3 = status.sam3_gpu !== null && (batchGpu ?? 0) === status.sam3_gpu;
   const problem = startProblem({ available: status.available, error: status.error, exportId, picked: chosen.length });
   const byId = new Map(runs.map((r) => [r.id, r]));
 
@@ -258,9 +277,13 @@ export function TrainSidebar({
       if (sourceRun !== null) {
         await onStartFromCheckpoint(sourceRun.id, {
           export_id: exportId, mode, gpu: batchGpu ?? 0, ...(mode === "finetune" ? { params } : {}),
+          ...(checkpointOnSam3 && pauseSam3 ? { pause_sam3: true } : {}),
         });
       } else {
-        await onStart({ export_id: exportId, runs: chosen.map((m) => ({ model: m, gpu: gpuOf(m) })), params });
+        await onStart({
+          export_id: exportId, runs: chosen.map((m) => ({ model: m, gpu: gpuOf(m) })), params,
+          ...(onSam3 && pauseSam3 ? { pause_sam3: true } : {}),
+        });
       }
     } catch (e) {
       setStartError(message(e));
@@ -391,22 +414,14 @@ export function TrainSidebar({
             </button>
           </fieldset>
         )}
-        {sourceRun === null && onSam3 && (
-          <p className="note text-ink">
-            SAM3 runs on cuda:{status.sam3_gpu}. Training there shares its memory; labeling or training may run out of VRAM.
-          </p>
-        )}
+        {sourceRun === null && onSam3 && <Sam3Note status={status} pause={pauseSam3} onPause={setPauseSam3} />}
         {sourceRun === null && [...new Set(chosen.map((m) => gpuOf(m)))].map((gpu) => {
           const note = gpuBusyNote(status, runs, gpu);
           return note !== null ? (
             <p key={gpu} className="note text-ink">{note}</p>
           ) : null;
         })}
-        {sourceRun !== null && status.sam3_gpu !== null && (batchGpu ?? 0) === status.sam3_gpu && (
-          <p className="note text-ink">
-            SAM3 runs on cuda:{status.sam3_gpu}. Training there shares its memory; labeling or training may run out of VRAM.
-          </p>
-        )}
+        {sourceRun !== null && checkpointOnSam3 && <Sam3Note status={status} pause={pauseSam3} onPause={setPauseSam3} />}
         {sourceRun !== null && gpuBusyNote(status, runs, batchGpu ?? 0) !== null && (
           <p className="note text-ink">{gpuBusyNote(status, runs, batchGpu ?? 0)}</p>
         )}

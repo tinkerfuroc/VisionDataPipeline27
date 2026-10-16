@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useContext, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api/rest";
 import type { FromCheckpointRequest, RunDetail, StartRunsRequest } from "../api/types";
@@ -8,6 +8,7 @@ import { CompositeSamples } from "../components/CompositeSamples";
 import { PredictionGallery } from "../components/PredictionGallery";
 import { RunsTable } from "../components/RunsTable";
 import { TrainSidebar } from "../components/TrainSidebar";
+import { HealthContext } from "../hooks/useHealth";
 import { usePoll } from "../hooks/usePoll";
 import { exportLabel } from "../lib/exportName";
 import { startModeHeaderNote, statusText } from "../lib/train";
@@ -83,28 +84,37 @@ export function Train() {
     [runs, status],
   );
 
+  // A start that paused SAM3 re-polls health at once, so the header's banner (and Label's state) shows the pause.
+  const { refresh: refreshHealth } = useContext(HealthContext);
+  const afterPause = (pauseSam3: boolean | undefined) => {
+    if (pauseSam3) refreshHealth?.();
+  };
   const onStart = async (body: StartRunsRequest) => {
     const { run_ids } = await api.startRuns(body);
     if (run_ids.length > 0) setPickedId(run_ids[0]);
     runs.refresh();
     status.refresh();
+    afterPause(body.pause_sam3);
   };
   // Left to reject on failure (the sidebar's Stopped run section shows the error itself, like Start does).
-  const onResume = async (id: string, gpu: number) => {
-    await api.resumeRun(id, gpu);
+  const onResume = async (id: string, gpu: number, pauseSam3?: boolean) => {
+    await (pauseSam3 ? api.resumeRun(id, gpu, true) : api.resumeRun(id, gpu));
     runs.refresh();
     status.refresh();
+    afterPause(pauseSam3);
   };
-  const onComplete = async (id: string, gpu: number) => {
-    await api.completeRun(id, gpu);
+  const onComplete = async (id: string, gpu: number, pauseSam3?: boolean) => {
+    await (pauseSam3 ? api.completeRun(id, gpu, true) : api.completeRun(id, gpu));
     runs.refresh();
     status.refresh();
+    afterPause(pauseSam3);
   };
   const onStartFromCheckpoint = async (sourceId: string, body: FromCheckpointRequest) => {
     const { run_id } = await api.trainFromCheckpoint(sourceId, body);
     setPickedId(run_id);
     runs.refresh();
     status.refresh();
+    afterPause(body.pause_sam3);
   };
   const onTrainOnNewData = (id: string) => {
     setSourceRunId(id);

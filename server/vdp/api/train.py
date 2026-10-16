@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
 import re
 from importlib.util import find_spec
 from pathlib import Path
@@ -35,6 +34,7 @@ from ..train.scheduler import (
     rank_gpus,
 )
 from .deps import State
+from .engine import sam3_gpu
 
 router = APIRouter(tags=["train"])
 _IMAGE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*\.(jpg|jpeg|png)$")
@@ -49,14 +49,6 @@ class TrainUnavailable(Exception):
 def ultralytics_error() -> str | None:
     if find_spec("ultralytics") is None:
         return "ultralytics is not installed in this environment; run `uv sync`"
-    return None
-
-
-def sam3_gpu(engine) -> int | None:
-    device = getattr(engine, "device", None)
-    if isinstance(device, str) and device.startswith("cuda:"):
-        with contextlib.suppress(ValueError):
-            return int(device.removeprefix("cuda:"))
     return None
 
 
@@ -96,6 +88,7 @@ class StartBody(BaseModel):
     export_id: str
     runs: list[RunSpec]
     params: TrainParams = Field(default_factory=TrainParams)
+    pause_sam3: bool = False  # free SAM3's VRAM until training on its GPU is over (see engine.EngineControl)
 
 
 def _gpu_view(g: Gpu, snapshot: dict, *, tflops: float, memory_free: int | None) -> dict:
@@ -123,7 +116,8 @@ def train_status(state: State) -> dict:
     return {
         "available": ultralytics_error() is None, "error": ultralytics_error(),
         "gpus": gpu_views, "default_gpu": default_gpu(ranked, state.train.busy_gpus()),
-        "sam3_gpu": sam3_gpu(state.engine),
+        "sam3_gpu": sam3_gpu(state.engine),  # still reported while SAM3 is paused: where it reloads to
+        "sam3_vram_bytes": getattr(state.engine, "vram_bytes", None),
         "models": list(MODELS), "default_models": list(DEFAULT_MODELS),
         "defaults": TrainParams().model_dump(),
         "aug_presets": {k: v.model_dump() for k, v in AUG_PRESETS.items()},
@@ -161,7 +155,12 @@ def start_runs(body: StartBody, state: State) -> dict:
     if error is not None:
         raise TrainUnavailable(error)
     export = find_export(state.settings.project.data_root, body.export_id)
-    return {"run_ids": state.train.submit(export, [(r.model, r.gpu) for r in body.runs], body.params)}
+    specs = [(r.model, r.gpu) for r in body.runs]
+    ids = state.engine_ctl.start_training(
+        body.pause_sam3, {r.gpu for r in body.runs},
+        lambda before_queue: state.train.submit(export, specs, body.params, before_queue=before_queue),
+    )
+    return {"run_ids": ids}
 
 
 class FromCheckpointBody(BaseModel):
@@ -169,6 +168,7 @@ class FromCheckpointBody(BaseModel):
     mode: Literal["continue", "finetune"]
     gpu: int
     params: TrainParams | None = None
+    pause_sam3: bool = False
 
 
 @router.post("/api/train/runs/{run_id}/from-checkpoint", status_code=201)
@@ -179,7 +179,12 @@ def start_from_checkpoint(run_id: str, body: FromCheckpointBody, state: State) -
     if error is not None:
         raise TrainUnavailable(error)
     export = find_export(state.settings.project.data_root, body.export_id)
-    new_id = state.train.submit_from(run_id, export, body.mode, body.gpu, body.params)
+    new_id = state.engine_ctl.start_training(
+        body.pause_sam3, {body.gpu},
+        lambda before_queue: state.train.submit_from(
+            run_id, export, body.mode, body.gpu, body.params, before_queue=before_queue,
+        ),
+    )
     return {"run_id": new_id}
 
 
@@ -201,22 +206,31 @@ def cancel_run(run_id: str, state: State) -> dict:
 
 class ResumeBody(BaseModel):
     gpu: int | None = None
+    pause_sam3: bool = False
+
+
+def _requeue(state, run_id: str, body: ResumeBody | None, action) -> dict:
+    """Resume or Mark complete: `action` is the scheduler method; the run stays on its own GPU without `gpu`."""
+    body = body or ResumeBody()
+    gpu = body.gpu if body.gpu is not None else state.train.runs.read(run_id)["gpu"]
+    state.engine_ctl.start_training(
+        body.pause_sam3, {gpu}, lambda before_queue: action(run_id, body.gpu, before_queue=before_queue),
+    )
+    return _view(state, state.train.runs.read(run_id))
 
 
 @router.post("/api/train/runs/{run_id}/resume")
 def resume_run(run_id: str, state: State, body: ResumeBody | None = None) -> dict:
-    state.train.resume(run_id, body.gpu if body else None)
-    return _view(state, state.train.runs.read(run_id))
+    return _requeue(state, run_id, body, state.train.resume)
 
 
-class CompleteBody(BaseModel):
-    gpu: int | None = None
+class CompleteBody(ResumeBody):
+    """The same fields as ResumeBody."""
 
 
 @router.post("/api/train/runs/{run_id}/complete")
 def complete_run(run_id: str, state: State, body: CompleteBody | None = None) -> dict:
-    state.train.complete(run_id, body.gpu if body else None)
-    return _view(state, state.train.runs.read(run_id))
+    return _requeue(state, run_id, body, state.train.complete)
 
 
 @router.post("/api/train/runs/{run_id}/onnx")

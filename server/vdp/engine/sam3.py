@@ -62,7 +62,8 @@ class Sam3Engine:
         self.torch_dtype = _DTYPES[dtype]
         self.text_threshold = float(text_threshold)
         self.score_mode = score_mode
-        self.device: str | None = None
+        self.device: str | None = None  # kept by release(): where the next load() lands
+        self.vram_bytes: int | None = None  # what the loaded model took on `device`; also kept by release()
         self.load_error: str | None = None
         self._lock = threading.Lock()
         self._model = None
@@ -83,9 +84,11 @@ class Sam3Engine:
                 self.load_error = None
             except EngineNotLoaded as e:
                 self.load_error = str(e)
+                self._drop_locked()
                 raise
             except Exception as e:
                 self.load_error = f"{type(e).__name__}: {e}"
+                self._drop_locked()
                 raise EngineNotLoaded(self.load_error) from e
 
     def _load_locked(self) -> None:
@@ -116,7 +119,8 @@ class Sam3Engine:
         model.tracker_model.config.multimask_max_pt_num = 32
         self._model = model.to(device).eval()
         self.device = device
-        log.info("Sam3Engine loaded on %s; vram=%.2f GiB", device, torch.cuda.memory_allocated(device) / 2**30)
+        self.vram_bytes = int(torch.cuda.memory_allocated(device))
+        log.info("Sam3Engine loaded on %s; vram=%.2f GiB", device, self.vram_bytes / 2**30)
 
     @staticmethod
     def _sync_tracker_neck(model) -> tuple[int, int]:
@@ -150,12 +154,17 @@ class Sam3Engine:
         from inside a loop that is consuming one, or it deadlocks.
         """
         with self._lock:
-            self._model = None
-            self._processor = None
-            self._tracker_processor = None
-            self._cache.clear()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            self._drop_locked()
+
+    def _drop_locked(self) -> None:
+        """Forget the model and vision cache, and hand the allocator's cached blocks back to the driver:
+        after a release, and after a failed load (an OOM half-way through moving the weights)."""
+        self._model = None
+        self._processor = None
+        self._tracker_processor = None
+        self._cache.clear()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     def _require_loaded(self) -> None:
         if self._model is None:
@@ -191,6 +200,7 @@ class Sam3Engine:
         self._require_loaded()
         h, w = image_bgr.shape[:2]
         with self._lock, torch.inference_mode(), self._autocast():
+            self._require_loaded()  # again: a release() may have taken the lock first (pausing for training)
             _, embeds = self._vision_locked(image_bgr, frame_key)
             enc = self._processor.tokenizer(
                 phrase, return_tensors="pt", padding="max_length", max_length=32, truncation=True
@@ -267,6 +277,7 @@ class Sam3Engine:
         self._require_loaded()
         h, w = image_bgr.shape[:2]
         with self._lock, torch.inference_mode(), self._autocast():
+            self._require_loaded()  # again: a release() may have taken the lock first
             pixel_values, embeds = self._vision_locked(image_bgr, frame_key)
             session = self._new_session(pixel_values, h, w)
             self._cache_tracker_features(session, 0, embeds)
@@ -345,6 +356,7 @@ class Sam3Engine:
         video = prepared.pixel_values
         try:
             with self._lock, torch.inference_mode(), self._autocast():
+                self._require_loaded()  # again: a release() may have taken the lock first
                 yield from self._propagate_locked(video, seeds, h, w, cancel_cb)
         except torch.cuda.OutOfMemoryError as e:
             raise ChunkOOMError(str(e)) from e
