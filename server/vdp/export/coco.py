@@ -4,11 +4,30 @@ Category ids are class_id + 1 because many COCO consumers reserve 0 for backgrou
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from pathlib import Path
+
+import numpy as np
 
 from .base import ExportSummary, Tick, place_image, read_mask, shared_image
 from .plan import ExportPlan
 from .polygons import mask_bbox, mask_to_polygons
+
+
+def coco_annotations(objects: Sequence[tuple[int, np.ndarray]]) -> list[dict]:
+    """`(export class id, cleaned mask)` pairs -> COCO annotation dicts without `id` / `image_id`."""
+    out = []
+    for class_id, mask in objects:
+        polygons = mask_to_polygons(mask)
+        box = mask_bbox(mask)
+        if not polygons or box is None:
+            continue
+        out.append({
+            "category_id": class_id + 1,
+            "segmentation": [[round(v, 2) for point in polygon for v in point] for polygon in polygons],
+            "bbox": list(box), "area": float(mask.sum()), "iscrowd": 0,
+        })
+    return out
 
 
 class Coco:
@@ -27,17 +46,8 @@ class Coco:
                 summary.linked = summary.linked and linked
                 image_id = len(images) + 1
                 images.append({"id": image_id, "file_name": f"{frame.stem}.jpg", "width": frame.width, "height": frame.height})
-                for obj in frame.objects:
-                    mask = read_mask(obj)
-                    polygons = mask_to_polygons(mask)
-                    box = mask_bbox(mask)
-                    if not polygons or box is None:
-                        continue
-                    annotations.append({
-                        "id": len(annotations) + 1, "image_id": image_id, "category_id": obj.class_id + 1,
-                        "segmentation": [[round(v, 2) for point in polygon for v in point] for polygon in polygons],
-                        "bbox": list(box), "area": float(mask.sum()), "iscrowd": 0,
-                    })
+                for ann in coco_annotations([(obj.class_id, read_mask(obj)) for obj in frame.objects]):
+                    annotations.append({"id": len(annotations) + 1, "image_id": image_id, **ann})
                 tick()
             summary.images[split] = len(images)
             summary.annotations[split] = len(annotations)

@@ -12,9 +12,11 @@ import yaml as yaml_lib
 from PIL import Image
 from vdp.export import EXPORTERS
 from vdp.export import base as export_base
+from vdp.export.coco import coco_annotations
 from vdp.export.mask_png import paint
 from vdp.export.plan import ExportOptions, build_plan
-from vdp.export.polygons import polygons_to_mask
+from vdp.export.polygons import mask_bbox, mask_to_polygons, polygons_to_mask
+from vdp.export.yolo import yolo_det_lines, yolo_seg_lines
 from vdp.store.models import LabelObject
 
 W, H = 120, 60
@@ -307,3 +309,93 @@ def test_the_mask_image_keeps_a_small_object_visible_on_a_large_one(store, make_
     assert summary.overlap_px == 2 * 400
     assert asdict(summary)["overlap_px"] == 800
     assert "overlap_px" not in asdict(EXPORTERS["yolo_seg"].write(plan, out, lambda: None))
+
+
+
+
+def _square(h=40, w=60, y=(10, 30), x=(20, 50)):
+    m = np.zeros((h, w), bool)
+    m[y[0]:y[1], x[0]:x[1]] = True
+    return m
+
+
+def test_pure_label_functions():
+    objs = [(1, _square())]
+    det = yolo_det_lines(objs, 60, 40)
+    assert det == ["1 0.583333 0.500000 0.500000 0.500000"]
+    seg = yolo_seg_lines(objs, 60, 40)
+    assert len(seg) == 1 and seg[0].startswith("1 ")
+    (ann,) = coco_annotations(objs)
+    assert ann["category_id"] == 2 and ann["bbox"] == [20, 10, 30, 20] and ann["area"] == 600.0
+    assert "id" not in ann and "image_id" not in ann
+    assert coco_annotations([(0, np.zeros((5, 5), bool))]) == []
+
+
+# ---- frozen copy of the pre-refactor per-frame logic ------------------------------------------------------------
+def _old_seg(frame):
+    out = []
+    for obj in frame.objects:
+        for polygon in mask_to_polygons(export_base.read_mask(obj)):
+            coords = " ".join(f"{x / frame.width:.6f} {y / frame.height:.6f}" for x, y in polygon)
+            out.append(f"{obj.class_id} {coords}")
+    return out
+
+
+def _old_det(frame):
+    out = []
+    for obj in frame.objects:
+        box = mask_bbox(export_base.read_mask(obj))
+        if box is None:
+            continue
+        x, y, w, h = box
+        out.append(
+            f"{obj.class_id} {(x + w / 2) / frame.width:.6f} {(y + h / 2) / frame.height:.6f} "
+            f"{w / frame.width:.6f} {h / frame.height:.6f}"
+        )
+    return out
+
+
+def _old_palette(plan):
+    palette = [0, 0, 0] * 256
+    for c in plan.classes:
+        if 0 <= c.id + 1 <= 255:
+            rgb = c.color.lstrip("#")
+            palette[(c.id + 1) * 3 : (c.id + 1) * 3 + 3] = [int(rgb[i : i + 2], 16) for i in (0, 2, 4)]
+    return palette
+
+
+def _old_coco(plan, split):
+    annotations, image_id = [], 0
+    for frame in plan.of_split(split):
+        image_id += 1
+        for obj in frame.objects:
+            mask = export_base.read_mask(obj)
+            polygons = mask_to_polygons(mask)
+            box = mask_bbox(mask)
+            if not polygons or box is None:
+                continue
+            annotations.append({
+                "id": len(annotations) + 1, "image_id": image_id, "category_id": obj.class_id + 1,
+                "segmentation": [[round(v, 2) for point in polygon for v in point] for polygon in polygons],
+                "bbox": list(box), "area": float(mask.sum()), "iscrowd": 0,
+            })
+    return annotations
+
+
+def test_exporters_are_byte_identical_to_the_frozen_pre_refactor_logic(planned):
+    plan, out, _clip = planned
+    for name in ("yolo_seg", "yolo_det", "masks", "coco"):
+        _write(name, plan, out)
+    for frame in plan.frames:
+        for name, old in (("yolo_seg", _old_seg), ("yolo_det", _old_det)):
+            expect = "".join(f"{ln}\n" for ln in old(frame))
+            assert (out / name / "labels" / frame.split / f"{frame.stem}.txt").read_text() == expect
+        canvas, _ = paint([(o.class_id + 1, export_base.read_mask(o)) for o in frame.objects], frame.height, frame.width)
+        img = Image.fromarray(canvas)
+        img.putpalette(_old_palette(plan))
+        old_png = out / "old.png"
+        img.save(old_png)
+        assert (out / "masks" / "masks" / frame.split / f"{frame.stem}.png").read_bytes() == old_png.read_bytes()
+    for split in ("train", "val"):
+        body = json.loads((out / "coco" / "annotations" / f"instances_{split}.json").read_text())
+        assert body["annotations"] == _old_coco(plan, split)
