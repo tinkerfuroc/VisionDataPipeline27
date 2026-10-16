@@ -13,6 +13,8 @@ from ..labeling.objects import delete_object, find_object, relabel_object
 from ..labeling.paint import decode_mask_png, set_mask
 from ..labeling.prompts import PromptSpec, accept, preview
 from ..labeling.propagate import plan_indices, resolve_participants, run_propagation
+from ..labeling.regions import validate_regions
+from ..store import RegionRange
 from .deps import GPU, State, gpu_lease, require_engine
 from .views import candidate_view, clip_detail
 
@@ -61,6 +63,10 @@ class RangeBody(BaseModel):
 
 class RelabelBody(BaseModel):
     class_id: int
+
+
+class RegionsBody(BaseModel):
+    regions: list[RegionRange]
 
 
 @router.post("/prompt")
@@ -157,4 +163,18 @@ def delete_object_route(clip_id: str, object_id: int, state: State) -> dict:
         if exporting is not None:  # an export is reading the object's masks; don't pull them out from under it
             raise JobBusy(exporting)
         clip = delete_object(state.store, clip_id, object_id)
+    return clip_detail(state, clip)
+
+
+@router.put("/regions")
+def put_regions(clip_id: str, body: RegionsBody, state: State) -> dict:
+    """Replace the clip's regions. Saved masks are left as they are; regions apply when masks are written or
+    exported. A propagation already running keeps the regions it started with."""
+    state.store.clip_dir(clip_id)  # raises NotFound before the lock table grows an entry for a bogus id
+    with state.store.lock(clip_id):
+        clip = state.store.read_clip(clip_id)
+        regions = sorted(body.regions, key=lambda r: r.start)
+        validate_regions(regions, clip.width, clip.height, clip.frame_count)
+        clip.regions = regions
+        state.store.write_clip(clip)
     return clip_detail(state, clip)
