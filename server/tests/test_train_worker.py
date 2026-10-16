@@ -4,9 +4,11 @@ import json
 import os
 import sys
 import types
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 import yaml
 from train_fixtures import make_export
 from vdp.train import worker
@@ -158,20 +160,23 @@ def test_train_finish_branch_skips_training_strips_best_and_predicts(tmp_path, m
     assert "best" in result  # {"best": summarize(read_metrics(run_dir))}, same as a normal run
 
 
-def _install_fake_yolo(monkeypatch):
-    """A minimal `YOLO` stand-in that records the checkpoint path it was constructed with and the
-    keyword arguments `.train()` was called with, instead of actually training anything."""
-    calls: dict = {}
+def _install_fake_yolo(monkeypatch, train=None):
+    """A minimal `YOLO` stand-in that records the checkpoint path it was constructed with, the
+    callbacks added to it and the keyword arguments `.train()` was called with, instead of actually
+    training anything. `train(callbacks)`, if given, runs inside `.train()` (e.g. to raise)."""
+    calls: dict = {"callbacks": {}}
 
     class FakeModel:
         def __init__(self, path):
             calls["init_path"] = path
 
-        def add_callback(self, *_a, **_k):
-            pass
+        def add_callback(self, event, fn):
+            calls["callbacks"].setdefault(event, []).append(fn)
 
         def train(self, **kwargs):
             calls["train_kwargs"] = kwargs
+            if train is not None:
+                train(calls["callbacks"])
 
     fake = types.ModuleType("ultralytics")
     fake.__path__ = []
@@ -304,3 +309,123 @@ def test_train_finish_branch_cancel_reports_cancelled(tmp_path, monkeypatch):
 
     assert code == worker.CANCELLED_EXIT
     assert json.loads((run_dir / "result.json").read_text()) == {"cancelled": True}
+
+
+def _run_json(tmp_path, **extra) -> Path:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    run = {
+        "export_dir": str(make_export(tmp_path)), "model": "yolo26s-seg", "resume": False, "finish": False,
+        "params": {"epochs": 7, "imgsz": 960, "batch": 12, "patience": 30, "workers": 0, "seed": 0,
+                   "augment": "default"},
+        **extra,
+    }
+    (run_dir / "run.json").write_text(json.dumps(run))
+    return run_dir
+
+
+def _first_epoch(callbacks, trainer) -> None:
+    """What Ultralytics' `_do_train` does before the first batch: reset the OOM counter, then run
+    `on_train_epoch_start`."""
+    trainer._oom_retries = 0
+    for fn in callbacks["on_train_epoch_start"]:
+        fn(trainer)
+
+
+def _trainer(batch=12, imgsz=960):
+    return SimpleNamespace(
+        _oom_retries=0, epoch=0, epochs=7, train_loader=[0] * 5, batch_size=batch, args=SimpleNamespace(imgsz=imgsz),
+    )
+
+
+def test_fail_on_oom_callback_uses_up_ultralytics_retries():
+    """Ultralytics halves the batch and retries (up to 3 times) on an OOM in the first epoch while
+    `trainer._oom_retries < 3`; it resets the counter just before `on_train_epoch_start`, so setting
+    it there makes the first OOM raise."""
+    calls: dict = {}
+    model = SimpleNamespace(add_callback=lambda event, fn: calls.setdefault(event, []).append(fn))
+    worker._attach_fail_on_oom(model, {})
+    trainer = _trainer()
+    _first_epoch(calls, trainer)
+    assert trainer._oom_retries >= 3
+
+
+@pytest.mark.parametrize("extra", [{}, {"resume": True}])
+def test_new_and_resumed_runs_both_disable_oom_auto_reduce(tmp_path, monkeypatch, extra):
+    run_dir = _run_json(tmp_path, **extra)
+    weights = run_dir / "train" / "weights"
+    weights.mkdir(parents=True)
+    (weights / "last.pt").write_bytes(b"last")
+    seen = []
+
+    def train(callbacks):
+        trainer = _trainer()
+        _first_epoch(callbacks, trainer)
+        seen.append(trainer._oom_retries)
+
+    _install_fake_yolo(monkeypatch, train)
+    monkeypatch.setattr(worker, "_predict", lambda rd, r, p: None)
+    assert worker.train(run_dir) == 0
+    assert seen == [3]
+
+
+def _oom_run(tmp_path, monkeypatch, exc: BaseException) -> dict:
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1")
+    run_dir = _run_json(tmp_path)
+
+    def train(callbacks):
+        _first_epoch(callbacks, _trainer(batch=12, imgsz=960))
+        raise exc
+
+    _install_fake_yolo(monkeypatch, train)
+    monkeypatch.setattr(worker, "_predict", lambda rd, r, p: None)
+    assert worker.train(run_dir) == 1
+    return json.loads((run_dir / "result.json").read_text())
+
+
+def test_worker_reports_a_first_batch_oom_readably(tmp_path, monkeypatch):
+    result = _oom_run(tmp_path, monkeypatch, RuntimeError(
+        "CUDA out of memory. Tried to allocate 2.00 GiB (GPU 0; 23.65 GiB total capacity; ...)"
+    ))
+    assert result == {"error": (
+        "Out of GPU memory on cuda:1 at batch 12 (image size 960). Lower the batch size or image size, train on "
+        "another GPU, or tick 'Pause SAM3 while training' if SAM3 shares this GPU."
+    )}
+
+
+def test_worker_keeps_other_errors_verbatim(tmp_path, monkeypatch):
+    result = _oom_run(tmp_path, monkeypatch, ValueError("bad label file"))
+    assert result == {"error": "ValueError: bad label file"}
+
+
+def test_oom_message_matches_ultralytics_memory_errors():
+    kw = {"gpu": "0", "batch": 8, "imgsz": 640}
+    for text in (
+        "CUDA out of memory. Tried to allocate 20.00 MiB",
+        "CUDA error: CUBLAS_STATUS_ALLOC_FAILED when calling `cublasCreate(handle)`",
+        "cuDNN error: CUDNN_STATUS_INTERNAL_ERROR",
+        "GET was unable to find an engine to execute this computation",
+    ):
+        assert worker.oom_message(RuntimeError(text), **kw).startswith(
+            "Out of GPU memory on cuda:0 at batch 8 (image size 640)."
+        ), text
+    assert worker.oom_message(RuntimeError("CUDA error: invalid argument"), **kw) is None
+    assert worker.oom_message(ValueError("shapes do not match"), **kw) is None
+
+
+def test_oom_message_maps_invalid_argument_only_right_after_an_oom():
+    try:
+        try:
+            raise RuntimeError("CUDA out of memory. Tried to allocate 2.00 GiB")
+        except RuntimeError:
+            raise RuntimeError("CUDA error: invalid argument")  # implicit context: raised while handling the OOM
+    except RuntimeError as e:
+        chained = e
+    assert worker.oom_message(chained, gpu="2", batch=4, imgsz=1280).startswith(
+        "Out of GPU memory on cuda:2 at batch 4 (image size 1280)."
+    )
+
+
+def test_oom_message_without_a_known_gpu():
+    msg = worker.oom_message(RuntimeError("out of memory"), gpu=None, batch=8, imgsz=640)
+    assert msg.startswith("Out of GPU memory at batch 8 (image size 640).")

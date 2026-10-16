@@ -158,6 +158,47 @@ def _attach_progress(model, progress: ProgressWriter) -> None:
     model.add_callback("on_val_start", val_start)
 
 
+# The same tests Ultralytics' trainer uses to decide an exception is a GPU memory error.
+_OOM_MARKERS = ("CUBLAS_STATUS_ALLOC_FAILED", "CUDNN_STATUS_INTERNAL_ERROR", "unable to find an engine")
+
+
+def _is_memory_error(e: BaseException) -> bool:
+    text = str(e)
+    return "out of memory" in text.lower() or any(m in text for m in _OOM_MARKERS)
+
+
+def oom_message(e: BaseException, *, gpu: str | None, batch, imgsz) -> str | None:
+    """A readable error for a GPU out-of-memory failure, or None when `e` is not one. A CUDA "invalid
+    argument" counts only when it was raised while handling an OOM (its context chain holds one)."""
+    memory = _is_memory_error(e)
+    if not memory and "invalid argument" in str(e):
+        cause = e.__cause__ or e.__context__
+        while cause is not None and not memory:
+            memory = _is_memory_error(cause)
+            cause = cause.__cause__ or cause.__context__
+    if not memory:
+        return None
+    where = f" on cuda:{gpu}" if gpu else ""
+    return (
+        f"Out of GPU memory{where} at batch {batch} (image size {imgsz}). Lower the batch size or image size, "
+        "train on another GPU, or tick 'Pause SAM3 while training' if SAM3 shares this GPU."
+    )
+
+
+def _attach_fail_on_oom(model, seen: dict) -> None:
+    """Make an out-of-memory error end the run instead of letting Ultralytics silently halve the batch:
+    in the first epoch on one GPU it retries with half the batch while `trainer._oom_retries < 3`, and it
+    resets that counter just before `on_train_epoch_start` (new and resumed runs alike), so using the
+    retries up here makes the first OOM raise. Also notes the batch and image size for the message."""
+
+    def epoch_start(trainer) -> None:
+        trainer._oom_retries = 3
+        seen["batch"] = trainer.batch_size
+        seen["imgsz"] = trainer.args.imgsz
+
+    model.add_callback("on_train_epoch_start", epoch_start)
+
+
 def _predict(run_dir: Path, run: dict, progress: ProgressWriter) -> None:
     from ultralytics import YOLO
 
@@ -193,6 +234,8 @@ def train(run_dir: Path) -> int:
     progress = ProgressWriter(run_dir / "progress.json")
     signal.signal(signal.SIGTERM, _raise_interrupt)
     (run_dir / "result.json").unlink(missing_ok=True)
+    params = run.get("params", {})
+    seen = {"batch": params.get("batch"), "imgsz": params.get("imgsz")}  # updated from the live trainer
     try:
         from ultralytics import YOLO
 
@@ -218,6 +261,7 @@ def train(run_dir: Path) -> int:
                 write_data_yaml(Path(run["export_dir"]) / "yolo_seg", data)
             model = YOLO(str(last_weights(run_dir)))
             _attach_progress(model, progress)
+            _attach_fail_on_oom(model, seen)
             model.train(resume=True, data=str(data), save_dir=str(run_dir / "train"))
         else:
             data = write_data_yaml(
@@ -229,6 +273,7 @@ def train(run_dir: Path) -> int:
             weights = str(run_dir / "init.pt") if run.get("start_mode") == "finetune" else f"{run['model']}.pt"
             model = YOLO(weights)
             _attach_progress(model, progress)
+            _attach_fail_on_oom(model, seen)
             overrides, photometric, lighting = train_overrides(p)
             transforms = augmentation_transforms(photometric=photometric, lighting=lighting)
             if transforms is not None:
@@ -254,7 +299,9 @@ def train(run_dir: Path) -> int:
         return CANCELLED_EXIT
     except Exception as e:  # noqa: BLE001
         traceback.print_exc()
-        atomic_write_json(run_dir / "result.json", {"error": f"{type(e).__name__}: {e}"})
+        # CUDA_VISIBLE_DEVICES is the one physical GPU the scheduler gave this worker (it trains as device 0)
+        message = oom_message(e, gpu=os.environ.get("CUDA_VISIBLE_DEVICES"), **seen)
+        atomic_write_json(run_dir / "result.json", {"error": message or f"{type(e).__name__}: {e}"})
         return 1
     atomic_write_json(run_dir / "result.json", {"best": summarize(read_metrics(run_dir))})
     return 0

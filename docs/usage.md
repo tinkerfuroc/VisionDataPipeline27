@@ -169,6 +169,11 @@ Each run lives in `data/runs/<run_id>/`: `run.json` (request and status), `worke
 (`python -m vdp.train.worker`) with `CUDA_VISIBLE_DEVICES` set to its GPU, so a crash or out-of-memory error ends
 that run only.
 
+Training never lowers the batch size on its own: Ultralytics would silently halve it (up to three times) when the
+first epoch runs out of GPU memory, but here the run stops instead, with status `error` and the message "Out of GPU
+memory on cuda:N at batch B (image size S)…". Start it again with a smaller batch or image size, on another GPU,
+or with "Pause SAM3 while training" ticked if SAM3 shares that GPU.
+
 The server keeps one queue per GPU: one run at a time per GPU, GPUs in parallel. GPUs are ranked fastest first by
 estimated compute throughput — SM count × cores per SM (from compute capability) × max SM clock (from NVML), not a
 real benchmark but a much better speed proxy than compute capability or VRAM alone; VRAM only breaks a throughput
