@@ -25,3 +25,11 @@ def test_put_regions_errors(tmp_path):
         assert bad.status_code == 400 and "overlaps" in bad.json()["detail"]
         assert client.put("/api/clips/nope/regions", json={"regions": []}).status_code == 404
         assert client.put(f"/api/clips/{cid}/regions", json={"regions": [{"start": 0, "end": 1, "blocks": [[1, 2]]}]}).status_code == 422
+
+
+def test_prompt_route_refuses_an_excluded_click(tmp_path):
+    with _client(tmp_path, FakeEngine()) as client:
+        cid = _clip(client, tmp_path)
+        client.put(f"/api/clips/{cid}/regions", json={"regions": [{"start": 0, "end": 19, "blocks": [[20, 20, 40, 40]]}]})
+        r = client.post(f"/api/clips/{cid}/prompt", json={"frame": 5, "prompt": {"type": "clicks", "points": [[30, 30, 1]]}, "object_id": None})
+        assert r.status_code == 400 and r.json()["detail"] == "that spot is excluded on this frame"

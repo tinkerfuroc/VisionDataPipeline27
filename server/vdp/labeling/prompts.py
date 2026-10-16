@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 from typing import Literal
 
 import cv2
@@ -14,6 +15,16 @@ from ..engine.types import Detection, Engine
 from ..store import Clip, Keyframe, LabelObject, NotFound, ProjectStore, Prompt, now_iso
 from .errors import BadRequest
 from .objects import resolve_target
+from .regions import (
+    MIN_KEPT_AREA_PX,
+    apply_to_image,
+    apply_to_mask,
+    check_regions,
+    is_excluded,
+    kept_mask,
+    region_for,
+    region_key,
+)
 
 BOX_FROM_MASK_PAD = 10
 
@@ -44,12 +55,14 @@ class PromptSpec(BaseModel):
 
 
 def load_frame(store: ProjectStore, clip: Clip, idx: int) -> np.ndarray:
+    """The frame as SAM3 should see it: excluded areas of its region (if any) are grey. Full size, so click and box
+    coordinates are unchanged."""
     if not 0 <= idx < clip.frame_count:
         raise BadRequest(f"frame {idx} is out of range 0..{clip.frame_count - 1}")
     img = cv2.imread(str(store.frame_path(clip.id, idx)), cv2.IMREAD_COLOR)
     if img is None:
         raise NotFound(f"frame {idx} of clip {clip.id} is missing on disk")
-    return img
+    return apply_to_image(img, region_for(clip, idx))
 
 
 def padded_box(mask: np.ndarray, pad: int, width: int, height: int) -> tuple[int, int, int, int]:
@@ -96,16 +109,48 @@ def _effective_box(
     return None, None
 
 
+EXCLUDED = "that spot is excluded on this frame"
+
+
+def _refuse_excluded(region, prompt: PromptSpec, box: tuple[int, int, int, int] | None, width: int, height: int) -> None:
+    """A positive click in the excluded area, or a box with no kept pixel, cannot be meant: refuse it."""
+    if region is None:
+        return
+    if any(label == 1 and is_excluded(region, x, y) for x, y, label in prompt.points):
+        raise BadRequest(EXCLUDED)
+    if box is not None:
+        x1, y1, x2, y2 = box
+        if not kept_mask(region, width, height)[y1:y2, x1:x2].any():
+            raise BadRequest(EXCLUDED)
+
+
+def _trim(detections: list[Detection], region) -> list[Detection]:
+    if region is None:
+        return detections
+    out = []
+    for det in detections:
+        mask = apply_to_mask(det.mask, region)
+        if int(mask.sum()) < MIN_KEPT_AREA_PX:
+            continue
+        out.append(replace(det, mask=mask, bbox=bbox_of(mask)))
+    return out
+
+
 def preview(
     store: ProjectStore, engine: Engine, clip: Clip, frame: int, prompt: PromptSpec, *, object_id: int | None = None
 ) -> list[Detection]:
+    """Candidates for `prompt`, trimmed to the frame's kept area (a candidate left too small is dropped). `accept`
+    re-runs this and indexes the result, so the numbering the user saw is the one accepted."""
+    check_regions(clip)
+    region = region_for(clip, frame) if 0 <= frame < clip.frame_count else None
     image = load_frame(store, clip, frame)
-    key = (clip.id, frame)
+    key = (clip.id, frame, region_key(region))
     if prompt.type == "text":
-        return engine.predict_text(image, prompt.phrase.strip(), frame_key=key)
+        return _trim(engine.predict_text(image, prompt.phrase.strip(), frame_key=key), region)
     box, _ = _effective_box(store, clip, frame, prompt, object_id)
+    _refuse_excluded(region, prompt, box if prompt.box is not None else None, clip.width, clip.height)
     det = engine.predict_prompt(image, points=list(prompt.points), box=box, frame_key=key)
-    return [det] if det is not None else []
+    return _trim([det] if det is not None else [], region)
 
 
 def accept(

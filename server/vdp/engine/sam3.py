@@ -171,6 +171,8 @@ class Sam3Engine:
         `frame_key` must be unique per image across the WHOLE process (this cache is shared by
         every caller of this engine instance): use a clip-scoped key such as `(clip_id, frame_idx)`.
         A bare frame index would collide across clips and return another clip's cached features.
+        Callers include the frame's region (`labeling.regions.region_key`), so the same frame with different regions
+        gets different keys.
         """
         if frame_key is not None and frame_key in self._cache:
             self._cache.move_to_end(frame_key)

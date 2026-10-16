@@ -31,6 +31,8 @@ class FakeEngine:
         self.prepare_calls: list[int] = []
         self.propagate_calls: list[int] = []
         self.seed_calls: list[list[int]] = []
+        self.images: list[np.ndarray] = []  # every image predict_text / predict_prompt was given
+        self.frame_keys: list[tuple | None] = []
 
     def _is_degenerate(self, mask: np.ndarray) -> bool:
         return is_degenerate_mask(mask, max_area_frac=self.max_area_frac, min_area_px=self.min_area_px)
@@ -39,6 +41,8 @@ class FakeEngine:
         return True
 
     def predict_text(self, image_bgr: np.ndarray, phrase: str, *, frame_key: tuple | None = None) -> list[Detection]:
+        self.images.append(image_bgr)
+        self.frame_keys.append(frame_key)
         h, w = image_bgr.shape[:2]
         dets = []
         for i in range(self.n_text_candidates):
@@ -58,6 +62,8 @@ class FakeEngine:
         box: tuple[int, int, int, int] | None = None,
         frame_key: tuple | None = None,
     ) -> Detection | None:
+        self.images.append(image_bgr)
+        self.frame_keys.append(frame_key)
         h, w = image_bgr.shape[:2]
         mask = np.zeros((h, w), dtype=bool)
         positives = [(x, y) for x, y, lbl in points if lbl == 1]

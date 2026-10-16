@@ -7,7 +7,7 @@ from vdp.engine.masks import bbox_of
 from vdp.labeling.errors import BadRequest
 from vdp.labeling.objects import relabel_object
 from vdp.labeling.prompts import PromptSpec, accept, create_object, padded_box, preview
-from vdp.store import LabelObject
+from vdp.store import LabelObject, RegionRange
 
 CLICK = PromptSpec(type="clicks", points=[(30, 30, 1)])  # FakeEngine -> rect x 20:40, y 20:40 (400 px)
 
@@ -238,3 +238,67 @@ def test_accept_rechecks_deleted_inside_the_lock(store, make_clip, monkeypatch):
         accept(store, eng, clip.id, 0, CLICK, object_id=None, class_id=0)
     assert store.read_clip(clip.id).objects == []
     assert store.mask_indices(clip.id, OBJ) == []
+
+
+def _with_regions(store, clip, *regions):
+    clip = store.read_clip(clip.id)
+    clip.regions = list(regions)
+    store.write_clip(clip)
+    return clip
+
+
+def test_sam3_sees_grey_in_excluded_areas(store, make_clip):
+    _, clip = make_clip()
+    clip = _with_regions(store, clip, RegionRange(start=0, end=5, crop=(0, 0, 100, 60), blocks=[(50, 0, 70, 20)]))
+    eng = FakeEngine()
+    preview(store, eng, clip, 2, CLICK)
+    img = eng.images[-1]
+    assert tuple(img[5, 60]) == (114, 114, 114) and tuple(img[5, 110]) == (114, 114, 114)
+    assert tuple(img[40, 30]) == (90, 90, 90)
+    preview(store, eng, clip, 7, CLICK)  # outside the range: untouched
+    assert tuple(eng.images[-1][5, 60]) == (90, 90, 90)
+
+
+def test_frame_key_changes_when_the_region_changes(store, make_clip):
+    _, clip = make_clip()
+    eng = FakeEngine()
+    preview(store, eng, clip, 2, CLICK)
+    clip = _with_regions(store, clip, RegionRange(start=0, end=5, blocks=[(100, 0, 110, 10)]))
+    preview(store, eng, clip, 2, CLICK)
+    assert eng.frame_keys[0] != eng.frame_keys[1] and eng.frame_keys[0][:2] == eng.frame_keys[1][:2]
+
+
+def test_candidates_are_trimmed_and_fully_blocked_ones_dropped(store, make_clip):
+    _, clip = make_clip()
+    # FakeEngine text candidates: rows 5:25, cols 5:25 and 35:55
+    clip = _with_regions(store, clip, RegionRange(start=0, end=11, blocks=[(35, 0, 60, 30), (5, 5, 15, 25)]))
+    dets = preview(store, FakeEngine(), clip, 0, PromptSpec(type="text", phrase="part"))
+    assert len(dets) == 1
+    assert dets[0].mask.sum() == 20 * 10 and not dets[0].mask[10, 10] and dets[0].bbox == (15, 5, 25, 25)
+
+
+def test_accept_writes_the_trimmed_mask(store, make_clip):
+    project, clip = make_clip()
+    clip = _with_regions(store, clip, RegionRange(start=0, end=11, blocks=[(20, 20, 25, 40)]))
+    accept(store, FakeEngine(), clip.id, 3, CLICK, object_id=None, class_id=project.classes[0].id)
+    mask = store.read_mask(clip.id, OBJ, 3)
+    assert mask.sum() == 400 - 5 * 20 and not mask[30, 22]
+
+
+def test_positive_click_in_an_excluded_area_is_refused_negative_is_fine(store, make_clip):
+    _, clip = make_clip()
+    clip = _with_regions(store, clip, RegionRange(start=0, end=11, blocks=[(25, 25, 35, 35)]))
+    with pytest.raises(BadRequest, match="that spot is excluded on this frame"):
+        preview(store, FakeEngine(), clip, 0, CLICK)
+    ok = PromptSpec(type="clicks", points=[(50, 30, 1), (30, 30, 0)])
+    assert preview(store, FakeEngine(), clip, 0, ok)
+    with pytest.raises(BadRequest, match="excluded"):
+        preview(store, FakeEngine(), clip, 0, PromptSpec(type="box", box=(26, 26, 34, 34)))
+    assert preview(store, FakeEngine(), clip, 0, PromptSpec(type="box", box=(20, 20, 50, 50)))
+
+
+def test_a_hand_edited_invalid_region_fails_the_prompt_with_its_name(store, make_clip):
+    _, clip = make_clip()
+    clip = _with_regions(store, clip, RegionRange(start=0, end=5), RegionRange(start=4, end=8))
+    with pytest.raises(BadRequest, match=f"clip {clip.id}: region 4–8"):
+        preview(store, FakeEngine(), clip, 0, CLICK)
