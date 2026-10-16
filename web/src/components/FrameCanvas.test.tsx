@@ -67,3 +67,71 @@ describe("FrameCanvas stored masks", () => {
     expect(composite).toHaveBeenLastCalledWith([parts[0]]);
   });
 });
+
+describe("FrameCanvas regions", () => {
+  // A zero-size wrap makes the fitted scale 0.01, so the 6 px handle tolerance would swallow the whole image; give
+  // the wrap a 116 px box instead, which fits the 100 px image at scale 1 (margin 8).
+  const view = fitView(100, 100, 116, 116);
+  beforeEach(() => {
+    Object.defineProperty(HTMLElement.prototype, "clientWidth", { configurable: true, get: () => 116 });
+    Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 116 });
+  });
+  afterEach(() => {
+    // jsdom defines these on Element.prototype; dropping our overrides restores them
+    delete (HTMLElement.prototype as unknown as Record<string, unknown>).clientWidth;
+    delete (HTMLElement.prototype as unknown as Record<string, unknown>).clientHeight;
+  });
+  /** image point -> client point under the fitted view (the canvas rect is at 0,0 in jsdom) */
+  const at = (x: number, y: number) => ({ clientX: x * view.scale + view.tx, clientY: y * view.scale + view.ty });
+  type R = [number, number, number, number];
+
+  it("a drag on empty space draws a new block", () => {
+    const onChange = vi.fn();
+    render(<FrameCanvas {...baseProps({ region: null, regionEdit: { draw: "block", onChange } })} />);
+    const canvas = screen.getByLabelText("Frame");
+    fireEvent.mouseDown(canvas, { ...at(10, 10), button: 0 });
+    fireEvent.mouseMove(canvas, { ...at(30, 40), buttons: 1 });
+    fireEvent.mouseUp(canvas, at(30, 40));
+    expect(onChange).toHaveBeenCalledWith({ crop: null, blocks: [[10, 10, 30, 40]] });
+  });
+
+  it("in crop mode a drag sets the crop", () => {
+    const onChange = vi.fn();
+    const region = { start: 0, end: 5, crop: null, blocks: [[50, 50, 60, 60]] as R[] };
+    render(<FrameCanvas {...baseProps({ region, regionEdit: { draw: "crop", onChange } })} />);
+    const canvas = screen.getByLabelText("Frame");
+    fireEvent.mouseDown(canvas, { ...at(5, 5), button: 0 });
+    fireEvent.mouseMove(canvas, { ...at(95, 90), buttons: 1 });
+    fireEvent.mouseUp(canvas, at(95, 90));
+    expect(onChange).toHaveBeenCalledWith({ crop: [5, 5, 95, 90], blocks: [[50, 50, 60, 60]] });
+  });
+
+  it("dragging inside a block moves it, and its × deletes it", () => {
+    const onChange = vi.fn();
+    const region = { start: 0, end: 5, crop: null, blocks: [[20, 20, 40, 40]] as R[] };
+    render(<FrameCanvas {...baseProps({ region, regionEdit: { draw: "block", onChange } })} />);
+    const canvas = screen.getByLabelText("Frame");
+    fireEvent.mouseDown(canvas, { ...at(30, 30), button: 0 });
+    fireEvent.mouseMove(canvas, { ...at(40, 35), buttons: 1 });
+    fireEvent.mouseUp(canvas, at(40, 35));
+    expect(onChange).toHaveBeenLastCalledWith({ crop: null, blocks: [[30, 25, 50, 45]] });
+    fireEvent.mouseDown(canvas, { ...at(40, 20), button: 0 });
+    fireEvent.mouseUp(canvas, at(40, 20));
+    expect(onChange).toHaveBeenLastCalledWith({ crop: null, blocks: [] });
+  });
+
+  it("a positive click in an excluded area calls onExcluded, a negative one still prompts", () => {
+    const onPoint = vi.fn();
+    const onExcluded = vi.fn();
+    const region = { start: 0, end: 5, crop: null, blocks: [[20, 20, 40, 40]] as R[] };
+    render(<FrameCanvas {...baseProps({ tool: "clicks", region, onPoint, onExcluded })} />);
+    const canvas = screen.getByLabelText("Frame");
+    fireEvent.mouseDown(canvas, { ...at(30, 30), button: 0 });
+    fireEvent.mouseUp(canvas, at(30, 30));
+    expect(onExcluded).toHaveBeenCalledTimes(1);
+    expect(onPoint).not.toHaveBeenCalled();
+    fireEvent.mouseDown(canvas, { ...at(30, 30), button: 2 });
+    fireEvent.mouseUp(canvas, at(30, 30));
+    expect(onPoint).toHaveBeenCalledWith(30, 30, 0);
+  });
+});
