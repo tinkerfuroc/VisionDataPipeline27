@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import cv2
 import numpy as np
-from vdp.export.polygons import EDGE_SCALE, Polygon
+from vdp.export.polygons import Polygon
+
+EDGE_SCALE = 2  # the value the frozen reference was written with; deliberately not imported from the live module
 
 
 def ref_clean_mask(mask: np.ndarray, min_area_px: int) -> np.ndarray:

@@ -205,10 +205,12 @@ def _present_objects(
 def build_plan(
     store: ProjectStore, project_id: str, clip_ids: list[str], options: ExportOptions,
     tick: Callable[[], None] | None = None, *, workers: int | None = 1, advance: Callable[[int], None] | None = None,
+    cancel: Callable[[], bool] | None = None,
 ) -> ExportPlan:
     """Which masks are present is decided per frame on the process pool (`workers`; None = default, 1 = inline;
     a plan with fewer than INLINE_BELOW candidate frames runs in-process). Progress: `advance(n)` per completed
-    unit of n frames, or else `tick` once per frame considered; either may raise to cancel."""
+    unit of n frames, or else `tick` once per frame considered; either may raise to cancel. `cancel` is also polled by
+    the pool while units run."""
     # here, not at module level: vdp.parallel imports ExportCancelled from this package
     from .. import parallel
 
@@ -232,7 +234,8 @@ def build_plan(
         selected = [(o.id, export_id_of[o.class_id]) for o in clip.objects if o.class_id in export_id_of]
         per_clip.append((clip, kept, _stems(clip, kept), {idx: region_for(clip, idx) for idx in kept}, selected))
     total = sum(len(kept) for _, kept, _, _, _ in per_clip)
-    n = 1 if total < INLINE_BELOW else min(workers or parallel.default_workers(), -(-total // EXPORT_UNIT))
+    n_units = sum(-(-len(kept) // EXPORT_UNIT) for _, kept, _, _, _ in per_clip)  # units never span clips
+    n = 1 if total < INLINE_BELOW else min(workers or parallel.default_workers(), n_units)
     size = 1 if n <= 1 else EXPORT_UNIT
     units = [
         (store.root, clip.id, resolved.min_area_px, [(idx, regions[idx]) for idx in kept[i : i + size]], selected)
@@ -241,17 +244,19 @@ def build_plan(
     ]
     results = parallel.run_units(
         _present_objects, units, workers=n, weight=lambda u: len(u[3]), on_done=advance,
+        cancel=cancel or (lambda: False),
     )
     present = iter(p for unit_result in results for p in unit_result)
 
     frames: list[PlanFrame] = []
     for clip, kept, stems, regions, selected in per_clip:
         export_class_of = dict(selected)
+        clip_dir = store.clip_dir(clip.id)  # one lookup per clip, not one glob per mask (layout: ProjectStore.mask_path)
         candidates: list[tuple[int, tuple[PlanObject, ...], RegionRange | None]] = []
         for idx in kept:
             region = regions[idx]
             objects = tuple(
-                PlanObject(oid, export_class_of[oid], store.mask_path(clip.id, oid, idx), resolved.min_area_px, region)
+                PlanObject(oid, export_class_of[oid], clip_dir / "masks" / str(oid) / f"{idx:06d}.png", resolved.min_area_px, region)
                 for oid in next(present)
             )
             if objects or resolved.include_empty:

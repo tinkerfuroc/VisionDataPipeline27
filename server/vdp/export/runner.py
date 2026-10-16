@@ -70,10 +70,12 @@ def write_dataset(
 ) -> tuple[list[ExportSummary], dict, bool]:
     """Place each frame image at `out/images/<stem>.jpg` (copied, or hard-linked when `link_images`) and write
     every chosen format's files for it, one frame unit at a time (`frame_unit.write_frames`) on the process pool
-    (`workers`; None = default, a small plan runs in-process). The files are those the exporters' `write` makes.
+    (`workers`; None = default, a small plan runs in-process). The files are those the exporters' `write` makes
+    (kept as the reference in tests).
     Progress: `advance(n)` per completed unit, n = frames x (1 + formats); without `advance`, `tick` once per
     step. `cancel` is polled by the pool while units run (`advance`/`tick` raise to cancel between units).
-    `run_export` places store frames by copy; a derived export places frames it already owns by hard link."""
+    `link_images` hard-links each frame image from its source instead of copying or cropping it (no caller yet:
+    `run_export` places store frames by copy, and derived copies no longer go through `write_dataset`)."""
     # here, not at module level: vdp.parallel imports ExportCancelled from this package
     from .. import parallel
 
@@ -181,7 +183,7 @@ def run_export(
 
     export_id, out = reserve_export_dir(exports_root, name)
     try:
-        plan = build_plan(store, project_id, clip_ids, options, tick=tick, workers=workers, advance=advance)
+        plan = build_plan(store, project_id, clip_ids, options, tick=tick, workers=workers, advance=advance, cancel=cancel)
         # include_empty=False may have dropped frames: shrink the total so the bar still ends at 100%
         state["total"] = state["done"] + len(plan.frames) * (1 + len(formats))
         summaries, counts, linked = write_dataset(

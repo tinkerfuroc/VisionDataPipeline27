@@ -150,7 +150,9 @@ reported as a failed job ("nothing to export"), because finding that out means r
 **Speed:** an export runs on `export.workers` processes, the same default as augmentation (all CPU cores but 4;
 `1` runs in-process). Both the pass that reads the masks to plan the export and the pass that writes every format
 run per frame on that pool; an export of fewer than 64 frames runs in-process. On a real 3-clip, 1,042-frame export
-in all four formats it took about 13 s instead of 261 s, with byte-identical output.
+in all four formats it went from about 260 s to about 70 s on one process (`workers: 1`: the mask work is done on
+each mask's bounding box, and every format is written in one pass over the frames) and to about 12-15 s with the worker
+pool on a 20-core machine. Times depend on the machine; the output is byte-identical.
 
 ## Training
 

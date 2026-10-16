@@ -221,6 +221,25 @@ def test_the_single_pass_export_is_byte_identical_to_the_per_format_reference(
         assert calls == [(3, -(-len(plan.frames) // 4))]
 
 
+def test_link_images_export_is_byte_identical_to_the_reference(store, make_clip, tmp_path):
+    from export_reference import ref_write_dataset
+    from vdp.export import build_plan, write_dataset
+
+    project, clip_ids, options = rich_project(store, make_clip, tmp_path)
+    plan = build_plan(store, project.id, clip_ids, options)
+    a, b = tmp_path / "a", tmp_path / "b"
+    a.mkdir()
+    b.mkdir()
+    ref = ref_write_dataset(plan, FORMATS_ALL, a, lambda: None, link_images=True)
+    new = write_dataset(plan, FORMATS_ALL, b, lambda: None, link_images=True)
+    assert _tree(a) == _tree(b)
+    for rel in _tree(a):
+        if (a / rel).is_file():
+            assert (a / rel).read_bytes() == (b / rel).read_bytes(), rel
+    assert ref[1:] == new[1:]
+    assert [s.linked for s in ref[0]] == [s.linked for s in new[0]]
+
+
 def test_run_export_progress_ends_at_the_same_total_with_a_pool(store, make_clip, tmp_path, monkeypatch):
     calls = _spy_pool(monkeypatch)
     project, clip = _labelled(store, make_clip, n=10)
@@ -248,6 +267,22 @@ def test_a_cancel_mid_pool_removes_the_export(store, make_clip, tmp_path, monkey
         run_export(store, project.id, [clip.id], ["yolo_seg", "masks"], ExportOptions(), tmp_path / "exports",
                    progress=progress, cancel=lambda: state["cancel"], workers=3)
     assert state["cancel"] and calls == [(3, 4), (3, 4)]
+    assert list((tmp_path / "exports").iterdir()) == []
+    assert multiprocessing.active_children() == []
+
+
+def test_a_cancel_during_planning_on_a_pool_removes_the_export(store, make_clip, tmp_path, monkeypatch):
+    import multiprocessing
+    import time
+
+    calls = _spy_pool(monkeypatch)
+    project, clip = _labelled(store, make_clip, n=16)
+    start = time.monotonic()
+    # the first poll that is past the start of the run: the plan's pool is running, no unit need have finished
+    with pytest.raises(ExportCancelled):
+        run_export(store, project.id, [clip.id], ["yolo_seg"], ExportOptions(), tmp_path / "exports",
+                   cancel=lambda: time.monotonic() - start > 0.05, workers=3)
+    assert len(calls) == 1  # the writing pass never started
     assert list((tmp_path / "exports").iterdir()) == []
     assert multiprocessing.active_children() == []
 
