@@ -3,9 +3,11 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import signal
 import sys
 import time
 
+import pytest
 import vdp.cli
 import vdp.train.scheduler
 from train_fixtures import EXPORT_ID, FAKE_WORKER, make_export, wait_for
@@ -173,6 +175,36 @@ def test_terminating_signal_cancels_the_run(tmp_path, capsys, monkeypatch):
     assert raised["done"] is True
     assert run_status() == "cancelled"
     assert "cancelling this command's runs" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("inherited", [signal.SIG_DFL, signal.SIG_IGN])
+def test_sighup_is_routed_unless_ignored(tmp_path, capsys, monkeypatch, inherited):
+    """`nohup vdp train` starts with SIGHUP ignored and must keep it that way (closing the terminal would
+    otherwise cancel the runs); without nohup, SIGHUP takes the cancel path like SIGTERM."""
+    s = _settings(tmp_path)
+    real_sleep = time.sleep
+    seen: dict = {}
+
+    def fake_sleep(seconds):
+        if not seen:
+            seen.update(hup=signal.getsignal(signal.SIGHUP), term=signal.getsignal(signal.SIGTERM))
+            raise KeyboardInterrupt  # end the command at once
+        real_sleep(seconds)
+
+    original_hup = signal.signal(signal.SIGHUP, inherited)
+    original_term = signal.getsignal(signal.SIGTERM)
+    monkeypatch.setattr(time, "sleep", fake_sleep)
+    try:
+        vdp.cli._train(s, _args(model=["yolo26s-seg"], epochs=99, gpu=0), gpus=[Gpu(0, "A", 1)],
+                       worker_cmd=FAKE_WORKER, poll=0.02)
+        assert seen["term"] not in (signal.SIG_DFL, original_term)
+        if inherited is signal.SIG_IGN:
+            assert seen["hup"] is signal.SIG_IGN
+        else:
+            assert seen["hup"] is seen["term"]
+        assert signal.getsignal(signal.SIGHUP) is inherited and signal.getsignal(signal.SIGTERM) is original_term
+    finally:
+        signal.signal(signal.SIGHUP, original_hup)
 
 
 def test_bad_input(tmp_path, capsys):

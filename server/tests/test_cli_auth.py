@@ -173,28 +173,47 @@ def test_set_password_cancelled_at_the_prompt_exits_1_and_writes_nothing(tmp_pat
     assert AuthStore(tmp_path / "data").load() is None
 
 
-def test_serve_turns_sighup_into_sigterm_so_uvicorn_shuts_down_cleanly(tmp_path):
-    # closing the terminal sends SIGHUP, which uvicorn ignores (the process just dies, skipping the lifespan
-    # shutdown that cancels jobs); SIGTERM is uvicorn's graceful shutdown
-    import os
-    import signal
-    import time
-
+def _serve_seeing_sighup(tmp_path, during):
     settings, _ = vdp.cli._load_settings(_cfg(tmp_path))
-    before = signal.getsignal(signal.SIGHUP)
+    code = vdp.cli._serve(settings, "127.0.0.1", 28000, False, stdin=Tty(), ask=lambda p: "q",
+                          getpass_fn=lambda p: "", run=during, make_app=lambda s, auth_store: "app")
+    assert code == 0
+
+
+def test_serve_turns_sighup_into_sigterm_so_uvicorn_shuts_down_cleanly(tmp_path):
+    # closing the terminal sends SIGHUP, which uvicorn leaves at its default (the process just dies, skipping the
+    # lifespan shutdown that cancels jobs); SIGTERM is uvicorn's graceful shutdown. The installed handler is
+    # called directly, so no real SIGHUP reaches the test process.
+    import signal
+
+    original = signal.signal(signal.SIGHUP, signal.SIG_DFL)
     got: list[int] = []
 
     def run(app, **kw):
+        handler = signal.getsignal(signal.SIGHUP)
+        assert callable(handler)
         previous = signal.signal(signal.SIGTERM, lambda signum, frame: got.append(signum))
         try:
-            os.kill(os.getpid(), signal.SIGHUP)
-            deadline = time.monotonic() + 10
-            while not got and time.monotonic() < deadline:
-                time.sleep(0.01)
+            handler(signal.SIGHUP, None)  # sends this process a SIGTERM, delivered before the next bytecode
         finally:
             signal.signal(signal.SIGTERM, previous)
 
-    code = vdp.cli._serve(settings, "127.0.0.1", 28000, False, stdin=Tty(), ask=lambda p: "q",
-                          getpass_fn=lambda p: "", run=run, make_app=lambda s, auth_store: "app")
-    assert code == 0 and got == [signal.SIGTERM]
-    assert signal.getsignal(signal.SIGHUP) == before
+    try:
+        _serve_seeing_sighup(tmp_path, run)
+        assert got == [signal.SIGTERM]
+        assert signal.getsignal(signal.SIGHUP) is signal.SIG_DFL
+    finally:
+        signal.signal(signal.SIGHUP, original)
+
+
+def test_serve_leaves_an_ignored_sighup_alone(tmp_path):
+    # `nohup vdp serve` starts with SIGHUP ignored: closing the terminal must not stop the server
+    import signal
+
+    original = signal.signal(signal.SIGHUP, signal.SIG_IGN)
+    seen = []
+    try:
+        _serve_seeing_sighup(tmp_path, lambda app, **kw: seen.append(signal.getsignal(signal.SIGHUP)))
+        assert seen == [signal.SIG_IGN] and signal.getsignal(signal.SIGHUP) is signal.SIG_IGN
+    finally:
+        signal.signal(signal.SIGHUP, original)

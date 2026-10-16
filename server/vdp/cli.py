@@ -238,7 +238,6 @@ def _serve(settings: Settings, host: str | None, port: int | None, https: bool =
         run = uvicorn.run
     import os
     import signal
-    import threading
 
     # Closing the terminal sends SIGHUP, which uvicorn leaves at its default (die on the spot, skipping the
     # lifespan shutdown that cancels running jobs and lets an augment job remove its half-written export);
@@ -246,15 +245,37 @@ def _serve(settings: Settings, host: str | None, port: int | None, https: bool =
     def _hup_to_term(signum, frame) -> None:
         os.kill(os.getpid(), signal.SIGTERM)
 
-    main = threading.current_thread() is threading.main_thread()  # only the main thread may set handlers
-    previous = signal.signal(signal.SIGHUP, _hup_to_term) if main else None
+    previous = _install_handlers(_hup_to_term, (signal.SIGHUP,))
     try:
         run(make_app(settings, auth_store=store), host=host, port=port, log_level="info",
             proxy_headers=False, **ssl)  # X-Forwarded-* would let a local client spoof its address and scheme
     finally:
-        if main:
-            signal.signal(signal.SIGHUP, previous)
+        _restore_handlers(previous)
     return 0
+
+
+def _install_handlers(handler, sigs) -> dict:
+    """Install `handler` for each of `sigs` and return the handlers to put back with `_restore_handlers`.
+    Only the main thread may set handlers (elsewhere this does nothing). A SIGHUP that is already ignored is
+    left alone: that is `nohup`, asking for the command to outlive its terminal."""
+    import signal
+    import threading
+
+    if threading.current_thread() is not threading.main_thread():
+        return {}
+    previous = {}
+    for sig in sigs:
+        if sig == signal.SIGHUP and signal.getsignal(sig) is signal.SIG_IGN:
+            continue
+        previous[sig] = signal.signal(sig, handler)
+    return previous
+
+
+def _restore_handlers(previous: dict) -> None:
+    import signal
+
+    for sig, handler in previous.items():
+        signal.signal(sig, handler)
 
 
 def _fmt(v: float | None) -> str:
@@ -263,7 +284,6 @@ def _fmt(v: float | None) -> str:
 
 def _train(settings: Settings, args, *, gpus=None, worker_cmd=None, poll: float = 2.0) -> int:
     import signal
-    import threading
     import time
 
     from pydantic import ValidationError
@@ -357,11 +377,7 @@ def _train(settings: Settings, args, *, gpus=None, worker_cmd=None, poll: float 
     # Closing the terminal or `kill`ing this process sends SIGHUP/SIGTERM, not SIGINT; route them
     # through the same cancel path as Ctrl-C so the workers are not left running unowned. Only the
     # main thread may install signal handlers.
-    installed = threading.current_thread() is threading.main_thread()
-    previous_handlers = {}
-    if installed:
-        for sig in (signal.SIGTERM, signal.SIGHUP):
-            previous_handlers[sig] = signal.signal(sig, _raise_interrupt)
+    previous_handlers = _install_handlers(_raise_interrupt, (signal.SIGTERM, signal.SIGHUP))
 
     sched.start(recover=False)
     try:
@@ -377,8 +393,7 @@ def _train(settings: Settings, args, *, gpus=None, worker_cmd=None, poll: float 
         while not sched.idle():
             time.sleep(0.2)
     finally:
-        for sig, handler in previous_handlers.items():
-            signal.signal(sig, handler)
+        _restore_handlers(previous_handlers)
         sched.shutdown()
     report()
     print(f"\n{'model':<12} {'status':<11} {'best epoch':>10} {'mask mAP50':>10} {'mask mAP50-95':>13} "
