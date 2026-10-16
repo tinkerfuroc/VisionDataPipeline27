@@ -47,6 +47,7 @@ class Sam3Engine:
     MAX_DETECTIONS = 8
     MAX_MASK_AREA_FRAC = 0.45
     MIN_MASK_AREA_PX = 64
+    ENCODE_BATCH = 8  # frames run through the image encoder at once during propagation
 
     def __init__(
         self,
@@ -367,19 +368,28 @@ class Sam3Engine:
         finally:
             torch.cuda.empty_cache()
 
-    def _encode_frame(self, session, frame_idx: int) -> None:
-        px = session.get_frame(frame_idx).unsqueeze(0)
+    def _encode_frames(self, session, start: int, stop: int) -> None:
+        """Encode frames `start..stop-1` in one batch and cache each frame's tracker features."""
+        px = torch.stack([session.get_frame(i) for i in range(start, stop)])
         embeds = self._model.detector_model.get_vision_features(pixel_values=px)
-        self._cache_tracker_features(session, frame_idx, embeds)
+        feats, pos = self._model.get_vision_features_for_tracker(vision_embeds=embeds)
+        for j, idx in enumerate(range(start, stop)):
+            # the tracker's features are (HW, batch, C): frame j is column j, kept as a batch of one
+            session.cache.cache_vision_features(idx, {
+                "vision_feats": [f[:, j:j + 1] for f in feats],
+                "vision_pos_embeds": [p[:, j:j + 1] for p in pos],
+            })
 
     def _propagate_locked(self, video, seeds, h, w, cancel_cb):
         n = int(video.shape[0])
         session = self._new_session(video, h, w)
         # The image encoder is where the time goes; the tracker head is cheap and causal, reading
-        # only the current frame's cached features. Encoding one frame ahead of the tracker (instead
-        # of the whole chunk up front) lets each mask reach the caller as soon as it is ready, so the
-        # GUI sees a steady stream of frames rather than a long silence and then the whole chunk.
-        self._encode_frame(session, 0)
+        # only the current frame's cached features. Frames are encoded ENCODE_BATCH at a time, just
+        # ahead of the tracker (measured on a 3080 Ti: 128 ms/frame in batches of 8 vs 152 alone),
+        # rather than the whole chunk up front, so masks still reach the caller batch by batch
+        # instead of after a long silence.
+        encoded = min(self.ENCODE_BATCH, n)
+        self._encode_frames(session, 0, encoded)
         ids = [int(oid) for oid in seeds]
         for oid in ids:
             obj_idx = session.obj_id_to_idx(oid)
@@ -404,5 +414,7 @@ class Sam3Engine:
                         masks[oid] = m
             fr = int(out.frame_idx)
             yield fr, masks
-            if fr + 1 < n:
-                self._encode_frame(session, fr + 1)
+            if fr + 1 >= encoded and encoded < n:
+                stop = min(encoded + self.ENCODE_BATCH, n)
+                self._encode_frames(session, encoded, stop)
+                encoded = stop
