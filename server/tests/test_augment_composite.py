@@ -58,9 +58,9 @@ def test_place_keeps_eighty_percent_inside_and_avoids_overlap():
         ys, xs = slice(max(0, y), min(200, y + 50)), slice(max(0, x), min(200, x + 50))
         full[ys, xs] = True
         assert full.sum() >= 0.8 * m.sum()
-        for other in placed:
+        for _, _, other in placed:
             assert (full & other).sum() <= 0.1 * min(full.sum(), other.sum())
-        placed.append(full)
+        placed.append((0, 0, full))
 
 
 def test_make_composite_is_deterministic_and_labels_match():

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import cv2
@@ -87,18 +88,33 @@ def transform_cutout(
     return img2[y:y + bh, x:x + bw], m2[y:y + bh, x:x + bw]
 
 
-def _paste_mask(mask: np.ndarray, pos: tuple[int, int], canvas_hw: tuple[int, int]) -> np.ndarray:
+Placed = tuple[int, int, np.ndarray]    # (y0, x0, mask crop) in canvas coordinates, already clipped to the canvas
+
+_PAD = math.ceil(4 * ALPHA_SIGMA)       # the alpha blur's reach: beyond this the blurred mask is exactly 0
+
+
+def _visible(mask: np.ndarray, pos: tuple[int, int], canvas_hw: tuple[int, int]) -> Placed | None:
+    """The part of `mask` (top-left at `pos`) that lies on the canvas, as a view; None if none does."""
     H, W = canvas_hw
     y, x = pos
     h, w = mask.shape
-    full = np.zeros((H, W), bool)
     ty0, tx0, ty1, tx1 = max(0, y), max(0, x), min(H, y + h), min(W, x + w)
-    if ty1 > ty0 and tx1 > tx0:
-        full[ty0:ty1, tx0:tx1] = mask[ty0 - y:ty1 - y, tx0 - x:tx1 - x]
-    return full
+    if ty1 <= ty0 or tx1 <= tx0:
+        return None
+    return ty0, tx0, mask[ty0 - y:ty1 - y, tx0 - x:tx1 - x]
 
 
-def place(rng: np.random.Generator, mask: np.ndarray, canvas_hw: tuple[int, int], placed: list[np.ndarray],
+def _overlap(a: Placed, b: Placed) -> int:
+    ay, ax, am = a
+    by, bx, bm = b
+    y0, x0 = max(ay, by), max(ax, bx)
+    y1, x1 = min(ay + am.shape[0], by + bm.shape[0]), min(ax + am.shape[1], bx + bm.shape[1])
+    if y1 <= y0 or x1 <= x0:
+        return 0
+    return int(np.count_nonzero(am[y0 - ay:y1 - ay, x0 - ax:x1 - ax] & bm[y0 - by:y1 - by, x0 - bx:x1 - bx]))
+
+
+def place(rng: np.random.Generator, mask: np.ndarray, canvas_hw: tuple[int, int], placed: list[Placed],
           check_overlap: bool) -> tuple[int, int] | None:
     H, W = canvas_hw
     h, w = mask.shape
@@ -106,12 +122,12 @@ def place(rng: np.random.Generator, mask: np.ndarray, canvas_hw: tuple[int, int]
     for _ in range(TRIES):
         y = int(rng.integers(-h // 2, max(-h // 2 + 1, H - h // 2)))
         x = int(rng.integers(-w // 2, max(-w // 2 + 1, W - w // 2)))
-        full = _paste_mask(mask, (y, x), canvas_hw)
-        visible = int(full.sum())
+        vis = _visible(mask, (y, x), canvas_hw)
+        visible = 0 if vis is None else int(np.count_nonzero(vis[2]))
         if visible < MIN_INSIDE * area:
             continue
         if check_overlap and any(
-            (full & other).sum() > MAX_OVERLAP * min(visible, int(other.sum())) for other in placed
+            _overlap(vis, other) > MAX_OVERLAP * min(visible, int(np.count_nonzero(other[2]))) for other in placed
         ):
             continue
         return y, x
@@ -136,7 +152,7 @@ def make_composite(rng: np.random.Generator, width: int, height: int, background
     k = int(rng.integers(1, max_objects + 1))
     picks = [cutouts[int(i)] for i in rng.integers(0, len(cutouts), k)]
     owner = np.full((height, width), -1, np.int16)
-    placed: list[np.ndarray] = []
+    placed: list[Placed] = []
     classes: list[int] = []
     for j, cut in enumerate(picks):
         img, m = transform_cutout(rng, cut, min(width, height))
@@ -146,23 +162,30 @@ def make_composite(rng: np.random.Generator, width: int, height: int, background
                 continue
             # the first object is always placed
             pos = ((height - m.shape[0]) // 2, (width - m.shape[1]) // 2)
-        full = _paste_mask(m, pos, (height, width))
-        if not full.any():
+        vis = _visible(m, pos, (height, width))
+        if vis is None or not vis[2].any():
             continue
-        y, x = pos
-        src = np.zeros((height, width, 3), np.float32)
-        ty0, tx0 = max(0, y), max(0, x)
-        ty1, tx1 = min(height, y + m.shape[0]), min(width, x + m.shape[1])
-        src[ty0:ty1, tx0:tx1] = img[ty0 - y:ty1 - y, tx0 - x:tx1 - x]
-        matched = _colour_match(rng, src, full, canvas)
+        y0, x0, crop = vis
+        h, w = crop.shape
+        y1, x1 = y0 + h, x0 + w
+        src = img[y0 - pos[0]:y1 - pos[0], x0 - pos[1]:x1 - pos[1]]
+        # everything below happens in the object's box plus the alpha blur's reach
+        ry0, rx0, ry1, rx1 = max(0, y0 - _PAD), max(0, x0 - _PAD), min(height, y1 + _PAD), min(width, x1 + _PAD)
+        roi = canvas[ry0:ry1, rx0:rx1]
+        by, bx = y0 - ry0, x0 - rx0
+        under = roi[by:by + h, bx:bx + w]
+        matched = _colour_match(rng, src, crop, under)
         # outside the hard mask the "object" is the background
-        layer = np.where(full[..., None], matched, canvas)
+        layer = roi.copy()
+        layer[by:by + h, bx:bx + w][crop] = matched[crop]
+        full = np.zeros(roi.shape[:2], bool)
+        full[by:by + h, bx:bx + w] = crop
         alpha = cv2.GaussianBlur(full.astype(np.float32), (0, 0), ALPHA_SIGMA)[..., None]
         # keep the object's own pixels solid
         alpha = np.where(full[..., None], np.maximum(alpha, 0.5), alpha)
-        canvas = canvas * (1 - alpha) + layer * alpha
-        owner[full] = len(placed)
-        placed.append(full)
+        canvas[ry0:ry1, rx0:rx1] = roi * (1 - alpha) + layer * alpha
+        owner[y0:y1, x0:x1][crop] = len(placed)
+        placed.append((y0, x0, crop))
         classes.append(cut.class_id)
     if rng.random() < 0.3:
         canvas = cv2.GaussianBlur(canvas, (0, 0), rng.uniform(0.5, 1.5))
