@@ -8,14 +8,28 @@ from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
 
+import cv2
+
+from ..labeling.regions import apply_to_image, crop_to
 from ..store import ProjectStore, now_iso
 from .base import ExportSummary, place_image, shared_image
 from .naming import clean_name, reserve_export_dir
-from .plan import ExportOptions, ExportPlan, build_plan, check_request
+from .plan import ExportOptions, ExportPlan, PlanFrame, build_plan, check_request
+
+JPEG_QUALITY = 95
 
 
 class ExportCancelled(Exception):
     pass
+
+
+def _write_region_image(frame: PlanFrame, dst: Path) -> None:
+    image = cv2.imread(str(frame.image_path), cv2.IMREAD_COLOR)
+    if image is None:
+        raise OSError(f"cannot read {frame.image_path}")
+    out = crop_to(apply_to_image(image, frame.region), frame.region)
+    if not cv2.imwrite(str(dst), out, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY]):
+        raise OSError(f"cannot write {dst}")
 
 
 def _counts(plan: ExportPlan) -> dict:
@@ -39,6 +53,8 @@ def write_dataset(
     for frame in plan.frames:
         if link_images:
             place_image(frame.image_path, shared_image(out, frame))
+        elif frame.region is not None:
+            _write_region_image(frame, shared_image(out, frame))  # greyed and cropped: its own image
         else:
             # a copy: store frames are never linked outside
             shutil.copy2(frame.image_path, shared_image(out, frame))
@@ -80,6 +96,8 @@ def manifest_for(
         "counts": counts,
         # false: the filesystem refused hardlinks, so images were copied per format
         "images_hardlinked": linked,
+        # frames whose image was greyed/cropped by a clip region (labels were cut the same way)
+        "regions_applied": sum(1 for f in plan.frames if f.region is not None),
     }
 
 

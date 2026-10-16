@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import json
 
+import cv2
 import numpy as np
 import pytest
 from vdp.export import ExportCancelled, ExportOptions, run_export
-from vdp.store.models import LabelObject
+from vdp.store.models import LabelObject, RegionRange
 
 
 def _labelled(store, make_clip, n=6):
@@ -115,3 +116,46 @@ def test_overlap_px_is_reported_for_the_mask_format_only(store, make_clip, tmp_p
     formats = {f["name"]: f for f in manifest["formats"]}
     assert formats["masks"]["overlap_px"] == 0  # one object per frame
     assert "overlap_px" not in formats["yolo_seg"]
+
+
+def _regioned(store, make_clip, n=6):
+    project, clip = _labelled(store, make_clip, n=n)  # mask rows 10:40, cols 20:60 on 120x60 frames
+    clip = store.read_clip(clip.id)
+    clip.objects.append(LabelObject(id=2, class_id=0))
+    store.write_clip(clip)
+    hidden = np.zeros((60, 120), bool)
+    hidden[5:20, 90:110] = True  # wholly inside the block below
+    for i in range(n):
+        store.write_mask(clip.id, 2, i, hidden)
+    clip = store.read_clip(clip.id)
+    clip.regions = [RegionRange(start=0, end=2, crop=(10, 0, 115, 50), blocks=[(40, 10, 60, 40), (85, 0, 115, 25)])]
+    store.write_clip(clip)
+    return project, clip
+
+
+def test_export_crops_greys_and_cuts_labels(store, make_clip, tmp_path):
+    project, clip = _regioned(store, make_clip)
+    result = run_export(store, project.id, [clip.id], ["yolo_seg", "yolo_det", "coco", "masks"],
+                        ExportOptions(), tmp_path / "exports")
+    out = tmp_path / "exports" / result["export_id"]
+    first = cv2.imread(str(out / "images" / f"{clip.id}_0000.jpg"))
+    assert first.shape[:2] == (50, 105)
+    assert abs(int(first[20, 40].mean()) - 114) <= 3  # block (40..60 -> 30..50 after the crop) is grey
+    last = cv2.imread(str(out / "images" / f"{clip.id}_0005.jpg"))
+    assert last.shape[:2] == (60, 120)
+    assert (out / "images" / f"{clip.id}_0005.jpg").read_bytes() == store.frame_path(clip.id, 5).read_bytes()
+
+    det = (out / "yolo_det" / "labels" / "train" / f"{clip.id}_0000.txt").read_text().split()
+    assert len(det) == 5  # object 2 is wholly blocked: absent
+    cls, cx, cy, w, h = det[0], *map(float, det[1:])
+    # kept part of object 1: x 20..40 in frame = 10..30 after the crop; y 10..40
+    assert cls == "0" and abs(cx - 20 / 105) < 0.01 and abs(w - 20 / 105) < 0.01 and abs(cy - 25 / 50) < 0.01
+    assert abs(h - 30 / 50) < 0.01
+
+    coco = json.loads((out / "coco" / "annotations" / "instances_train.json").read_text())
+    img0 = next(i for i in coco["images"] if i["file_name"].endswith("_0000.jpg"))
+    assert (img0["width"], img0["height"]) == (105, 50)
+    assert [a["area"] for a in coco["annotations"] if a["image_id"] == img0["id"]] == [20 * 30]
+
+    manifest = json.loads((out / "export.json").read_text())
+    assert manifest["regions_applied"] == 3
