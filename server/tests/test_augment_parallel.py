@@ -45,8 +45,8 @@ def slow(x):
 def test_pool_cancel_stops_and_raises():
     start = time.monotonic()
     with pytest.raises(ExportCancelled):
-        run_units(slow, list(range(100)), workers=2, cancel=lambda: True)
-    assert time.monotonic() - start < 100 * 0.05 / 2
+        run_units(slow, list(range(400)), workers=2, cancel=lambda: True)
+    assert time.monotonic() - start < 5  # 400 units x 0.05 s on 2 workers would take >= 10 s
     assert multiprocessing.active_children() == []
 
 
