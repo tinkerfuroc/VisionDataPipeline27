@@ -11,8 +11,9 @@ from pathlib import Path
 from typing import Any, Literal
 
 from ..labeling.errors import BadRequest
+from ..labeling.regions import apply_to_mask, check_regions, crop_size, region_for
 from ..store import ProjectStore
-from ..store.models import ClassDef, Clip
+from ..store.models import ClassDef, Clip, RegionRange
 from .polygons import clean_mask
 
 FORMATS = ("yolo_seg", "yolo_det", "coco", "masks")
@@ -37,6 +38,7 @@ class PlanObject:
     class_id: int
     mask_path: Path
     min_area_px: int  # exporters clean the mask with the same rule the plan used to decide the object is present
+    region: RegionRange | None = None  # cut (excluded area cleared, then cropped) before the mask is used
 
 
 @dataclass(frozen=True)
@@ -49,6 +51,7 @@ class PlanFrame:
     width: int
     height: int
     objects: tuple[PlanObject, ...]
+    region: RegionRange | None = None  # the image is greyed and cropped; width/height are the crop's
 
 
 @dataclass(frozen=True)
@@ -187,39 +190,44 @@ def build_plan(
     export_id_of = {project_class: export_class for export_class, project_class in class_map.items()}
     frames: list[PlanFrame] = []
     for clip in clips:
+        check_regions(clip)
         deleted = set(clip.deleted_frames)
         kept = [i for i in range(clip.frame_count) if i not in deleted][:: resolved.stride]
         stems = _stems(clip, kept)
-        candidates: list[tuple[int, tuple[PlanObject, ...]]] = []
+        candidates: list[tuple[int, tuple[PlanObject, ...], RegionRange | None]] = []
         for idx in kept:
             if tick is not None:
                 tick()
+            region = region_for(clip, idx)
             objects = []
             for obj in clip.objects:
                 export_class = export_id_of.get(obj.class_id)
                 if export_class is None:  # an unselected class: dropped BEFORE the empty-frame filter below
                     continue
                 mask = store.read_mask(clip.id, obj.id, idx)
-                # absent, or nothing but noise once cleaned = the object is not in this frame
+                if mask is not None:
+                    mask = apply_to_mask(mask, region)
+                # absent, or nothing but noise once cut and cleaned = the object is not in this frame
                 if mask is None or not clean_mask(mask, resolved.min_area_px).any():
                     continue
-                objects.append(
-                    PlanObject(obj.id, export_class, store.mask_path(clip.id, obj.id, idx), resolved.min_area_px)
-                )
+                objects.append(PlanObject(
+                    obj.id, export_class, store.mask_path(clip.id, obj.id, idx), resolved.min_area_px, region,
+                ))
             if objects or resolved.include_empty:
-                candidates.append((idx, tuple(objects)))
+                candidates.append((idx, tuple(objects), region))
         # The split comes AFTER the empty-frame filter: the tail of what is actually exported, not of the frame range
         # (otherwise a clip labelled only at its start would get no validation frames at all).
         if resolved.split_mode == "contiguous":
             n_val = math.ceil(resolved.val_fraction * len(candidates))
             n_val = min(n_val, max(0, len(candidates) - 1))  # never the whole clip
-            val_frames = {idx for idx, _ in candidates[len(candidates) - n_val :]} if n_val else set()
+            val_frames = {idx for idx, _, _ in candidates[len(candidates) - n_val :]} if n_val else set()
         else:
-            val_frames = {idx for idx, _ in candidates} if clip.id in (resolved.val_clip_ids or ()) else set()
-        for idx, objects in candidates:
+            val_frames = {idx for idx, _, _ in candidates} if clip.id in (resolved.val_clip_ids or ()) else set()
+        for idx, objects, region in candidates:
+            w, h = crop_size(region, clip.width, clip.height)
             frames.append(PlanFrame(
                 clip_id=clip.id, frame_idx=idx, stem=stems[idx], split="val" if idx in val_frames else "train",
-                image_path=store.frame_path(clip.id, idx), width=clip.width, height=clip.height, objects=objects,
+                image_path=store.frame_path(clip.id, idx), width=w, height=h, objects=objects, region=region,
             ))
     if not frames:
         raise BadRequest("nothing to export: no frame of the selected clips has a usable mask")

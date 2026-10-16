@@ -12,6 +12,7 @@ from typing import Protocol
 import numpy as np
 from PIL import Image
 
+from ..labeling.regions import apply_to_mask, crop_to
 from .plan import ExportPlan, PlanFrame, PlanObject
 from .polygons import clean_mask
 
@@ -50,5 +51,9 @@ def place_image(src: Path, dst: Path) -> bool:
 
 
 def read_mask(obj: PlanObject) -> np.ndarray:
-    """The object as every format sees it: the stored mask with its noise blobs removed (see `clean_mask`)."""
-    return clean_mask(np.array(Image.open(obj.mask_path).convert("L")) > 127, obj.min_area_px)
+    """The object as every format sees it: the stored mask cut to its frame's region (excluded area cleared, then
+    cropped) with its noise blobs removed (see `clean_mask`)."""
+    mask = np.array(Image.open(obj.mask_path).convert("L")) > 127
+    if obj.region is not None:
+        mask = crop_to(apply_to_mask(mask, obj.region), obj.region)
+    return clean_mask(mask, obj.min_area_px)
