@@ -11,14 +11,14 @@ export function MetricCharts({ run }: { run: RunDetail }) {
   // per-epoch validation on a fixed subset (sampled epochs): say so on every chart computed from it
   const subset = valSubsetNote(run);
   const val = (title: string) => (subset !== null ? `${title} (${subset})` : title);
-  if (runTask(run) === "detect") {  // a box model: box metrics only, and a DFL loss instead of the mask one
+  if (runTask(run) === "detect") {  // a box model: box metrics only; YOLO26 detection logs box, cls and l1 losses
     return (
       <div className="grid gap-3 xl:grid-cols-2">
         <LineChart title={val("Box mAP")} series={[s("mAP50-95", BOX_MAP, C[0]), s("mAP50", BOX_MAP50, C[1])]} />
         <LineChart title="Training loss" yFormat={loss}
-          series={[s("box", "train/box_loss", C[0]), s("cls", "train/cls_loss", C[2]), s("dfl", "train/dfl_loss", C[1])]} />
+          series={[s("box", "train/box_loss", C[0]), s("cls", "train/cls_loss", C[2]), s("l1", "train/l1_loss", C[1])]} />
         <LineChart title={val("Validation loss")} yFormat={loss}
-          series={[s("box", "val/box_loss", C[0]), s("cls", "val/cls_loss", C[2]), s("dfl", "val/dfl_loss", C[1])]} />
+          series={[s("box", "val/box_loss", C[0]), s("cls", "val/cls_loss", C[2]), s("l1", "val/l1_loss", C[1])]} />
       </div>
     );
   }

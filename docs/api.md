@@ -13,6 +13,22 @@ request also returns 409 with `job_id: "interactive"` if a prompt/accept/clear-r
 retry. Deleting a clip also returns 409 (with the running `job_id`) while a GPU job runs, so a delete can
 never race a propagation's writes. Cancelling an import job removes the partial clip it had started.
 
+## Training models and tasks
+
+`GET /api/train/status` lists `models`: the YOLO26/YOLO11 `-seg` models (task `segment`, masks) followed by the YOLO26
+detection models `yolo26n`, `yolo26s`, `yolo26m`, `yolo26l`, `yolo26x` (task `detect`, boxes); `default_models` is
+unchanged. A model's task follows from its name (`-seg` = segment). Every run view carries `task` and `data_format`:
+the export dataset it trains on, `yolo_det` for a detection run on an export that has it, else `yolo_seg` (runs from
+before this have neither in `run.json`; the view reports `yolo_seg`). A detection run's `best` has `mask_map50` and
+`mask_map50_95` `null` (box metrics only, also in `final_val.json`), its best epoch is the one with the highest box
+mAP50-95, and `GET /api/train/runs/{id}/predictions` returns its predictions and ground truth as box instances:
+`{class_id, score?, box: [x1, y1, x2, y2], polygons: [[the same rectangle]]}` (normalised), the ground truth read from
+the dataset it trained on (a `yolo_seg` contour becomes its bounding box); the IoU used by the Worst filter is then
+the box-union IoU. `POST /api/train/runs/{id}/from-checkpoint` takes an optional `model`: Continue and Fine-tune
+always train the source run's model, so a model of the other task is a 400 ("a box model can't fine-tune a mask
+model's run", or "... continue ..."), and another model of the same task is a 400 too. `POST /api/train/vram-estimate`
+measures a detection model with its detection loss, objects per image counted from the dataset it would train on.
+
 ## Sampled epochs (training params)
 
 `params` (in `POST /api/train/runs` and, for `"finetune"`, `POST /api/train/runs/{id}/from-checkpoint`) takes two

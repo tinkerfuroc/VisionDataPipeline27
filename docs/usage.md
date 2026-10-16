@@ -156,12 +156,22 @@ pool on a 20-core machine. Times depend on the machine; the output is byte-ident
 
 ## Training
 
-`uv sync` installs Ultralytics (YOLO26 and YOLO11 segmentation). Train from the Train page (header → Train) or from
-the terminal:
+`uv sync` installs Ultralytics (YOLO26 and YOLO11 segmentation, and YOLO26 detection). Train from the Train page
+(header → Train) or from the terminal:
 
     uv run vdp train --list                                  # exports that have a yolo_seg dataset (shows each export's folder id, name, project, image counts and classes)
     uv run vdp train --export <folder_id> --gpu 1            # yolo26s/m-seg and yolo11s/m-seg, one after another
     uv run vdp train --export <folder_id> --model yolo26s-seg --epochs 150 --imgsz 960 --batch 8
+    uv run vdp train --export <folder_id> --model yolo26s     # a detection (bounding boxes) model
+
+The `-seg` models learn masks; the plain YOLO26 models (`yolo26n`, `yolo26s`, `yolo26m`, `yolo26l`, `yolo26x`, labelled
+"boxes" in the Train page's model list) learn bounding boxes only. A detection run trains on the export's `yolo_det`
+dataset when it has one (one box per object), else on its `yolo_seg` one, whose polygons Ultralytics turns into boxes
+(one box per contour, so an object split into pieces gives a box per piece); `run.json` records which as
+`data_format` (and the task, `segment` or `detect`, as `task`). Detection runs report box metrics only: the Runs
+table's mAP50 / mAP50-95 columns show box mAP for them (tagged "box", best value bolded among box models only), their
+charts show box mAP and the box, cls and l1 losses, and their validation predictions are drawn as boxes. Continue and
+Fine-tune always train the source run's model, so a box run continues as a box run and a mask run as a mask run.
 
 Each run lives in `data/runs/<run_id>/`: `run.json` (request and status), `worker.log`, Ultralytics' own output under
 `train/` (`weights/best.pt`, `last.pt`, `results.csv`, plots) and `predictions.json` (best.pt on every val image, conf
@@ -174,7 +184,8 @@ result as `labels/train.cache` and `val.cache` in the export's `yolo_seg/` folde
 about a minute, while a later run on the same export loads the cache in under a second. So when an export or
 augmentation job finishes, the server does that scan in the background at low priority
 (`python -m vdp.train.warm_cache <export_dir>`, one export at a time, output in the export's `warm_cache.log`) for its
-`yolo_seg` folder, the only one training reads; a run started before it is done simply scans as before. A cache that
+`yolo_seg` folder and, when the export has one, its `yolo_det` folder (what detection runs read); a run started
+before it is done simply scans as before. A cache that
 cannot be loaded (say, cut short by a run stopped while saving it) is deleted and rebuilt, by the warm-up and by the
 next run, instead of failing that run. Turn the warm-up off with `train.warm_label_cache: false` in the config.
 
