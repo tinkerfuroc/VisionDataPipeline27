@@ -134,14 +134,16 @@ export function startModeHeaderNote(run: Run): string | null {
   return run.start_mode === "continue" ? `${note} at epoch ${run.continued_from_epoch ?? "?"}` : note;
 }
 
-export type VramFit = "fits" | "tight" | "no";
+export type VramFit = "fits" | "tight" | "no" | "unknown";
 
-/** An estimate against free memory: "tight" within 10 % of it; a null estimate did not fit when measured. Null when
- * free memory is unknown. */
-export function vramFit(bytes: number | null, free: number | null): VramFit | null {
+/** An estimate against free memory: "tight" within 10 % of it. A batch that did not fit when measured needs more
+ * than `over_bytes`: it doesn't fit in `free` up to that, and is "unknown" (worth re-measuring) beyond. Null when free
+ * memory is unknown. */
+export function vramFit(e: { bytes: number | null; over_bytes?: number | null }, free: number | null): VramFit | null {
   if (free === null) return null;
-  if (bytes === null || bytes > free) return "no";
-  return bytes > free * 0.9 ? "tight" : "fits";
+  if (e.bytes === null) return e.over_bytes != null && free > e.over_bytes ? "unknown" : "no";
+  if (e.bytes > free) return "no";
+  return e.bytes > free * 0.9 ? "tight" : "fits";
 }
 
 export const vramLabel = (bytes: number | null): string =>

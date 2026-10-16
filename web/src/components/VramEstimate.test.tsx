@@ -35,15 +35,19 @@ const status = (over: Partial<TrainStatus> = {}): TrainStatus => ({
 const result = (over: Partial<VramEstimate> = {}): VramEstimate => ({
   model: "yolo26s-seg", imgsz: 960, gpu: 0, gpu_name: "NVIDIA GeForce RTX 3080 Ti", total_bytes: 12 * G, free_bytes: 9 * G,
   estimates: [
-    { batch: 1, bytes: 1.5 * G }, { batch: 2, bytes: 2.6 * G }, { batch: 4, bytes: 4.6 * G }, { batch: 8, bytes: 8.5 * G },
-    { batch: 12, bytes: null },
+    { batch: 1, bytes: 1.5 * G, over_bytes: null }, { batch: 2, bytes: 2.6 * G, over_bytes: null },
+    { batch: 4, bytes: 4.6 * G, over_bytes: null }, { batch: 8, bytes: 8.5 * G, over_bytes: null },
+    { batch: 12, bytes: null, over_bytes: 9.2 * G },
   ],
-  measured_at: "2026-10-16T10:00:00+00:00", cached: false, ...over,
+  measured_at: "2026-10-16T10:00:00+00:00", cached: false, objects_per_image: 8, objects_from_export: false, ...over,
 });
 
 type PanelProps = Partial<Parameters<typeof VramEstimatePanel>[0]>;
 function renderPanel(props: PanelProps = {}) {
-  const all = { status: status(), runs: [] as Run[], model: "yolo26s-seg", imgsz: 960, gpu: 0, onPickBatch: vi.fn(), ...props };
+  const all = {
+    status: status(), runs: [] as Run[], model: "yolo26s-seg" as string | null, imgsz: 960, gpu: 0,
+    exportId: null as string | null, onPickBatch: vi.fn() as ((batch: number) => void) | undefined, ...props,
+  };
   return { ...render(<VramEstimatePanel {...all} />), props: all };
 }
 
@@ -102,25 +106,51 @@ describe("VramEstimatePanel", () => {
     expect(screen.queryByRole("columnheader", { name: /SAM3 paused/ })).toBeNull();
   });
 
-  it("uses the live free memory from the status poll over the one in the answer", async () => {
-    await measured(result(), { status: status({ gpus: [gpu({ memory_free: 4 * G })] }) });
+  it("uses the answer's free memory until a status poll read after it arrives, then the live one", async () => {
+    const { props, rerender } = await measured(result(), { status: status({ gpus: [gpu({ memory_free: 4 * G })] }) });
+    expect(within(rowOf(4)).getByText("fits")).toBeTruthy(); // the answer's 9 GiB, not the older poll's 4 GiB
+    rerender(<VramEstimatePanel {...props} status={status({ gpus: [gpu({ memory_free: 4 * G })] })} />);
+    expect(within(rowOf(4)).getByText("fits")).toBeTruthy(); // this poll may have been read before the answer
+    rerender(<VramEstimatePanel {...props} status={status({ gpus: [gpu({ memory_free: 4 * G })] })} />);
     expect(within(rowOf(4)).getByText("doesn't fit")).toBeTruthy();
   });
 
+  it("a batch that did not fit is unknown once more memory than it was tried with is free", async () => {
+    await measured(result({ free_bytes: 11 * G }));
+    expect(within(rowOf(12)).getByText("unknown — re-measure")).toBeTruthy(); // 11 GiB > over_bytes 9.2 GiB
+  });
+
+  it("sends the selected export and says how many objects per image the estimate is for", async () => {
+    await measured(result({ objects_per_image: 16, objects_from_export: true }), { exportId: "e1" });
+    expect(m.vramEstimate).toHaveBeenCalledWith({ model: "yolo26s-seg", imgsz: 960, gpu: 0, export_id: "e1" });
+    expect(screen.getByText(/up to 16 objects per image \(from the export\)/)).toBeTruthy();
+  });
+
+  it("without an export says it assumes 8 objects per image", async () => {
+    await measured(result());
+    expect(screen.getByText(/assumes ≤ 8 objects per image/)).toBeTruthy();
+  });
+
   it("adds a 'with SAM3 paused' column when SAM3 shares the GPU", async () => {
-    await measured(result(), { status: status({ sam3_gpu: 0, sam3_vram_bytes: 2 * G }) });
+    await measured(result(), { status: status({ sam3_gpu: 0, sam3_vram_bytes: 2 * G, sam3_loaded: true }) });
     expect(screen.getByRole("columnheader", { name: "With SAM3 paused (11.0 GiB)" })).toBeTruthy();
     const cells = within(rowOf(8)).getAllByRole("cell");
     expect(cells.map((c) => c.textContent)).toEqual(["8", "about 8.5 GiB", "tight", "fits"]);
-    expect(within(rowOf(12)).getAllByRole("cell").map((c) => c.textContent)).toEqual(["12", "—", "doesn't fit", "doesn't fit"]);
+    // needs more than 9.2 GiB: doesn't fit in 9 GiB, unknown in 11 GiB
+    expect(within(rowOf(12)).getAllByRole("cell").map((c) => c.textContent)).toEqual(
+      ["12", "—", "doesn't fit", "unknown — re-measure"]);
   });
 
-  it("no SAM3 column when SAM3 is on another GPU or its VRAM is unknown", async () => {
-    await measured(result(), { status: status({ sam3_gpu: 1, sam3_vram_bytes: 2 * G }) });
-    expect(screen.queryByRole("columnheader", { name: /SAM3 paused/ })).toBeNull();
-    cleanup();
-    await measured(result(), { status: status({ sam3_gpu: 0, sam3_vram_bytes: null }) });
-    expect(screen.queryByRole("columnheader", { name: /SAM3 paused/ })).toBeNull();
+  it("no SAM3 column when SAM3 is on another GPU, not loaded (paused) or its VRAM is unknown", async () => {
+    for (const over of [
+      { sam3_gpu: 1, sam3_vram_bytes: 2 * G, sam3_loaded: true },
+      { sam3_gpu: 0, sam3_vram_bytes: 2 * G, sam3_loaded: false },
+      { sam3_gpu: 0, sam3_vram_bytes: null, sam3_loaded: true },
+    ]) {
+      await measured(result(), { status: status(over) });
+      expect(screen.queryByRole("columnheader", { name: /SAM3 paused/ })).toBeNull();
+      cleanup();
+    }
   });
 
   it("clicking a row sets the batch", async () => {
@@ -151,6 +181,8 @@ describe("VramEstimatePanel", () => {
     rerender(<VramEstimatePanel {...props} gpu={1} />);
     expect(screen.queryByRole("table")).toBeNull();
     rerender(<VramEstimatePanel {...props} model="yolo26m-seg" />);
+    expect(screen.queryByRole("table")).toBeNull();
+    rerender(<VramEstimatePanel {...props} exportId="other" />);
     expect(screen.queryByRole("table")).toBeNull();
   });
 

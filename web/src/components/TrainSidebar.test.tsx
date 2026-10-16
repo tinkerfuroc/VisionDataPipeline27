@@ -309,8 +309,10 @@ describe("TrainSidebar VRAM estimate", () => {
   const estimate = {
     model: "yolo11s-seg", imgsz: 960, gpu: 0, gpu_name: "NVIDIA GeForce RTX 3080 Ti", total_bytes: 12 * 2 ** 30,
     free_bytes: 9 * 2 ** 30, measured_at: "", cached: false,
-    estimates: [{ batch: 1, bytes: 2 ** 30 }, { batch: 2, bytes: 2 * 2 ** 30 }, { batch: 4, bytes: 4 * 2 ** 30 },
-      { batch: 8, bytes: 7 * 2 ** 30 }, { batch: 12, bytes: null }],
+    objects_per_image: 8, objects_from_export: false,
+    estimates: [{ batch: 1, bytes: 2 ** 30, over_bytes: null }, { batch: 2, bytes: 2 * 2 ** 30, over_bytes: null },
+      { batch: 4, bytes: 4 * 2 ** 30, over_bytes: null }, { batch: 8, bytes: 7 * 2 ** 30, over_bytes: null },
+      { batch: 12, bytes: null, over_bytes: 9 * 2 ** 30 }],
   };
 
   it("estimates for the picked model on its GPU, and a row click sets the batch field", async () => {

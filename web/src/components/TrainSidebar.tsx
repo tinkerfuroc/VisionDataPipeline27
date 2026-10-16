@@ -451,7 +451,7 @@ export function TrainSidebar({
             )}
             {f.key === "batch" && (
               <VramEstimatePanel status={status} runs={runs} model={estimateModel} imgsz={displayParams.imgsz}
-                gpu={estimateGpu}
+                gpu={estimateGpu} exportId={exportId}
                 onPickBatch={paramsLocked ? undefined : (batch) => setParams((p) => (p === null ? p : { ...p, batch }))} />
             )}
           </div>

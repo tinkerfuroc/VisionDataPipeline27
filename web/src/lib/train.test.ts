@@ -142,12 +142,18 @@ describe("train helpers", () => {
 describe("VRAM estimate helpers", () => {
   const G = 2 ** 30;
   it("vramFit compares an estimate with free memory, tight within 10 %", () => {
-    expect(vramFit(5 * G, 9 * G)).toBe("fits");
-    expect(vramFit(8.5 * G, 9 * G)).toBe("tight");
-    expect(vramFit(9 * G, 9 * G)).toBe("tight");
-    expect(vramFit(9.5 * G, 9 * G)).toBe("no");
-    expect(vramFit(null, 9 * G)).toBe("no"); // did not fit when measured
-    expect(vramFit(5 * G, null)).toBeNull(); // free memory unknown
+    const est = (bytes: number | null, over_bytes: number | null = null) => ({ bytes, over_bytes });
+    expect(vramFit(est(5 * G), 9 * G)).toBe("fits");
+    expect(vramFit(est(8.5 * G), 9 * G)).toBe("tight");
+    expect(vramFit(est(9 * G), 9 * G)).toBe("tight");
+    expect(vramFit(est(9.5 * G), 9 * G)).toBe("no");
+    expect(vramFit(est(5 * G), null)).toBeNull(); // free memory unknown
+  });
+  it("vramFit: a batch that did not fit needs more than over_bytes", () => {
+    expect(vramFit({ bytes: null, over_bytes: 8 * G }, 7 * G)).toBe("no");
+    expect(vramFit({ bytes: null, over_bytes: 8 * G }, 8 * G)).toBe("no");
+    expect(vramFit({ bytes: null, over_bytes: 8 * G }, 11 * G)).toBe("unknown"); // more memory than it was tried with
+    expect(vramFit({ bytes: null, over_bytes: null }, 11 * G)).toBe("no");
   });
   it("vramLabel", () => {
     expect(vramLabel(7.84 * G)).toBe("about 7.8 GiB");

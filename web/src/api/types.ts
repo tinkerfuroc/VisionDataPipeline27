@@ -175,6 +175,8 @@ export type TrainStatus = {
   sam3_gpu: number | null;
   /** VRAM SAM3 took when it loaded, i.e. about what pausing it frees; null when unknown, absent on an older server. */
   sam3_vram_bytes?: number | null;
+  /** SAM3 is loaded now (false while paused or loading, when it holds no VRAM); absent on an older server. */
+  sam3_loaded?: boolean;
   models: string[];
   default_models: string[];
   defaults: TrainParams;
@@ -274,12 +276,18 @@ export type StartRunsRequest = {
   export_id: string; runs: { model: string; gpu: number }[]; params: TrainParams; pause_sam3?: boolean;
 };
 export type StartMode = "continue" | "finetune";
-export type VramEstimateRequest = { model: string; imgsz: number; gpu: number; remeasure?: boolean };
-/** A "vram_estimate" job's result: estimated VRAM per batch size (calibration margin included); null = did not fit
- * when measured. `free_bytes` is the GPU's free memory when the answer was given. */
+export type VramEstimateRequest = {
+  model: string; imgsz: number; gpu: number; export_id?: string; remeasure?: boolean;
+};
+/** One batch size: estimated VRAM (calibration margin included), or null when it did not fit in what the probe could
+ * use -- then it needs more than `over_bytes`. */
+export type VramBatchEstimate = { batch: number; bytes: number | null; over_bytes: number | null };
+/** A "vram_estimate" job's result. `free_bytes` is the GPU's free memory when the answer was given; the probe's
+ * synthetic labels had `objects_per_image` objects (from the export when `objects_from_export`). */
 export type VramEstimate = {
   model: string; imgsz: number; gpu: number; gpu_name: string; total_bytes: number; free_bytes: number | null;
-  estimates: { batch: number; bytes: number | null }[]; measured_at: string; cached: boolean;
+  estimates: VramBatchEstimate[]; measured_at: string; cached: boolean;
+  objects_per_image: number; objects_from_export: boolean;
 };
 export type FromCheckpointRequest = {
   export_id: string; mode: StartMode; gpu: number; params?: TrainParams; pause_sam3?: boolean;
