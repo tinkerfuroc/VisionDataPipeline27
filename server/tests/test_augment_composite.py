@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import cv2
 import numpy as np
+from composite_reference import make_composite as reference_make_composite
 from vdp.augment.composite import (
     Cutout,
     crop_background,
@@ -57,9 +58,9 @@ def test_place_keeps_eighty_percent_inside_and_avoids_overlap():
         ys, xs = slice(max(0, y), min(200, y + 50)), slice(max(0, x), min(200, x + 50))
         full[ys, xs] = True
         assert full.sum() >= 0.8 * m.sum()
-        for other in placed:
+        for _, _, other in placed:
             assert (full & other).sum() <= 0.1 * min(full.sum(), other.sum())
-        placed.append(full)
+        placed.append((0, 0, full))
 
 
 def test_make_composite_is_deterministic_and_labels_match():
@@ -113,3 +114,28 @@ def test_transform_replicates_border_instead_of_bleeding_black():
     for seed in range(20):
         out_img, out_mask = transform_cutout(np.random.default_rng(seed), cut, 200)
         assert out_img[out_mask].min() >= 150
+
+
+def _ref_cutouts(rng):
+    out = []
+    for cls in range(3):
+        h, w = int(rng.integers(30, 90)), int(rng.integers(30, 90))
+        img = rng.integers(0, 255, (h, w, 3), dtype=np.uint8)
+        mask = np.zeros((h, w), bool)
+        mask[h // 6: h - h // 6, w // 5: w - w // 5] = True
+        out.append(Cutout(cls, img, mask))
+    return out
+
+
+def test_roi_composite_matches_the_full_frame_reference():
+    base = np.random.default_rng(123)
+    cutouts = _ref_cutouts(base)
+    background = base.integers(0, 255, (400, 600, 3), dtype=np.uint8)
+    for seed in range(20):
+        new = make_composite(np.random.default_rng([7, seed]), 320, 240, background, cutouts, 4, 64)
+        old = reference_make_composite(np.random.default_rng([7, seed]), 320, 240, background, cutouts, 4, 64)
+        assert [c for c, _ in new.objects] == [c for c, _ in old.objects]
+        for (_, a), (_, b) in zip(new.objects, old.objects, strict=True):
+            assert np.array_equal(a, b)
+        diff = np.abs(new.image.astype(int) - old.image.astype(int))
+        assert (diff <= 2).mean() >= 0.999, (seed, diff.max())
