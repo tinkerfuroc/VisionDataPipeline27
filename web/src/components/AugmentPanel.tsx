@@ -1,12 +1,25 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../api/rest";
-import type { BackgroundPool, ExportInfo, JobEvent } from "../api/types";
+import type { AugmentLimits, BackgroundPool, ExportInfo, JobEvent } from "../api/types";
 import { useJob } from "../hooks/useJob";
 
 const POOL = "dtd";
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const isBusy = (status: string) => status === "pending" || status === "running";
 const pct = (done: number, total: number | null) => (total ? Math.round((done / total) * 100) : 0);
+
+const n = (v: number) => v.toLocaleString();
+function limitsLine(l: AugmentLimits | undefined): string | null {
+  if (!l) return null;
+  const { composites, lighting } = l.produced;
+  if (l.stopped_by === "time" && l.time_limit_s !== null) {
+    return `Stopped at the ${n(Math.ceil(l.time_limit_s / 60))}-minute limit: ${n(composites)} composites and ${n(lighting)} lighting copies (of ${n(l.planned.composites)} and ${n(l.planned.lighting)} asked for).`;
+  }
+  if (l.stopped_by === "images" && l.max_train_images !== null) {
+    return `Capped at ${n(l.max_train_images)} training images: ${n(composites)} composites and ${n(lighting)} lighting copies.`;
+  }
+  return null;
+}
 
 type Props = { exportInfo: ExportInfo | null; onCreated: (exportId: string) => void };
 
@@ -38,6 +51,8 @@ export function AugmentPanel({ exportInfo, onCreated }: Props) {
   const [maxObjects, setMaxObjects] = useState(2);
   const [seed, setSeed] = useState(0);
   const [lighting, setLighting] = useState(0);
+  const [maxImages, setMaxImages] = useState("");
+  const [minutes, setMinutes] = useState("");
 
   const loadPools = useCallback(() => {
     api.listBackgrounds().then(setPools, (e) => setPoolsError(message(e)));
@@ -100,6 +115,8 @@ export function AugmentPanel({ exportInfo, onCreated }: Props) {
   // only composites need the background textures; a lighting-only copy can be made without them
   const canMake = !augmentRunning && !addsNothing && (perImage === 0 || poolReady);
 
+  const resultLine = limitsLine(augmentJob.result?.limits as AugmentLimits | undefined);
+
   const onDownload = () => {
     setFetchError(null);
     setFetchPhase(null);
@@ -121,7 +138,13 @@ export function AugmentPanel({ exportInfo, onCreated }: Props) {
       const { [exportId]: _dropped, ...rest } = errs;
       return rest;
     });
-    api.augmentExport(exportId, { per_image: perImage, max_objects: maxObjects, seed, pool: POOL, lighting }).then(
+    const cap = Math.floor(Number(maxImages));
+    const mins = Number(minutes);
+    api.augmentExport(exportId, {
+      per_image: perImage, max_objects: maxObjects, seed, pool: POOL, lighting,
+      ...(maxImages !== "" && cap >= 1 ? { max_train_images: cap } : {}),
+      ...(minutes !== "" && mins > 0 ? { time_limit_s: Math.round(mins * 60) } : {}),
+    }).then(
       (r) => setAugmentJobs((j) => ({ ...j, [exportId]: r.job_id })),
       (e) => setAugmentErrors((errs) => ({ ...errs, [exportId]: message(e) })),
     );
@@ -186,6 +209,17 @@ export function AugmentPanel({ exportInfo, onCreated }: Props) {
           value={seed} onChange={(e) => setSeed(Math.max(0, Number(e.target.value) || 0))} />
       </label>
 
+      <label className="flex items-center justify-between gap-2 text-sm text-dim">
+        At most training images
+        <input aria-label="At most training images" type="number" className="field w-24" min={1}
+          placeholder="no limit" value={maxImages} onChange={(e) => setMaxImages(e.target.value)} />
+      </label>
+      <label className="flex items-center justify-between gap-2 text-sm text-dim">
+        Stop after (min)
+        <input aria-label="Stop after minutes" type="number" className="field w-24" min={1}
+          placeholder="no limit" value={minutes} onChange={(e) => setMinutes(e.target.value)} />
+      </label>
+
       {augmentRunning && (
         <div className="flex flex-col gap-1">
           <progress value={augmentJob.done} max={augmentJob.total ?? 1} />
@@ -203,6 +237,7 @@ export function AugmentPanel({ exportInfo, onCreated }: Props) {
       {augmentJob.status === "error" && augmentJob.error !== null && (
         <p role="alert" className="alert">{augmentJob.error}</p>
       )}
+      {augmentJob.status === "done" && resultLine !== null && <p className="note">{resultLine}</p>}
       {augmentJob.status === "cancelled" && <p className="note">Cancelled. Nothing was written.</p>}
     </section>
   );
