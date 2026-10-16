@@ -1,8 +1,11 @@
 """Run independent work units across a spawn-based process pool, results in unit order."""
 from __future__ import annotations
 
+import contextlib
 import multiprocessing
 import os
+import threading
+import time
 from collections.abc import Callable, Sequence
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from typing import TypeVar
@@ -13,8 +16,34 @@ T = TypeVar("T")
 R = TypeVar("R")
 
 
+WORKER_NICE = 10  # pool workers yield the CPU to a concurrent training run
+PARENT_POLL_S = 1.0
+CANCEL_POLL_S = 0.5
+
+
 def default_workers() -> int:
-    return max(1, (os.cpu_count() or 1) - 4)
+    return max(1, len(os.sched_getaffinity(0)) - 4)
+
+
+def _exit_when_orphaned(parent_pid: int) -> None:
+    # a SIGKILLed parent never closes the call queue, so a spawn worker would otherwise wait on it forever
+    while os.getppid() == parent_pid:
+        time.sleep(PARENT_POLL_S)
+    os._exit(1)
+
+
+def _init_worker(parent_pid: int, initializer: Callable[..., None] | None, initargs: tuple) -> None:
+    """Every pool worker: exit once the parent is gone, run at lower priority with one OpenCV thread (n workers
+    times OpenCV's default of one thread per core would oversubscribe the CPU), then the caller's initializer."""
+    threading.Thread(target=_exit_when_orphaned, args=(parent_pid,), name="parent-watch", daemon=True).start()
+    with contextlib.suppress(Exception):
+        import cv2
+
+        cv2.setNumThreads(1)
+    with contextlib.suppress(OSError):
+        os.nice(max(0, WORKER_NICE - os.nice(0)))
+    if initializer:
+        initializer(*initargs)
 
 
 def run_units(
@@ -24,8 +53,9 @@ def run_units(
 ) -> list[R]:
     """Run `fn(unit)` for every unit; return results in unit order. `fn`/`initializer` must be module-level
     (picklable). One worker (or no units) runs inline. `on_done(weight(unit))` follows each unit; `cancel()` is
-    checked between results, and a True drops queued units and raises ExportCancelled. A unit's exception
-    propagates once the pool is shut down."""
+    checked between results and every CANCEL_POLL_S while units run; a True drops queued units, waits for the
+    running ones and raises ExportCancelled. A unit's exception propagates once the pool is shut down. Pool
+    workers exit if this process dies, and run niced with one OpenCV thread (see `_init_worker`)."""
     n = min(workers or default_workers(), len(units))
     if n <= 1:
         if initializer:
@@ -39,14 +69,15 @@ def run_units(
         return results
     # spawn, not fork: the server runs jobs in threads and may hold a CUDA context
     pool = ProcessPoolExecutor(
-        max_workers=n, mp_context=multiprocessing.get_context("spawn"), initializer=initializer, initargs=initargs,
+        max_workers=n, mp_context=multiprocessing.get_context("spawn"), initializer=_init_worker,
+        initargs=(os.getpid(), initializer, initargs),
     )
     try:
         futures = {pool.submit(fn, unit): i for i, unit in enumerate(units)}
         results: list = [None] * len(units)
         pending = set(futures)
         while pending:
-            finished, pending = wait(pending, return_when=FIRST_COMPLETED)
+            finished, pending = wait(pending, timeout=CANCEL_POLL_S, return_when=FIRST_COMPLETED)
             for fut in finished:
                 results[futures[fut]] = fut.result()  # raises the unit's error
                 on_done(weight(units[futures[fut]]))
