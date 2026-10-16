@@ -224,6 +224,11 @@ export const api = {
 
   deleteFrame: (clipId: string, idx: number) => request<ClipDetail>(`/api/clips/${clipId}/frames/${idx}/delete`, post()),
   restoreFrame: (clipId: string, idx: number) => request<ClipDetail>(`/api/clips/${clipId}/frames/${idx}/restore`, post()),
+  /** delete or restore frames start..end (inclusive); frames already in that state are left as they are */
+  deleteFrames: (clipId: string, start: number, end: number) =>
+    request<ClipDetail>(`/api/clips/${clipId}/frames/delete-range`, post({ start, end })),
+  restoreFrames: (clipId: string, start: number, end: number) =>
+    request<ClipDetail>(`/api/clips/${clipId}/frames/restore-range`, post({ start, end })),
   prune: (clipId: string, from: number) => request<ClipDetail>(`/api/clips/${clipId}/prune`, post({ from })),
   clearRange: (clipId: string, start: number, end: number, objects: ObjectSelection = "all") =>
     request<ClipDetail>(`/api/clips/${clipId}/clear-range`, post({ start, end, objects })),

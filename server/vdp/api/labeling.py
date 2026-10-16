@@ -61,6 +61,11 @@ class RangeBody(BaseModel):
     objects: ObjectSelection = "all"
 
 
+class FrameRangeBody(BaseModel):
+    start: int = Field(ge=0)
+    end: int = Field(ge=0)
+
+
 class RelabelBody(BaseModel):
     class_id: int
 
@@ -136,6 +141,16 @@ def delete_frame(clip_id: str, idx: int, state: State) -> dict:
 @router.post("/frames/{idx}/restore")
 def restore_frame(clip_id: str, idx: int, state: State) -> dict:
     return clip_detail(state, frame_ops.restore_frame(state.store, clip_id, idx))
+
+
+@router.post("/frames/delete-range")
+def delete_frames(clip_id: str, body: FrameRangeBody, state: State) -> dict:
+    return clip_detail(state, frame_ops.set_range_deleted(state.store, clip_id, body.start, body.end, True))
+
+
+@router.post("/frames/restore-range")
+def restore_frames(clip_id: str, body: FrameRangeBody, state: State) -> dict:
+    return clip_detail(state, frame_ops.set_range_deleted(state.store, clip_id, body.start, body.end, False))
 
 
 @router.post("/prune")

@@ -35,6 +35,10 @@ that object.
   `object_id` cannot be combined with `class_id` (relabel with the `PATCH` route below instead).
 - `POST /api/clips/{id}/mask` (the brush) takes the same required `object_id` and optional `class_id` and returns
   the object id it wrote to as `object_id`.
+- `POST /api/clips/{id}/frames/delete-range` and `POST /api/clips/{id}/frames/restore-range` take
+  `{"start", "end"}` (inclusive) and delete or restore every frame in that range (frames already in that state are
+  left alone; files are never removed) → 200 with the clip detail; 400 when `start > end` or a frame is outside the
+  clip; 404 for an unknown clip.
 - `POST /api/clips/{id}/propagate` and `POST /api/clips/{id}/clear-range` take an `objects` field: `"all"`
   (default) or a non-empty list of object ids. Propagate resolves and validates the objects up front, so an
   unknown id is a 404 and a listed object with no mask on `from_frame` is a 400, both before the job starts, not

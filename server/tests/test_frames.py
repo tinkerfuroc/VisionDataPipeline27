@@ -2,7 +2,7 @@ import pytest
 from conftest import OBJ
 from vdp.engine.fake import FakeEngine
 from vdp.labeling.errors import BadRequest
-from vdp.labeling.frames import clear_range, delete_frame, prune_from, restore_frame
+from vdp.labeling.frames import clear_range, delete_frame, prune_from, restore_frame, set_range_deleted
 from vdp.labeling.prompts import PromptSpec, accept
 from vdp.labeling.propagate import run_propagation
 from vdp.store import NotFound
@@ -27,6 +27,20 @@ def test_prune_from_marks_the_tail(store, make_clip):
     _, clip = make_clip(n_frames=6)
     delete_frame(store, clip.id, 0)
     assert prune_from(store, clip.id, 3).deleted_frames == [0, 3, 4, 5]
+
+
+def test_range_delete_and_restore(store, make_clip):
+    _, clip = make_clip(n_frames=8)
+    delete_frame(store, clip.id, 1)
+    assert set_range_deleted(store, clip.id, 2, 4, True).deleted_frames == [1, 2, 3, 4]
+    assert set_range_deleted(store, clip.id, 0, 3, False).deleted_frames == [4]  # already-kept frames are fine
+    assert store.frame_path(clip.id, 3).is_file()
+    assert set_range_deleted(store, clip.id, 5, 5, True).deleted_frames == [4, 5]
+    with pytest.raises(BadRequest, match="after"):
+        set_range_deleted(store, clip.id, 4, 2, True)
+    with pytest.raises(BadRequest, match="out of range"):
+        set_range_deleted(store, clip.id, 6, 8, True)
+    assert store.read_clip(clip.id).deleted_frames == [4, 5]  # a refused request changes nothing
 
 
 def test_index_validation(store, make_clip):

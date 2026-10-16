@@ -36,6 +36,13 @@ def restore_frame(store: ProjectStore, clip_id: str, idx: int) -> Clip:
     return _set_deleted(store, clip_id, range(idx, idx + 1), False)
 
 
+def set_range_deleted(store: ProjectStore, clip_id: str, start: int, end: int, deleted: bool) -> Clip:
+    """Delete (or restore) frames start..end, inclusive. Frames already in that state are left as they are."""
+    if start > end:
+        raise BadRequest(f"start {start} is after end {end}")
+    return _set_deleted(store, clip_id, range(start, end + 1), deleted)
+
+
 def prune_from(store: ProjectStore, clip_id: str, from_idx: int) -> Clip:
     clip = store.read_clip(clip_id)
     _check(clip, from_idx)

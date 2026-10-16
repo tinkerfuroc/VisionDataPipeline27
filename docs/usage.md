@@ -70,7 +70,9 @@ with the mouse wheel. Clicking a lane (or its name) selects that class: its lowe
 starts a new object of it, same as the class select — clicking the class already active does nothing. Hovering a
 frame lists every class's state on it. The Propagate panel runs **All objects** (every object with a mask on the
 current frame; the others are named as skipped) or **Selected** only; lost objects are named one by one. Cleanup's
-"Clear masks" acts on the **Active object** (default) or **All objects**. `K`, `G` and "has a mask here" follow the
+"Clear masks" acts on the **Active object** (default) or **All objects**. With a range marked, Cleanup also offers
+**Delete frames** / **Restore frames** for the whole range (counting how many frames each would change); the mark
+stays afterwards, so the other button undoes it at once. `K`, `G` and "has a mask here" follow the
 active object's own lane, not its class's.
 
 ## Hiding confusing areas (regions)

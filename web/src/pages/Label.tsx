@@ -299,6 +299,15 @@ export function Label() {
     () => cleanup(state === "deleted" ? api.restoreFrame(clipId, frame) : api.deleteFrame(clipId, frame), false),
     [cleanup, state, clipId, frame],
   );
+  // the mark stays after a range delete / restore, so the opposite button undoes it at once
+  const deleteRange = useCallback(
+    (start: number, end: number) => cleanup(api.deleteFrames(clipId, start, end), false),
+    [cleanup, clipId],
+  );
+  const restoreRange = useCallback(
+    (start: number, end: number) => cleanup(api.restoreFrames(clipId, start, end), false),
+    [cleanup, clipId],
+  );
   const prune = useCallback(() => {
     if (window.confirm(`Delete frame ${frame} and every frame after it?`)) cleanup(api.prune(clipId, frame), false);
   }, [cleanup, clipId, frame]);
@@ -644,6 +653,8 @@ export function Label() {
             onToggleDelete={toggleDelete}
             onPrune={prune}
             onClearRange={clearRange}
+            onDeleteRange={deleteRange}
+            onRestoreRange={restoreRange}
           />
         </aside>
       </div>

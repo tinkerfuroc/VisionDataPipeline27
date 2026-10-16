@@ -11,7 +11,7 @@ type Props = ComponentProps<typeof CleanupPanel>;
 const props = (over: Partial<Props> = {}): Props => ({
   frame: 0, states: S("kmmde"), lanes: [S("kmmde")], scope: "active", activeLabel: "#1 cup", range: [0, 4],
   clearBlockedReason: null, lockReason: null, error: null, onScope: vi.fn(), onRange: vi.fn(), onToggleDelete: vi.fn(),
-  onPrune: vi.fn(), onClearRange: vi.fn(), ...over,
+  onPrune: vi.fn(), onClearRange: vi.fn(), onDeleteRange: vi.fn(), onRestoreRange: vi.fn(), ...over,
 });
 const group = () => within(screen.getByRole("group", { name: "Objects to clear" }));
 
@@ -36,5 +36,24 @@ describe("CleanupPanel", () => {
     expect(group().getByRole("radio", { name: "Active object" })).toBeTruthy();
     expect((screen.getByRole("button", { name: "Clear masks in frames 0 to 4" }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByText("There is nothing to clear in frames 0 to 4.")).toBeTruthy();
+  });
+  it("deletes or restores the whole marked range, counting what would change", () => {
+    const p = props({ range: [1, 4] }); // states k m m d e: frames 1..4 hold 3 kept frames and 1 deleted
+    render(<CleanupPanel {...p} />);
+    expect(screen.getByText("In frames 1 to 4: 3 frames to delete, 1 deleted frame to restore.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Delete frames 1 to 4" }));
+    expect(p.onDeleteRange).toHaveBeenCalledWith(1, 4);
+    fireEvent.click(screen.getByRole("button", { name: "Restore frames 1 to 4" }));
+    expect(p.onRestoreRange).toHaveBeenCalledWith(1, 4);
+  });
+  it("disables what would change nothing, and hides the range buttons with no range marked", () => {
+    const { rerender } = render(<CleanupPanel {...props({ range: [1, 2] })} />);
+    expect((screen.getByRole("button", { name: "Restore frames 1 to 2" }) as HTMLButtonElement).disabled).toBe(true);
+    rerender(<CleanupPanel {...props({ range: [3, 3] })} />);
+    expect((screen.getByRole("button", { name: "Delete frame 3" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Restore frame 3" }) as HTMLButtonElement).disabled).toBe(false);
+    rerender(<CleanupPanel {...props({ range: null })} />);
+    expect(screen.queryByRole("button", { name: /^Delete frames? \d/ })).toBeNull();
+    expect(screen.getByRole("button", { name: "Delete frame" })).toBeTruthy(); // the single-frame toggle stays
   });
 });

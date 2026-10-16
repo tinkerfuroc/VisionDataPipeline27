@@ -27,11 +27,14 @@ type Props = {
   onToggleDelete: () => void;
   onPrune: () => void;
   onClearRange: (start: number, end: number) => void;
+  /** delete / restore every frame of the marked range (shown only while a range is marked) */
+  onDeleteRange: (start: number, end: number) => void;
+  onRestoreRange: (start: number, end: number) => void;
 };
 
 export function CleanupPanel({
   frame, states, lanes, scope, activeLabel, onScope, range, clearBlockedReason, lockReason, error, onRange,
-  onToggleDelete, onPrune, onClearRange,
+  onToggleDelete, onPrune, onClearRange, onDeleteRange, onRestoreRange,
 }: Props) {
   const last = Math.max(0, states.length - 1);
   const clampIndex = (v: string) => Math.max(0, Math.min(last, Math.floor(Number(v)) || 0));
@@ -53,6 +56,10 @@ export function CleanupPanel({
     ...(keyframes > 0 ? [plural(keyframes, "keyframe", "keyframes")] : []),
     ...(deleted > 0 ? [`any mask under the ${plural(deleted, "deleted frame", "deleted frames")}`] : []),
   ];
+  // frames of the marked range that Delete / Restore would actually change
+  const inRange = valid ? states.slice(start, end + 1) : [];
+  const toRestore = inRange.filter((s) => s === "deleted").length;
+  const toDelete = inRange.length - toRestore;
   const outcome = !valid
     ? "The first frame must not come after the last."
     : parts.length === 0
@@ -71,8 +78,8 @@ export function CleanupPanel({
         </summary>
         <div className="mt-2 flex flex-col gap-2">
           <p className="note">
-            To clear masks from a stretch of frames, mark it first: hold <kbd>Shift</kbd> and drag along the timeline,
-            or press <kbd>[</kbd> and <kbd>]</kbd> on its first and last frame.
+            To clear masks from a stretch of frames, or delete or restore it, mark it first: hold <kbd>Shift</kbd> and
+            drag along the timeline, or press <kbd>[</kbd> and <kbd>]</kbd> on its first and last frame.
           </p>
           <div className="flex items-center gap-1">
             <input aria-label="Range start" type="number" min={0} max={last} className="field w-16" value={start}
@@ -99,6 +106,25 @@ export function CleanupPanel({
           </button>
           <p className="note">{lockReason ?? clearBlockedReason ?? outcome}</p>
 
+          {range !== null && (
+            <>
+              <div className="mt-1 flex gap-1">
+                <button type="button" className="btn flex-1" disabled={!valid || toDelete === 0 || lockReason !== null}
+                  onClick={() => onDeleteRange(start, end)}>
+                  Delete {where}
+                </button>
+                <button type="button" className="btn flex-1" disabled={!valid || toRestore === 0 || lockReason !== null}
+                  onClick={() => onRestoreRange(start, end)}>
+                  Restore {where}
+                </button>
+              </div>
+              <p className="note">
+                {!valid
+                  ? "The first frame must not come after the last."
+                  : `In ${where}: ${plural(toDelete, "frame", "frames")} to delete, ${plural(toRestore, "deleted frame", "deleted frames")} to restore.`}
+              </p>
+            </>
+          )}
           <div className="mt-1 flex gap-1">
             <button type="button" aria-keyshortcuts="Delete" className="btn flex-1" disabled={lockReason !== null} onClick={onToggleDelete}>
               {states[frame] === "deleted" ? "Restore frame" : "Delete frame"} <kbd aria-hidden>Del</kbd>

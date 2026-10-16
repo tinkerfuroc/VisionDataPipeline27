@@ -437,3 +437,16 @@ def test_new_object_accept_with_an_unknown_class_writes_nothing(tmp_path):
         assert bad.status_code == 400
         after = client.get(f"/api/clips/{cid}").json()
         assert after["states"] == before["states"] and after["clip"]["objects"] == before["clip"]["objects"]
+
+
+def test_frame_range_delete_and_restore_routes(tmp_path):
+    with _client(tmp_path, FakeEngine()) as client:
+        cid = _clip(client, tmp_path, n=10)
+        r = client.post(f"/api/clips/{cid}/frames/delete-range", json={"start": 2, "end": 5})
+        assert r.status_code == 200 and r.json()["clip"]["deleted_frames"] == [2, 3, 4, 5]
+        assert r.json()["states"][3] == "deleted"
+        r = client.post(f"/api/clips/{cid}/frames/restore-range", json={"start": 4, "end": 9})
+        assert r.json()["clip"]["deleted_frames"] == [2, 3]
+        assert client.post(f"/api/clips/{cid}/frames/delete-range", json={"start": 5, "end": 2}).status_code == 400
+        assert client.post(f"/api/clips/{cid}/frames/delete-range", json={"start": 0, "end": 10}).status_code == 400
+        assert client.post("/api/clips/nope/frames/delete-range", json={"start": 0, "end": 1}).status_code == 404

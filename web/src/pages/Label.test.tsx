@@ -24,6 +24,8 @@ vi.mock("../api/rest", async (original) => ({
     deleteFrame: vi.fn(),
     restoreFrame: vi.fn(),
     prune: vi.fn(),
+    deleteFrames: vi.fn(),
+    restoreFrames: vi.fn(),
     clearRange: vi.fn(),
     getJob: vi.fn(),
     setMask: vi.fn(),
@@ -549,6 +551,19 @@ describe("Label page (propagation, cleanup, keyboard)", () => {
     fireEvent.change(screen.getByLabelText("Range end"), { target: { value: "9" } });
     fireEvent.click(screen.getByRole("button", { name: /Clear masks/ }));
     await waitFor(() => expect(api.clearRange).toHaveBeenCalledWith("c1", 5, 9, [1]));
+  });
+
+  it("deletes and restores a marked range of frames, keeping the mark", async () => {
+    vi.mocked(api.getClip).mockResolvedValue(detail);
+    vi.mocked(api.deleteFrames).mockResolvedValue(detail);
+    vi.mocked(api.restoreFrames).mockResolvedValue(detail);
+    renderLabel();
+    await screen.findByText("bench.mp4");
+    fireEvent.change(screen.getByLabelText("Range start"), { target: { value: "5" } });
+    fireEvent.change(screen.getByLabelText("Range end"), { target: { value: "9" } });
+    fireEvent.click(screen.getByRole("button", { name: "Delete frames 5 to 9" }));
+    await waitFor(() => expect(api.deleteFrames).toHaveBeenCalledWith("c1", 5, 9));
+    expect((screen.getByLabelText("Range start") as HTMLInputElement).value).toBe("5"); // still marked
   });
 });
 
