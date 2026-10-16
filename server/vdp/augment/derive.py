@@ -194,7 +194,8 @@ def _cutouts_and_sizes(
     """
     per_object = "coco" in formats
     by_stem = _coco_train_objects(source_dir) if per_object else {}
-    stems = sorted(p.stem for p in (source_dir / "masks" / "masks" / "train").glob("*.png"))
+    # sorted paths, not stems: "a-b.png" < "a.png" but "a" < "a-b" (composites index this order)
+    stems = [p.stem for p in sorted((source_dir / "masks" / "masks" / "train").glob("*.png"))]
     chunks = [stems[i:i + UNIT_STEMS] for i in range(0, len(stems), UNIT_STEMS)]
     units = [(source_dir, chunk, per_object, {s: by_stem[s] for s in chunk if s in by_stem}, min_area_px)
              for chunk in chunks]

@@ -770,3 +770,14 @@ def test_cancel_is_passed_to_the_unit_runner(store, make_clip, tmp_path):
     src = _export(store, project, clip, formats, tmp_path / "data")
     with pytest.raises(ExportCancelled):
         _cutouts_and_sizes(Path(src["path"]), formats, 64, lambda: None, workers=1, cancel=lambda: True)
+
+
+def test_cutout_frames_keep_the_sorted_path_order(tmp_path):
+    # sorted paths, not sorted stems: "a-b.png" < "a.png" ('-' < '.') although "a" < "a-b"; composites pick a
+    # frame size by index, so the order must stay the one the serial loop used
+    masks = tmp_path / "masks" / "masks" / "train"
+    masks.mkdir(parents=True)
+    for stem, (w, h) in {"a": (10, 20), "a-b": (30, 40)}.items():
+        cv2.imwrite(str(masks / f"{stem}.png"), np.zeros((h, w), np.uint8))
+    _cutouts, sizes, _mode = _cutouts_and_sizes(tmp_path, ["yolo_seg", "masks"], 0, lambda: None, workers=1)
+    assert sizes == [(30, 40), (10, 20)]
