@@ -1,4 +1,5 @@
-"""Sampled epochs in the training worker (vdp.train.sampling): an Ultralytics SegmentationTrainer subclass, passed as
+"""Sampled epochs in the training worker (vdp.train.sampling): an Ultralytics SegmentationTrainer (or, for a detection
+model, DetectionTrainer) subclass, passed as
 `model.train(trainer=...)`, whose train loader hands out one slice of the train set per epoch and whose final
 evaluation of best.pt runs on the whole val split while the per-epoch validation uses the run's fixed subset.
 
@@ -77,13 +78,17 @@ class SliceFeed:
 
 
 def sampled_trainer(*, train_images_per_epoch: int | None, seed: int, full_val: str | None,
-                    final_val_path: Path | None):
+                    final_val_path: Path | None, task: str = "segment"):
     """The trainer class for `model.train(trainer=...)`: slices of `train_images_per_epoch` (None: whole epochs) and,
     with `full_val` (the export's val images dir, while data.yaml's `val` is the run's subset), a final evaluation of
-    best.pt on the whole val split whose metrics are written to `final_val_path`."""
-    from ultralytics.models.yolo.segment import SegmentationTrainer
+    best.pt on the whole val split whose metrics are written to `final_val_path`. `task` ("segment" or "detect") picks
+    the Ultralytics trainer it extends; everything overridden here lives in their common base."""
+    if task == "detect":
+        from ultralytics.models.yolo.detect import DetectionTrainer as base
+    else:
+        from ultralytics.models.yolo.segment import SegmentationTrainer as base
 
-    class SampledTrainer(SegmentationTrainer):
+    class SampledTrainer(base):
         def __init__(self, *args, **kwargs) -> None:
             super().__init__(*args, **kwargs)
             self.slice_feed: SliceFeed | None = None

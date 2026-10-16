@@ -511,7 +511,7 @@ def test_new_sampled_run_scales_the_schedule_and_validates_on_a_fixed_subset(tmp
     assert data["val"] == str(subset) and data["train"] == "images/train"
     assert len(list(subset.iterdir())) == 3
     full_val = str((Path(data["path"]) / "images" / "val").resolve())
-    assert made == [{"train_images_per_epoch": 4, "seed": 5, "full_val": full_val,
+    assert made == [{"train_images_per_epoch": 4, "seed": 5, "full_val": full_val, "task": "segment",
                      "final_val_path": run_dir / "final_val.json"}]
 
 
@@ -675,3 +675,40 @@ def test_resume_onto_whole_train_epochs_resets_close_mosaic(tmp_path, monkeypatc
     monkeypatch.setattr(worker, "_predict", lambda rd, r, p: None)
     assert worker.train(run_dir) == 0
     assert calls["train_kwargs"]["close_mosaic"] == 10 and "warmup_epochs" not in calls["train_kwargs"]
+
+
+@pytest.mark.parametrize("det, used", [(True, "yolo_det"), (False, "yolo_seg")])
+def test_a_detection_run_trains_on_yolo_det_or_falls_back_to_yolo_seg(tmp_path, monkeypatch, det, used):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    export_dir = make_export(tmp_path, det=det)
+    run = {"export_dir": str(export_dir), "model": "yolo26n", "task": "detect", "data_format": used,
+           "resume": False, "finish": False,
+           "params": {"epochs": 2, "imgsz": 320, "batch": 2, "patience": 30, "workers": 0, "seed": 0}}
+    (run_dir / "run.json").write_text(json.dumps(run))
+    calls = _install_fake_yolo(monkeypatch)
+    monkeypatch.setattr(worker, "_predict", lambda rd, r, p: None)
+
+    assert worker.train(run_dir) == 0
+
+    assert calls["init_path"] == "yolo26n.pt"
+    assert yaml.safe_load((run_dir / "data.yaml").read_text())["path"] == str((export_dir / used).resolve())
+
+
+def test_a_sampled_detection_run_gets_a_detection_trainer(tmp_path, monkeypatch):
+    run_dir = _sampled_run(tmp_path, model="yolo26n", task="detect")
+    made = _fake_sampled_trainer(monkeypatch)
+    _install_fake_yolo(monkeypatch)
+    monkeypatch.setattr(worker, "_predict", lambda rd, r, p: None)
+    assert worker.train(run_dir) == 0
+    assert made[0]["task"] == "detect"
+
+
+def test_instances_from_a_detection_result_are_boxes():
+    result = SimpleNamespace(
+        masks=None,
+        boxes=SimpleNamespace(xyxyn=np.array([[0.1, 0.2, 0.5, 0.6]]), cls=np.array([1.0]), conf=np.array([0.8])),
+    )
+    out = instances_from_result(result)
+    assert out == [{"class_id": 1, "score": 0.8, "box": [0.1, 0.2, 0.5, 0.6],
+                    "polygons": [[0.1, 0.2, 0.5, 0.2, 0.5, 0.6, 0.1, 0.6]]}]

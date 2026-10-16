@@ -96,3 +96,12 @@ def test_mask_iou_cases():
     assert mask_iou([], [SQ], 10, 10) == 0.0
     assert mask_iou([SQ], [SQ], 10, 10) == 1.0
     assert mask_iou([SQ], [FULL], 10, 10) == 0.6
+
+
+def test_a_detection_runs_best_epoch_and_summary_use_box_map(tmp_path):
+    (tmp_path / "train").mkdir()
+    (tmp_path / "train" / "results.csv").write_text(
+        "epoch,time,metrics/mAP50(B),metrics/mAP50-95(B)\n1,5,0.6,0.4\n2,9,0.7,0.5\n3,12,0.65,0.45\n")
+    s = run_summary(tmp_path)
+    assert s["epoch"] == 2 and s["box_map50_95"] == 0.5 and s["box_map50"] == 0.7
+    assert s["mask_map50_95"] is None and s["mask_map50"] is None

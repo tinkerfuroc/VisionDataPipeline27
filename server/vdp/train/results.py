@@ -42,7 +42,8 @@ def read_metrics(run_dir: Path) -> list[dict]:
 def best_row(rows: list[dict]) -> dict | None:
     if not rows:
         return None
-    return max(rows, key=lambda r: (r.get(MASK_MAP, -1.0), r["epoch"]))
+    key = MASK_MAP if any(MASK_MAP in r for r in rows) else BOX_MAP  # a detection run has box metrics only
+    return max(rows, key=lambda r: (r.get(key, -1.0), r["epoch"]))
 
 
 def summarize(rows: list[dict]) -> dict | None:

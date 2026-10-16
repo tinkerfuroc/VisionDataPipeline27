@@ -18,7 +18,7 @@ from pathlib import Path
 
 import yaml
 
-from .models import train_overrides
+from .models import model_task, run_data_dir, train_overrides
 from .results import FINAL_VAL, SPEED, run_summary
 from .runs import atomic_write_json, best_weights, last_weights, onnx_weights, read_json
 from .sampled_trainer import sampled_trainer
@@ -69,7 +69,7 @@ def prepare_data(run_dir: Path, run: dict, *, rewrite: bool) -> tuple[Path, str 
     the final evaluation, or None without a subset). Deterministic, so a resume finds the same subset (kept as is)."""
     data = run_dir / "data.yaml"
     if rewrite or not data.is_file():
-        write_data_yaml(Path(run["export_dir"]) / "yolo_seg", data)
+        write_data_yaml(run_data_dir(run), data)
     size = (run.get("sampling") or {}).get("val_images_per_epoch")
     if not size:
         return data, None
@@ -97,7 +97,7 @@ def _sampling_args(run: dict, run_dir: Path, full_val: str | None, *, resume: bo
     if per_epoch or full_val is not None:
         args["trainer"] = sampled_trainer(
             train_images_per_epoch=per_epoch, seed=run["params"].get("seed", 0), full_val=full_val,
-            final_val_path=run_dir / FINAL_VAL,
+            final_val_path=run_dir / FINAL_VAL, task=model_task(run.get("model", "")),
         )
     if per_epoch:
         args["close_mosaic"] = plan["close_mosaic"]
@@ -151,9 +151,13 @@ class ProgressWriter:
 
 def instances_from_result(result) -> list[dict]:
     """An Ultralytics Results object as preview instances (normalised polygons, rounded to
-    5 places)."""
-    if result.masks is None or result.boxes is None:
+    5 places). A detection result (no masks) gives its boxes: `box` [x1, y1, x2, y2] plus the
+    same rectangle as the polygon, so the gallery's IoU and filters work unchanged."""
+    if result.boxes is None:
         return []
+    if result.masks is None:
+        return [_box_instance(xyxy, cls, conf) for xyxy, cls, conf in zip(
+            result.boxes.xyxyn.tolist(), result.boxes.cls.tolist(), result.boxes.conf.tolist())]
     out = []
     for poly, cls, conf in zip(
         result.masks.xyn, result.boxes.cls.tolist(), result.boxes.conf.tolist()
@@ -165,6 +169,12 @@ def instances_from_result(result) -> list[dict]:
             {"class_id": int(cls), "score": round(float(conf), 4), "polygons": [flat]}
         )
     return out
+
+
+def _box_instance(xyxy, cls, conf) -> dict:
+    x1, y1, x2, y2 = (round(float(v), 5) for v in xyxy)
+    return {"class_id": int(cls), "score": round(float(conf), 4), "box": [x1, y1, x2, y2],
+            "polygons": [[x1, y1, x2, y1, x2, y2, x1, y2]]}
 
 
 def _raise_interrupt(signum, frame) -> None:
@@ -328,7 +338,7 @@ def _attach_fail_on_oom(model, seen: dict) -> None:
 def _predict(run_dir: Path, run: dict, progress: ProgressWriter) -> None:
     from ultralytics import YOLO
 
-    images_dir = Path(run["export_dir"]) / "yolo_seg" / "images" / "val"
+    images_dir = run_data_dir(run) / "images" / "val"
     names = sorted(
         p.name for p in images_dir.iterdir() if p.suffix.lower() in _IMAGE_SUFFIXES
     )
@@ -340,7 +350,7 @@ def _predict(run_dir: Path, run: dict, progress: ProgressWriter) -> None:
             str(images_dir / name),
             imgsz=run["params"]["imgsz"],
             conf=PREDICT_CONF,
-            retina_masks=True,
+            retina_masks=model_task(run["model"]) == "segment",
             device=0,
             verbose=False,
         )[0]
@@ -417,7 +427,7 @@ def train(run_dir: Path) -> int:
             transforms = augmentation_transforms(photometric=photometric, lighting=lighting)
             if transforms is not None:
                 overrides["augmentations"] = transforms
-            drop_unloadable_caches(Path(run["export_dir"]) / "yolo_seg")
+            drop_unloadable_caches(run_data_dir(run))
             drop_unloadable_caches(run_dir / VAL_SUBSET_DIR)
             (run_dir / FINAL_VAL).unlink(missing_ok=True)
             overrides.update(_sampling_args(run, run_dir, full_val, resume=False))

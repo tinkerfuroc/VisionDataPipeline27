@@ -269,3 +269,14 @@ def test_auto_optimizer_counts_the_sampled_iterations(monkeypatch):
     trainer.__dict__.update(slice_feed=None)
     trainer.build_optimizer(None, iterations=21900)
     assert seen[-1] == 21900  # whole epochs: Ultralytics' own count
+
+
+def test_the_trainer_class_follows_the_task():
+    pytest.importorskip("ultralytics")
+    from ultralytics.models.yolo.detect import DetectionTrainer
+    from ultralytics.models.yolo.segment import SegmentationTrainer
+
+    det = sampled_trainer(train_images_per_epoch=4, seed=0, full_val=None, final_val_path=None, task="detect")
+    seg = sampled_trainer(train_images_per_epoch=4, seed=0, full_val=None, final_val_path=None)
+    assert issubclass(det, DetectionTrainer) and not issubclass(det, SegmentationTrainer)
+    assert issubclass(seg, SegmentationTrainer)
