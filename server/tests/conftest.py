@@ -54,3 +54,16 @@ def make_clip(store, tmp_path):
         return store.read_project(project.id), clip
 
     return _make
+
+
+@pytest.fixture(autouse=True)
+def _no_vram_probe(monkeypatch):
+    """No test starts a real VRAM probe on a GPU: a VramEstimator without an injected `runner=` fails instead."""
+    from vdp.train import vram
+
+    def refuse(weights_dir):
+        def run(*args):
+            raise AssertionError("a test tried to start a real VRAM probe; inject a runner")
+        return run
+
+    monkeypatch.setattr(vram, "default_runner", refuse)
