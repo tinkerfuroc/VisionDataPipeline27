@@ -242,6 +242,39 @@ Defaults: 100 epochs, early stop after 30 epochs without improvement, 960 px, ba
 Ultralytics' default augmentation. Metrics come from `results.csv`; the comparison table ranks runs by the best mask
 mAP50-95 epoch. ONNX export (`best.onnx`, static, square at the run's image size, 960 × 960 by default) runs on the run's GPU queue.
 
+### Shorter epochs: images per epoch
+
+On a large export one epoch takes a long time (28 000 images at 960 px are about 10 minutes on an RTX 3080 Ti), so
+validation, the choice of `best.pt` and early stopping only happen that often. Two optional fields under the training
+params make epochs shorter (empty = all images, as before; `vdp train --images-per-epoch N --val-images-per-epoch M`
+from the terminal):
+
+- **Images per epoch** (at least the batch size): each epoch trains on the next N images of the train set. The whole
+  set is shuffled (with the run's seed) and handed out in consecutive slices, one per epoch, so every image is seen
+  once before any is seen again; then it is shuffled anew. Which slice an epoch gets depends only on the seed, the
+  epoch number and the sizes, so Resume and Continue pick up exactly where training was (Continue keeps the source's
+  epoch counter, on its new export's images; Fine-tune starts again at epoch 1). Augmentation is unchanged (a mosaic
+  still pulls its three extra images from the whole set). Ultralytics' warmup (3 epochs) and "close mosaic" (mosaic
+  off for the last 10 epochs) are measured in epochs; they are scaled by train images / N so they still cover as many
+  images as with whole epochs (never more than the run's epochs; with many short epochs, mosaic may be off for a large
+  share of them, just as for the last 10 whole passes). Patience stays in (short) epochs, which is the point; the LR
+  schedule follows the epochs as before.
+- **Validation images per epoch**: each epoch validates on one fixed subset of M val images, chosen once with the
+  run's seed, so the scores stay comparable from epoch to epoch. Clips keep their share of the val split (a clip is
+  the `<clip_id>_` prefix of an image name), and every class present in the val split is in at least one chosen image.
+  The subset is linked into the run folder (`val_subset/`, with its own label cache; the run's `data.yaml` points at
+  it), so it never touches the export. The final evaluation of `best.pt` at the end of training (and "Mark complete")
+  still runs on the whole val split; those are the metrics in the Runs table and the run detail ("Final, best.pt
+  (epoch N) on all … val images"), saved in the run folder as `final_val.json`. The per-epoch charts are labelled
+  "(val subset of M)", and the validation-predictions gallery still covers every val image.
+
+Under the fields, a live estimate reads e.g. "1 epoch = 7,000 images (≈ 2 min) · 100 epochs ≈ 25 full passes" and
+"Validation: 400 of 1,643 images per epoch (≈ 5 s)". The times come from the newest run of the same model and image
+size on the same GPU: every run records its measured training and validation images per second in `speed.json`
+(after each epoch); without such a run the times are left out. A run trained this way says so in its detail ("Each
+epoch trains on the next 7,000 of 28,000 images (warmup 12 epochs, mosaic off for the last 40). …"). Training stays
+on one GPU per run, as always.
+
 ## Train from a previous run on new data
 
 Any run can be trained further on a *different* export, as long as that export has exactly the same classes (same

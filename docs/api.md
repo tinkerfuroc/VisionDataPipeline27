@@ -13,6 +13,22 @@ request also returns 409 with `job_id: "interactive"` if a prompt/accept/clear-r
 retry. Deleting a clip also returns 409 (with the running `job_id`) while a GPU job runs, so a delete can
 never race a propagation's writes. Cancelling an import job removes the partial clip it had started.
 
+## Sampled epochs (training params)
+
+`params` (in `POST /api/train/runs` and, for `"finetune"`, `POST /api/train/runs/{id}/from-checkpoint`) takes two
+optional fields, both absent or `null` for "all images" (training as before): `train_images_per_epoch` (at least the
+`batch`, else 422) and `val_images_per_epoch` (at least 1). A size at or above the export's split is not an error: it
+means all of it. `GET /api/train/status` lists them as `null` in `defaults`. A run stores its plan for its export in
+`run.json` and the run view as `sampling`: `null` without sampling, else `{train_images, train_images_per_epoch,
+val_images, val_images_per_epoch}` (a size is `null` for "all") plus, with a train size, the scaled `warmup_epochs`
+and `close_mosaic` it trains with. A "continue" run keeps the source's params and works the plan out for its new
+export; a resume keeps the run's plan. The run view also carries `speed`: `{train_images_per_s, val_images_per_s,
+batch, imgsz}` as the worker last measured them (training images per second over an epoch, validation excluded;
+images per second while validating), or `null` before its first epoch. For a run validated on a subset, `best`'s
+mAPs come from the final evaluation of `best.pt` on the whole val split and `best.val_images` says how many images
+that was (`best.epoch` is still the best epoch on the subset); the per-epoch `metrics` rows are on the subset.
+`vdp train` takes the same sizes as `--images-per-epoch` and `--val-images-per-epoch`.
+
 ## Pausing SAM3 for training
 
 `POST /api/train/runs`, `POST /api/train/runs/{id}/from-checkpoint`, `.../resume` and `.../complete` accept an
