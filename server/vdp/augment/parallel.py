@@ -49,13 +49,15 @@ def _init_worker(parent_pid: int, initializer: Callable[..., None] | None, inita
 def run_units(
     fn: Callable[[T], R], units: Sequence[T], *, workers: int | None, weight: Callable[[T], int] = lambda u: 1,
     on_done: Callable[[int], None] = lambda n: None, cancel: Callable[[], bool] = lambda: False,
-    initializer: Callable[..., None] | None = None, initargs: tuple = (),
-) -> list[R]:
+    initializer: Callable[..., None] | None = None, initargs: tuple = (), deadline: float | None = None,
+) -> list[R | None]:
     """Run `fn(unit)` for every unit; return results in unit order. `fn`/`initializer` must be module-level
     (picklable). One worker (or no units) runs inline. `on_done(weight(unit))` follows each unit; `cancel()` is
     checked between results and every CANCEL_POLL_S while units run; a True drops queued units, waits for the
     running ones and raises ExportCancelled. A unit's exception propagates once the pool is shut down. Pool
-    workers exit if this process dies, and run niced with one OpenCV thread (see `_init_worker`)."""
+    workers exit if this process dies, and run niced with one OpenCV thread (see `_init_worker`).
+    `deadline` (a time.monotonic() value) is a soft stop: once reached, queued units are dropped, running ones
+    finish and are kept, and the result has None for every dropped unit; no exception. Cancel wins over it."""
     n = min(workers or default_workers(), len(units))
     if n <= 1:
         if initializer:
@@ -64,6 +66,9 @@ def run_units(
         for unit in units:
             if cancel():
                 raise ExportCancelled()
+            if deadline is not None and time.monotonic() >= deadline:
+                results.extend([None] * (len(units) - len(results)))
+                break
             results.append(fn(unit))
             on_done(weight(unit))
         return results
@@ -83,6 +88,13 @@ def run_units(
                 on_done(weight(units[futures[fut]]))
             if pending and cancel():  # a cancel after the last unit finished is too late
                 raise ExportCancelled()
+            if pending and deadline is not None and time.monotonic() >= deadline:
+                pool.shutdown(wait=True, cancel_futures=True)  # running units finish
+                for fut in pending:
+                    if not fut.cancelled():
+                        results[futures[fut]] = fut.result()
+                        on_done(weight(units[futures[fut]]))
+                break
     except BaseException:
         pool.shutdown(wait=True, cancel_futures=True)
         raise
