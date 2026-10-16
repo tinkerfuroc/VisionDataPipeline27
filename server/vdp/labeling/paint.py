@@ -13,6 +13,7 @@ from ..store import Clip, Keyframe, ProjectStore, Prompt, now_iso
 from .errors import BadRequest
 from .objects import resolve_target
 from .ranges import subtract_range
+from .regions import apply_to_mask, check_regions, region_for
 
 
 def decode_mask_png(b64: str) -> np.ndarray:
@@ -45,6 +46,11 @@ def set_mask(
             raise BadRequest(f"frame {frame} is deleted; restore it before labeling")
         if mask.shape != (clip.height, clip.width):
             raise BadRequest(f"mask is {mask.shape[1]}×{mask.shape[0]}, the clip is {clip.width}×{clip.height}")
+        check_regions(clip)
+        painted_any = bool(mask.any())
+        mask = apply_to_mask(mask, region_for(clip, frame))
+        if object_id is None and painted_any and not mask.any():
+            raise BadRequest("everything painted is in an excluded area")
         if object_id is None and not mask.any():
             raise BadRequest("the mask is empty; paint something first")
         obj = resolve_target(store, clip, object_id, class_id)

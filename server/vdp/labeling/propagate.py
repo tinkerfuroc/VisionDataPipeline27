@@ -15,6 +15,7 @@ from ..store import Clip, LabelObject, NotFound, ProjectStore
 from .errors import BadRequest, PropagationFailed
 from .prefetch import ChunkPrefetcher
 from .ranges import add_range
+from .regions import apply_to_mask, check_regions, region_for
 
 Emit = Callable[[dict], None]
 
@@ -67,6 +68,7 @@ def resolve_participants(
     `from_frame` is BadRequest. Not strict (the job, which re-reads the clip): both are skipped instead, so an object
     deleted between the request and the job's start does not fail the run.
     """
+    check_regions(clip)
     if not 0 <= from_frame < clip.frame_count:
         raise BadRequest(f"frame {from_frame} is out of range 0..{clip.frame_count - 1}")
     if from_frame in clip.deleted_frames:
@@ -84,6 +86,15 @@ def resolve_participants(
             skipped.append(oid)
             continue
         seed = store.read_mask(clip.id, oid, from_frame)
+        if seed is not None:
+            seed = apply_to_mask(seed, region_for(clip, from_frame))
+            if not seed.any():
+                if strict and explicit:
+                    raise BadRequest(
+                        f"object {oid}'s mask on frame {from_frame} lies entirely in an excluded area"
+                    )
+                skipped.append(oid)
+                continue
         if seed is None:
             if strict and explicit:
                 raise BadRequest(
@@ -195,6 +206,12 @@ def _run_direction(
                         if not t.active:
                             continue  # bounded or lost earlier in this chunk: its outputs are ignored
                         mask = masks[t.obj_id]
+                        if mask is not None:
+                            # the run keeps the regions it started with (clip is its snapshot; the prefetcher
+                            # greyed the frames from the same snapshot)
+                            mask = apply_to_mask(mask, region_for(clip, idx))
+                            if not mask.any():
+                                mask = None
                         t.pos += 1
                         covered[t.obj_id].append(idx)
                         if mask is None:

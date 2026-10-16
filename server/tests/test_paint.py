@@ -10,6 +10,7 @@ from vdp.labeling.objects import relabel_object
 from vdp.labeling.paint import decode_mask_png, set_mask
 from vdp.labeling.prompts import PromptSpec, accept
 from vdp.labeling.propagate import run_propagation
+from vdp.store import RegionRange
 from vdp.store.project import encode_mask_png
 
 CLICK = PromptSpec(type="clicks", points=[(30, 30, 1)])
@@ -130,3 +131,14 @@ def test_decode_refuses_a_decompression_bomb_and_reads_alpha_only_masks():
     expected = np.zeros((4, 8), dtype=bool)
     expected[1, 2:6] = True
     assert np.array_equal(got, expected)
+
+
+def test_painted_masks_are_trimmed_to_the_kept_area(store, make_clip):
+    project, clip = make_clip(n_frames=6)
+    clip.regions = [RegionRange(start=0, end=5, blocks=[(10, 10, 20, 30)])]
+    store.write_clip(clip)
+    _, oid = set_mask(store, clip.id, 2, _blob(clip.height, clip.width), object_id=None, class_id=0)
+    mask = store.read_mask(clip.id, oid, 2)
+    assert mask.sum() == 20 * 30 - 20 * 10 and not mask[15, 15]
+    with pytest.raises(BadRequest, match="everything painted is in an excluded area"):
+        set_mask(store, clip.id, 3, _blob(clip.height, clip.width, cols=slice(10, 20)), object_id=None, class_id=0)

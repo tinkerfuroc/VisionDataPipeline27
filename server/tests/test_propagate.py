@@ -11,7 +11,7 @@ from vdp.labeling.frames import restore_frame
 from vdp.labeling.paint import set_mask
 from vdp.labeling.prompts import PromptSpec, accept, create_object
 from vdp.labeling.propagate import plan_indices, resolve_participants, run_propagation
-from vdp.store import Keyframe, NotFound, Prompt, now_iso
+from vdp.store import Keyframe, NotFound, Prompt, RegionRange, now_iso
 
 CLICK = PromptSpec(type="clicks", points=[(30, 30, 1)])  # seed rect x 20:40; FakeEngine shifts +2 px per offset
 KW = {"chunk_size": 8, "min_chunk_size": 4, "lost_after": 3}
@@ -629,3 +629,39 @@ def test_an_object_deleted_before_the_job_starts_is_skipped(store, make_clip):
     store.write_clip(c)
     res = run_propagation(store, eng, clip.id, 0, "forward", objects=[1, 2], **KW)
     assert res.objects == [1] and res.skipped == [2]
+
+
+def _regions(store, clip_id, *regions):
+    clip = store.read_clip(clip_id)
+    clip.regions = list(regions)
+    store.write_clip(clip)
+
+
+def test_propagated_masks_are_trimmed_and_frames_get_grey_input(store, make_clip):
+    eng = FakeEngine()
+    clip = _seeded(store, make_clip, eng, n_frames=12)
+    _regions(store, clip.id, RegionRange(start=0, end=11, blocks=[(36, 0, 50, 60)]))
+    run_propagation(store, eng, clip.id, 0, "forward", **KW)
+    m = store.read_mask(clip.id, OBJ, 2)  # seed x 20:40 shifted +4 -> 24:44, blocked from 36 -> 24:36
+    assert m is not None and not m[:, 36:].any() and m[30, 30]
+
+
+def test_a_mask_emptied_by_trimming_counts_as_not_found(store, make_clip):
+    eng = FakeEngine(dx=10)
+    clip = _seeded(store, make_clip, eng, n_frames=12)
+    # from offset 3 on the shifted rect (x 50:70 and beyond) lies wholly in the block
+    _regions(store, clip.id, RegionRange(start=1, end=11, blocks=[(45, 0, 120, 60)]))
+    result = run_propagation(store, eng, clip.id, 0, "forward", **KW)
+    assert store.read_mask(clip.id, OBJ, 1) is not None
+    assert store.read_mask(clip.id, OBJ, 3) is None
+    assert result.lost_by_direction.get("forward", {}).get(OBJ) is not None
+
+
+def test_an_object_whose_seed_is_wholly_excluded_is_skipped(store, make_clip):
+    eng = FakeEngine()
+    clip = _seeded(store, make_clip, eng, n_frames=12)
+    _regions(store, clip.id, RegionRange(start=0, end=0, blocks=[(15, 15, 45, 45)]))
+    with pytest.raises(BadRequest):  # the only object is skipped: nothing to propagate
+        run_propagation(store, eng, clip.id, 0, "forward", **KW)
+    with pytest.raises(BadRequest, match="excluded"):
+        resolve_participants(store, store.read_clip(clip.id), 0, [OBJ], strict=True)
