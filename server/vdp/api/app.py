@@ -74,6 +74,7 @@ def create_app(
     )
     state.engine_ctl = engine_api.EngineControl(state.engine, state.jobs, state.train)
     state.train.on_gpu_idle = state.engine_ctl.gpu_idle  # reloads SAM3 after a training pause
+    state.train.before_launch = state.vram.stop_probe_on  # a VRAM probe gets off a GPU before a run starts there
     gate = gate_api.GateState(auth_store if auth_store is not None else AuthStore(settings.project.data_root))
 
     @asynccontextmanager

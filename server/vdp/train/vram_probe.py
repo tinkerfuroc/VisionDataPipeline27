@@ -1,23 +1,24 @@
-"""VRAM probe: `python -m vdp.train.vram_probe <model> <imgsz>` (see vram.py for the server side).
+"""VRAM probe: `python -m vdp.train.vram_probe <model> <imgsz> [--objects N]` (see vram.py for the server side).
 
 Started like the train worker -- CUDA_VISIBLE_DEVICES set to one GPU (so it always uses cuda:0) and cwd
 data/train_weights/, where Ultralytics downloads and caches the pretrained checkpoints -- but at low priority. For
 each batch size in BATCHES it runs one real training step on random images and records the peak memory PyTorch
-reserved (`torch.cuda.max_memory_reserved`, the same counter Ultralytics' `GPU_mem` column shows). It stops at the
-first out-of-memory error: that batch size and every larger one are reported as `null` ("doesn't fit").
+reserved (`torch.cuda.max_memory_reserved`, the same counter Ultralytics' `GPU_mem` column shows). Its PyTorch memory
+is capped at the GPU's free memory at start minus HEADROOM_BYTES (reported as `limit_bytes`), and it stops at the
+first out-of-memory error: that batch size and every larger one are reported as `null` ("needs more than the limit").
 
 The training step is the trainer's own, minus the data loader: the model is built the way the segment trainer
 builds it (a fresh SegmentationModel from the checkpoint's yaml with the dataset's class count, then the pretrained
 weights loaded into it, the trainer's default hyper-parameters attached), and each step is a forward pass and the
 model's real segmentation loss under AMP autocast (fp16, as training uses), a GradScaler-scaled backward, gradient
 clipping, an AdamW step (the optimizer Ultralytics' "auto" picks for runs under 10k iterations; it keeps two state
-tensors per weight, more than SGD/MuSGD's one, so it is the conservative choice) and an EMA update. The labels are
-synthetic but shaped exactly as the trainer's collate function produces them (overlapping instance masks at
+tensors per weight, more than SGD/MuSGD's one, so it is the conservative choice; its state is allocated before the
+first measurement) and an EMA update. The labels are synthetic (`--objects` per image) but shaped exactly as the trainer's collate function produces them (overlapping instance masks at
 1/mask_ratio resolution, semantic masks for YOLO26's semantic branch).
 
 Output goes to stdout as lines starting with PREFIX followed by JSON (Ultralytics' own logging is free-form text on
-the same streams): {"type": "start", gpu_name, total_bytes}, one {"type": "batch", batch, bytes} per size, then
-{"type": "done", estimates} or {"type": "error", message}.
+the same streams): {"type": "start", gpu_name, total_bytes, limit_bytes}, one {"type": "batch", batch, bytes} per
+size, then {"type": "done", estimates} or {"type": "error", message}.
 """
 
 from __future__ import annotations
@@ -36,7 +37,10 @@ PREFIX = "VRAM_PROBE "
 # one to a few classes); it changes memory very little, except through YOLO26's semantic-segmentation branch,
 # whose output and one-hot targets have a channel per class, so a few more than usual errs on the safe side.
 PROBE_CLASSES = 4
-PROBE_INSTANCES = 8  # synthetic objects per image: the mask loss runs per matched instance
+PROBE_INSTANCES = 8  # synthetic objects per image unless told (--objects): the mask loss runs per matched instance
+# Memory the probe leaves to everyone else on the GPU (SAM3 allocating for a prompt, say): it caps its own PyTorch
+# allocations at the GPU's free memory at start minus this, so a batch that needs more counts as not fitting.
+HEADROOM_BYTES = 2**30
 _OOM_MARKERS = ("CUBLAS_STATUS_ALLOC_FAILED", "CUDNN_STATUS_INTERNAL_ERROR", "unable to find an engine")
 
 
@@ -67,6 +71,25 @@ def measure_batches(
         if on_result is not None:
             on_result(batch, peak)
     return out
+
+
+def memory_cap(free: int, total: int, headroom: int = HEADROOM_BYTES) -> tuple[int, float]:
+    """(limit bytes, fraction of `total`) for `torch.cuda.set_per_process_memory_fraction`: free memory minus the
+    headroom, never below zero (then nothing fits)."""
+    limit = max(0, min(free - headroom, total))
+    return limit, (limit / total if total > 0 else 0.0)
+
+
+def prime_optimizer(optimizer, params) -> None:
+    """Make the optimizer allocate its state now, with zero gradients, so every measurement includes it: during a
+    measured step GradScaler skips `optimizer.step()` whenever the scaled gradients overflow (common on the first
+    steps), which would leave AdamW's state unallocated."""
+    import torch
+
+    for p in params:
+        p.grad = torch.zeros_like(p)
+    optimizer.step()
+    optimizer.zero_grad(set_to_none=True)
 
 
 def synthetic_batch(batch: int, imgsz: int, *, device, classes: int = PROBE_CLASSES,
@@ -100,7 +123,7 @@ def synthetic_batch(batch: int, imgsz: int, *, device, classes: int = PROBE_CLAS
     }
 
 
-def build_step(model_name: str, imgsz: int) -> Callable[[int], int]:
+def build_step(model_name: str, imgsz: int, objects: int = PROBE_INSTANCES) -> Callable[[int], int]:
     """Load the model as the segment trainer does and return `step(batch) -> peak reserved bytes`."""
     os.environ.setdefault("NO_ALBUMENTATIONS_UPDATE", "1")
     import torch
@@ -124,7 +147,10 @@ def build_step(model_name: str, imgsz: int) -> Callable[[int], int]:
     model.to(device).to(memory_format=torch.channels_last).train()
     for name, p in model.named_parameters():
         p.requires_grad = ".dfl" not in name  # the trainer always freezes the DFL layer
-    optimizer = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=1e-4, fused=True)
+    trainable = [p for p in model.parameters() if p.requires_grad]
+    optimizer = torch.optim.AdamW(trainable, lr=1e-4, fused=True)
+    prime_optimizer(optimizer, trainable)
+    print(f"optimizer state allocated for {len(optimizer.state)} of {len(trainable)} trainable tensors", flush=True)
     scaler = torch.amp.GradScaler("cuda")
     ema = ModelEMA(model)
 
@@ -133,7 +159,7 @@ def build_step(model_name: str, imgsz: int) -> Callable[[int], int]:
         try:
             torch.cuda.empty_cache()
             torch.cuda.reset_peak_memory_stats(device)
-            data = synthetic_batch(batch, imgsz, device=device)
+            data = synthetic_batch(batch, imgsz, device=device, instances=objects)
             with autocast(True):
                 loss, _ = model(data)
             scaler.scale(loss.sum()).backward()
@@ -153,11 +179,15 @@ def build_step(model_name: str, imgsz: int) -> Callable[[int], int]:
     return step
 
 
-def _cuda_device() -> tuple[str, int]:
+def _claim_device() -> tuple[str, int, int]:
+    """(GPU name, total bytes, limit bytes): caps this process's PyTorch memory at what is free now minus the
+    headroom, so the probe never takes memory another process (SAM3) is about to need."""
     import torch
 
-    props = torch.cuda.get_device_properties(0)
-    return props.name, int(props.total_memory)
+    free, total = torch.cuda.mem_get_info(0)
+    limit, fraction = memory_cap(int(free), int(total))
+    torch.cuda.set_per_process_memory_fraction(fraction, 0)
+    return torch.cuda.get_device_properties(0).name, int(total), limit
 
 
 def _say(**event) -> None:
@@ -168,12 +198,13 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m vdp.train.vram_probe")
     parser.add_argument("model")
     parser.add_argument("imgsz", type=int)
+    parser.add_argument("--objects", type=int, default=PROBE_INSTANCES, help="synthetic objects per image")
     args = parser.parse_args(argv)
     os.nice(NICE)  # low priority: a training run or the server must not wait for this
     try:
-        name, total = _cuda_device()
-        _say(type="start", gpu_name=name, total_bytes=total)
-        step = build_step(args.model, args.imgsz)
+        name, total, limit = _claim_device()
+        _say(type="start", gpu_name=name, total_bytes=total, limit_bytes=limit)
+        step = build_step(args.model, args.imgsz, args.objects)
         estimates = measure_batches(step, on_result=lambda b, n: _say(type="batch", batch=b, bytes=n))
     except Exception as e:  # noqa: BLE001 -- reported to the server, which turns it into a job error
         traceback.print_exc()

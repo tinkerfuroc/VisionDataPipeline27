@@ -50,15 +50,19 @@ def test_measure_batches_lets_other_errors_through():
 
 
 def test_main_prints_progress_and_result_lines(monkeypatch, capsys):
-    monkeypatch.setattr(vram_probe, "_cuda_device", lambda: ("NVIDIA Test GPU", 12 * 2**30))
-    monkeypatch.setattr(vram_probe, "build_step", lambda model, imgsz: _step_ooming_at(12, []))
+    monkeypatch.setattr(vram_probe, "_claim_device", lambda: ("NVIDIA Test GPU", 12 * 2**30, 9 * 2**30))
+    built = []
+    monkeypatch.setattr(vram_probe, "build_step",
+                        lambda model, imgsz, objects: built.append((model, imgsz, objects)) or _step_ooming_at(12, []))
     monkeypatch.setattr(vram_probe.os, "nice", lambda n: None)
 
-    assert vram_probe.main(["yolo26n-seg", "640"]) == 0
+    assert vram_probe.main(["yolo26n-seg", "640", "--objects", "16"]) == 0
+    assert built == [("yolo26n-seg", 640, 16)]
 
     lines = [json.loads(line.removeprefix(vram_probe.PREFIX)) for line in capsys.readouterr().out.splitlines()
              if line.startswith(vram_probe.PREFIX)]
-    assert lines[0] == {"type": "start", "gpu_name": "NVIDIA Test GPU", "total_bytes": 12 * 2**30}
+    assert lines[0] == {"type": "start", "gpu_name": "NVIDIA Test GPU", "total_bytes": 12 * 2**30,
+                        "limit_bytes": 9 * 2**30}
     assert [x["batch"] for x in lines if x["type"] == "batch"] == [1, 2, 4, 8, 12]
     assert lines[-1] == {"type": "done", "estimates": [
         {"batch": 1, "bytes": 1000}, {"batch": 2, "bytes": 2000}, {"batch": 4, "bytes": 4000},
@@ -66,9 +70,9 @@ def test_main_prints_progress_and_result_lines(monkeypatch, capsys):
 
 
 def test_main_reports_a_failure_as_an_error_line(monkeypatch, capsys):
-    monkeypatch.setattr(vram_probe, "_cuda_device", lambda: ("NVIDIA Test GPU", 2**30))
+    monkeypatch.setattr(vram_probe, "_claim_device", lambda: ("NVIDIA Test GPU", 2**30, 0))
 
-    def broken(model, imgsz):
+    def broken(model, imgsz, objects):
         raise FileNotFoundError("yolo26n-seg.pt")
 
     monkeypatch.setattr(vram_probe, "build_step", broken)
@@ -90,3 +94,32 @@ def test_synthetic_batch_matches_what_the_segment_trainer_feeds_the_loss():
     # overlap_mask=True (the default): one (H/4, W/4) map per image holding instance index + 1
     assert b["masks"].shape == (3, 80, 80) and b["masks"].max() == 4
     assert b["sem_masks"].shape == (3, 80, 80)
+
+
+def test_memory_cap_leaves_the_headroom_and_never_goes_negative():
+    G = 2**30
+    assert vram_probe.memory_cap(9 * G, 12 * G) == (8 * G, 8 / 12)
+    assert vram_probe.memory_cap(int(0.5 * G), 12 * G) == (0, 0.0)
+    assert vram_probe.memory_cap(5 * G, 12 * G, headroom=0) == (5 * G, 5 / 12)
+
+
+def test_prime_optimizer_allocates_adamw_state_for_every_trainable_tensor():
+    torch = pytest.importorskip("torch")
+    net = torch.nn.Sequential(torch.nn.Conv2d(3, 4, 3), torch.nn.BatchNorm2d(4))
+    params = list(net.parameters())
+    before = [p.detach().clone() for p in params]
+    opt = torch.optim.AdamW(params, lr=1e-4, weight_decay=0.0)
+    assert len(opt.state) == 0
+
+    vram_probe.prime_optimizer(opt, params)
+
+    assert len(opt.state) == len(params)
+    assert all("exp_avg" in opt.state[p] and "exp_avg_sq" in opt.state[p] for p in params)
+    assert all(p.grad is None for p in params)
+    assert all(torch.equal(a, b) for a, b in zip(before, params))  # zero gradients, no decay: weights unchanged
+
+
+def test_synthetic_batch_scales_to_many_objects():
+    pytest.importorskip("torch")
+    b = vram_probe.synthetic_batch(2, 640, device="cpu", classes=4, instances=300)
+    assert b["cls"].shape == (600, 1) and b["masks"].max() == 300

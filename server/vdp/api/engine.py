@@ -48,6 +48,11 @@ class EngineControl:
     def paused(self) -> bool:
         return self.paused_gpu is not None
 
+    @property
+    def loading(self) -> bool:
+        """SAM3 is being loaded (at startup, or reloading after a pause); `sam3_gpu(engine)` says onto which GPU."""
+        return self._loading
+
     def start_load(self) -> bool:
         """Loads the engine on a background thread and ends any pause. A no-op (False) when it is
         already loaded or loading, or cannot load at all (a test engine without `load`)."""

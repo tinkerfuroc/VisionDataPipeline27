@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import re
-import threading
 from importlib.util import find_spec
 from pathlib import Path
 from typing import Literal
@@ -12,7 +11,7 @@ from fastapi import APIRouter, Query, Response
 from fastapi.responses import FileResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 
-from ..jobs import Job
+from ..jobs import Job, JobFailed
 from ..labeling.errors import BadRequest, Conflict
 from ..store import NotFound
 from ..train.gallery import FILTERS, filter_items, load_gallery
@@ -38,6 +37,7 @@ from ..train.scheduler import (
     gpu_max_clock_ghz,
     rank_gpus,
 )
+from ..train.vram import needs_remeasure
 from ..train.vram_probe import BATCHES
 from .deps import State
 from .engine import sam3_gpu
@@ -125,6 +125,7 @@ def train_status(state: State) -> dict:
         "gpus": gpu_views, "default_gpu": default_gpu(ranked, state.train.busy_gpus()),
         "sam3_gpu": sam3_gpu(state.engine),  # still reported while SAM3 is paused: where it reloads to
         "sam3_vram_bytes": getattr(state.engine, "vram_bytes", None),
+        "sam3_loaded": bool(state.engine.is_loaded()),  # false while paused or loading: then it holds no VRAM
         "models": list(MODELS), "default_models": list(DEFAULT_MODELS),
         "defaults": TrainParams().model_dump(),
         "aug_presets": {k: v.model_dump() for k, v in AUG_PRESETS.items()},
@@ -135,21 +136,30 @@ class VramEstimateBody(BaseModel):
     model: str
     imgsz: Imgsz
     gpu: int
+    export_id: str | None = None  # the export to be trained on: sets how many objects per image the probe uses
     remeasure: bool = False
 
 
 def _training_conflict(gpu: int) -> Conflict:
     return Conflict(
-        f"a training run is queued or running on cuda:{gpu}; estimate VRAM once it is done "
+        f"a training run (or ONNX export) is queued or running on cuda:{gpu}; estimate VRAM once it is done "
         "(measuring now would be wrong and could make the run run out of memory)"
     )
 
 
+def _sam3_loading_on(state, gpu: int) -> bool:
+    """SAM3 is loading onto `gpu` (or onto a GPU not known yet: its first load)."""
+    ctl = state.engine_ctl
+    return ctl is not None and ctl.loading and sam3_gpu(state.engine) in (None, gpu)
+
+
 @router.post("/api/train/vram-estimate", status_code=202)
 def vram_estimate(body: VramEstimateBody, state: State) -> dict:
-    """Start a job (kind "vram_estimate") estimating VRAM per batch size for a model, image size and GPU. Always a
-    job, also for a cached answer (it then finishes at once without running the probe), so clients handle one
-    shape; `remeasure` skips the cache. Refused while the GPU has a training run queued or running."""
+    """Start a job (kind "vram_estimate") estimating VRAM per batch size for a model, image size and GPU (and the
+    objects per image of `export_id`, when given). Always a job, also for a cached answer (it then finishes at once
+    without running the probe), so clients handle one shape; `remeasure` skips the cache, and so does a cached answer
+    with batches that did not fit once the GPU has clearly more free memory than when it was measured. Refused while
+    the GPU has a run (or ONNX export) queued or running, or while SAM3 is loading onto it."""
     error = ultralytics_error()
     if error is not None:
         raise TrainUnavailable(error)
@@ -159,20 +169,30 @@ def vram_estimate(body: VramEstimateBody, state: State) -> dict:
         raise BadRequest(f"GPU {body.gpu} is not available")
     if gpu.index in state.train.busy_gpus():
         raise _training_conflict(gpu.index)
+    if _sam3_loading_on(state, gpu.index):
+        raise Conflict(f"SAM3 is loading on cuda:{gpu.index}; estimate VRAM once it has loaded "
+                       "(the measurement would take the memory it is loading into)")
+    yolo_dir = find_export(state.settings.project.data_root, body.export_id).yolo_dir if body.export_id else None
     vram = state.vram
-    entry = None if body.remeasure else vram.cached(body.model, body.imgsz, gpu.name)
+    objects = vram.objects_for(yolo_dir)
 
     def free_bytes() -> int | None:
         return gpu_free_memory([gpu]).get(gpu.index)
 
+    def view(entry: dict, *, cached: bool) -> dict:
+        return vram.view(entry, body.model, body.imgsz, objects, gpu, free_bytes=free_bytes(), cached=cached,
+                         objects_from_export=yolo_dir is not None)
+
+    entry = None if body.remeasure else vram.cached(body.model, body.imgsz, objects, gpu.name)
+    if entry is not None and needs_remeasure(entry, free_bytes()):
+        entry = None
     if entry is not None:
         cached = entry
-        return {"job_id": state.jobs.start(VRAM_ESTIMATE, lambda job: vram.view(
-            cached, body.model, body.imgsz, gpu, free_bytes=free_bytes(), cached=True)).id}
+        return {"job_id": state.jobs.start(VRAM_ESTIMATE, lambda job: view(cached, cached=True)).id}
 
     def work(job: Job) -> dict:
         done = 0
-        training = threading.Event()
+        reason: list[str] = []
 
         def on_batch(batch: int, _bytes: int | None) -> None:
             nonlocal done
@@ -180,17 +200,24 @@ def vram_estimate(body: VramEstimateBody, state: State) -> dict:
             job.emit({"type": "progress", "done": done, "total": len(BATCHES), "batch": batch})
 
         def should_stop() -> bool:
-            if not state.train.gpu_idle(gpu.index):  # a run was queued meanwhile: get out of its way
-                training.set()
-            return training.is_set() or job.cancel_requested()
+            # also the scheduler's before_launch hook stops the probe (VramEstimator.stop_probe_on) before any run
+            # starts on this GPU; this catches runs of other processes (vdp train) and SAM3 starting to load
+            if not reason and gpu.index in state.train.busy_gpus():
+                reason.append(f"a training run was queued on cuda:{gpu.index}, so the VRAM measurement was stopped "
+                              "to leave it the memory; estimate again once the run is done")
+            if not reason and _sam3_loading_on(state, gpu.index):
+                reason.append(f"SAM3 started loading on cuda:{gpu.index}, so the VRAM measurement was stopped to "
+                              "leave it the memory; estimate again once it has loaded")
+            return bool(reason) or job.cancel_requested()
 
-        measured = vram.measure(body.model, body.imgsz, gpu, on_batch=on_batch, should_stop=should_stop)
-        if training.is_set():
-            raise Conflict(f"a training run was queued on cuda:{gpu.index}, so the VRAM measurement was stopped "
-                           "to leave it the memory; estimate again once the run is done")
-        if measured is None:
+        measured = vram.measure(body.model, body.imgsz, objects, gpu, on_batch=on_batch, should_stop=should_stop)
+        if measured is not None:
+            return view(measured, cached=False)
+        if job.cancel_requested() and not reason:
             return {"cancelled": True}
-        return vram.view(measured, body.model, body.imgsz, gpu, free_bytes=free_bytes(), cached=False)
+        raise JobFailed(reason[0] if reason else (
+            f"a training run was queued on cuda:{gpu.index}, so the VRAM measurement was stopped to leave it the "
+            "memory; estimate again once the run is done"))
 
     return {"job_id": state.jobs.start(VRAM_ESTIMATE, work, exclusive=VRAM_ESTIMATE).id}
 
