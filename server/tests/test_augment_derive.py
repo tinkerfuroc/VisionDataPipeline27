@@ -376,6 +376,24 @@ def test_a_derived_copy_keeps_the_class_map_and_the_export_ids(store, make_clip,
         assert {line.split()[0] for line in p.read_text().splitlines()} == {"0"}
 
 
+def test_a_derived_copy_keeps_the_sources_regions_applied(store, make_clip, tmp_path):
+    project, clip = _labelled(store, make_clip)
+    data_root = tmp_path / "data"
+    src = _export(store, project, clip, ["yolo_seg", "masks"], data_root)
+    _make_pool(data_root)
+    manifest_path = Path(src["path"]) / "export.json"
+    old = json.loads(manifest_path.read_text())
+    old["regions_applied"] = 2
+    manifest_path.write_text(json.dumps(old))
+    result = run_augment(data_root, src["export_id"], AugmentOptions(per_image=1, seed=0))
+    manifest = json.loads((Path(result["path"]) / "export.json").read_text())
+    assert manifest["regions_applied"] == 2
+    del old["regions_applied"]  # an export written before regions existed
+    manifest_path.write_text(json.dumps(old))
+    result = run_augment(data_root, src["export_id"], AugmentOptions(per_image=1, seed=1))
+    assert json.loads((Path(result["path"]) / "export.json").read_text())["regions_applied"] == 0
+
+
 def test_a_source_manifest_without_project_class_id_maps_to_itself(store, make_clip, tmp_path):
     project, clip = _labelled(store, make_clip)
     data_root = tmp_path / "data"

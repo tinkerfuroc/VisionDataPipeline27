@@ -424,6 +424,7 @@ def run_augment(
         linked = synth_linked and real_linked
         result_manifest = manifest_for(plan, new_id, synth_summaries, counts, linked)
         result_manifest["clips"] = manifest["clips"]
+        result_manifest["regions_applied"] = manifest.get("regions_applied", 0)
         result_manifest["formats"] = _merged_format_summaries(
             manifest["formats"], synth_summaries, real_linked, lit_counts,
         )
