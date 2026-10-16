@@ -135,6 +135,14 @@ class JobManager:
         job.request_cancel()
         return job
 
+    def cancel_all(self) -> list[Job]:
+        """Request cancel on every unfinished job (server shutdown); returns those jobs."""
+        with self._lock:
+            jobs = [job for job in self._jobs.values() if job.status not in TERMINAL]
+        for job in jobs:
+            job.request_cancel()
+        return jobs
+
     def active(self, kind: str) -> str | None:
         """The id of an unfinished job of this kind, if any."""
         with self._lock:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import threading
+import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -29,6 +30,12 @@ from . import uploads as uploads_api
 from .deps import AppState, State
 
 log = logging.getLogger(__name__)
+
+# Job kinds that shutdown waits for once cancelled: they stop within a work unit and then delete their
+# half-written export, which a daemon job thread killed at interpreter exit would leave behind (and an augment
+# job's pool would first drain every queued unit in concurrent.futures' exit hook).
+SHUTDOWN_JOIN_KINDS = frozenset({augment_api.AUGMENT, "export"})
+SHUTDOWN_JOIN_S = 30.0
 
 _STATUS = [  # most specific first
     (UploadNotFound, 404), (NotFound, 404), (JobNotFound, 404), (Conflict, 409), (EngineNotLoaded, 503),
@@ -70,6 +77,10 @@ def create_app(
             threading.Thread(target=_load, name="engine-load", daemon=True).start()
         state.train.start()
         yield
+        deadline = time.monotonic() + SHUTDOWN_JOIN_S
+        for job in state.jobs.cancel_all():
+            if job.kind in SHUTDOWN_JOIN_KINDS:
+                job.join(max(0.0, deadline - time.monotonic()))
         state.train.shutdown()
 
     app = FastAPI(title="VisionDataPipeline27", version=__version__, lifespan=lifespan)

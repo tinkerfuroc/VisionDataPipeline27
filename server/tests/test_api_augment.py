@@ -161,3 +161,21 @@ def test_augment_and_fetch_share_one_exclusive_key(client, store, make_clip, ser
     assert r.status_code == 409
     assert r.json()["job_id"] == started.json()["job_id"]
     wait_job(client, started.json()["job_id"])
+
+
+def test_server_shutdown_cancels_a_running_augment_job_and_waits_for_it(tmp_path):
+    app = create_app(_settings(tmp_path), engine=FakeEngine(), load_engine=False)
+    seen = []
+
+    def slow_augment(job):  # stands in for run_augment: stops at the next unit once cancelled
+        while not job.cancel_requested():
+            time.sleep(0.01)
+        time.sleep(0.3)  # the running units finish and the half-written export is removed
+        seen.append("cleaned up")
+        return {"cancelled": True}
+
+    with TestClient(app):
+        job = app.state.vdp.jobs.start("augment", slow_augment, exclusive="augment-data")
+        start = time.monotonic()
+    assert time.monotonic() - start < 30
+    assert job.status == "cancelled" and seen == ["cleaned up"]

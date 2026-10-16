@@ -147,3 +147,22 @@ def test_leases_are_not_jobs():
         assert jobs.running("gpu") is None
         with pytest.raises(JobNotFound):
             jobs.get(INTERACTIVE)
+
+
+def test_cancel_all_requests_cancel_on_every_unfinished_job():
+    jobs = JobManager()
+    release = threading.Event()
+
+    def until_cancelled(job):
+        while not job.cancel_requested():
+            release.wait(0.01)
+        return {"cancelled": True}
+
+    finished = jobs.start("import", lambda job: {})
+    finished.join(5)
+    running = [jobs.start("augment", until_cancelled), jobs.start("export", until_cancelled)]
+    assert {j.id for j in jobs.cancel_all()} == {j.id for j in running}
+    for job in running:
+        job.join(5)
+        assert job.status == "cancelled"
+    assert finished.status == "done" and not finished.cancel_requested()

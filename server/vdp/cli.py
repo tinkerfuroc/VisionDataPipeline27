@@ -236,8 +236,24 @@ def _serve(settings: Settings, host: str | None, port: int | None, https: bool =
         import uvicorn
 
         run = uvicorn.run
-    run(make_app(settings, auth_store=store), host=host, port=port, log_level="info",
-        proxy_headers=False, **ssl)  # X-Forwarded-* would let a local client spoof its address and scheme
+    import os
+    import signal
+    import threading
+
+    # Closing the terminal sends SIGHUP, which uvicorn leaves at its default (die on the spot, skipping the
+    # lifespan shutdown that cancels running jobs and lets an augment job remove its half-written export);
+    # turn it into SIGTERM, uvicorn's graceful shutdown.
+    def _hup_to_term(signum, frame) -> None:
+        os.kill(os.getpid(), signal.SIGTERM)
+
+    main = threading.current_thread() is threading.main_thread()  # only the main thread may set handlers
+    previous = signal.signal(signal.SIGHUP, _hup_to_term) if main else None
+    try:
+        run(make_app(settings, auth_store=store), host=host, port=port, log_level="info",
+            proxy_headers=False, **ssl)  # X-Forwarded-* would let a local client spoof its address and scheme
+    finally:
+        if main:
+            signal.signal(signal.SIGHUP, previous)
     return 0
 
 

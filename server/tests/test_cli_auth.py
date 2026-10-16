@@ -171,3 +171,30 @@ def test_set_password_cancelled_at_the_prompt_exits_1_and_writes_nothing(tmp_pat
     assert vdp.cli.main(["--config", _cfg(tmp_path), "set-password"]) == 1
     assert "Cancelled; no password set." in capsys.readouterr().out
     assert AuthStore(tmp_path / "data").load() is None
+
+
+def test_serve_turns_sighup_into_sigterm_so_uvicorn_shuts_down_cleanly(tmp_path):
+    # closing the terminal sends SIGHUP, which uvicorn ignores (the process just dies, skipping the lifespan
+    # shutdown that cancels jobs); SIGTERM is uvicorn's graceful shutdown
+    import os
+    import signal
+    import time
+
+    settings, _ = vdp.cli._load_settings(_cfg(tmp_path))
+    before = signal.getsignal(signal.SIGHUP)
+    got: list[int] = []
+
+    def run(app, **kw):
+        previous = signal.signal(signal.SIGTERM, lambda signum, frame: got.append(signum))
+        try:
+            os.kill(os.getpid(), signal.SIGHUP)
+            deadline = time.monotonic() + 10
+            while not got and time.monotonic() < deadline:
+                time.sleep(0.01)
+        finally:
+            signal.signal(signal.SIGTERM, previous)
+
+    code = vdp.cli._serve(settings, "127.0.0.1", 28000, False, stdin=Tty(), ask=lambda p: "q",
+                          getpass_fn=lambda p: "", run=run, make_app=lambda s, auth_store: "app")
+    assert code == 0 and got == [signal.SIGTERM]
+    assert signal.getsignal(signal.SIGHUP) == before
