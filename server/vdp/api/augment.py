@@ -33,6 +33,8 @@ class AugmentBody(BaseModel):
     seed: int = Field(default=0, ge=0)
     pool: str = "dtd"
     lighting: int = Field(default=0, ge=0, le=MAX_LIGHTING)
+    max_train_images: int | None = Field(default=None, ge=1)
+    time_limit_s: int | None = Field(default=None, ge=10, le=86400)
 
 
 @router.get("/api/backgrounds")
@@ -67,6 +69,7 @@ def augment(export_id: str, state: State, body: AugmentBody | None = None) -> di
     b = body or AugmentBody()
     opts = AugmentOptions(
         per_image=b.per_image, max_objects=b.max_objects, seed=b.seed, pool=b.pool, lighting=b.lighting,
+        max_train_images=b.max_train_images, time_limit_s=b.time_limit_s,
     )
     data_root = state.settings.project.data_root
     check_augment(data_root, export_id, opts)  # 400 / 404 now, not as a job error

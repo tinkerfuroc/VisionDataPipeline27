@@ -63,6 +63,8 @@ class AugmentOptions:
     seed: int = 0
     pool: str = "dtd"
     lighting: int = 0  # relit copies per real train frame
+    max_train_images: int | None = None  # cap on the whole train split (real + generated)
+    time_limit_s: int | None = None  # stop generating this many seconds after the job starts
 
 
 def _derived_name(source_name: str, per_image: int, lighting: int = 0) -> str:
@@ -99,7 +101,14 @@ def check_augment(data_root: Path, export_id: str, opts: AugmentOptions) -> dict
         raise BadRequest("max_objects must be between 1 and 3")
     if opts.seed < 0:
         raise BadRequest("seed must be 0 or more")
+    if opts.time_limit_s is not None and not 10 <= opts.time_limit_s <= 86400:
+        raise BadRequest("time_limit_s must be between 10 and 86400")
     manifest = json.loads((info.dir / "export.json").read_text())
+    real = manifest["counts"]["train"]["images"]
+    if opts.max_train_images is not None and opts.max_train_images <= real:
+        raise BadRequest(
+            f"this export already has {real} training frames; set a limit above that, or leave it empty"
+        )
     if opts.per_image and manifest["counts"]["train"]["annotated"] == 0:
         raise BadRequest(f"export {export_id} has no train-split objects to build composites from")
     return manifest

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 
 import cv2
@@ -179,3 +180,21 @@ def test_server_shutdown_cancels_a_running_augment_job_and_waits_for_it(tmp_path
         start = time.monotonic()
     assert time.monotonic() - start < 30
     assert job.status == "cancelled" and seen == ["cleaned up"]
+
+
+def test_augment_limits_are_validated_and_accepted(client, store, make_clip, tmp_path):
+    project, clip = _labelled(store, make_clip)
+    data_root = tmp_path / "data"
+    src = run_export(store, project.id, [clip.id], ["yolo_seg", "masks"], ExportOptions(), data_root / "exports")
+    _make_pool(data_root)
+    url = f"/api/exports/{src['export_id']}/augment"
+    real = json.loads((data_root / "exports" / src["export_id"] / "export.json").read_text())["counts"]["train"]["images"]
+
+    r = client.post(url, json={"per_image": 1, "max_train_images": real})
+    assert r.status_code == 400 and "already has" in r.json()["detail"]
+    assert client.post(url, json={"per_image": 1, "time_limit_s": 5}).status_code == 422
+    assert client.post(url, json={"per_image": 1, "max_train_images": 0}).status_code == 422
+
+    ok = client.post(url, json={"per_image": 1, "max_train_images": real + 2, "time_limit_s": 60})
+    assert ok.status_code == 202, ok.text
+    wait_job(client, ok.json()["job_id"])
