@@ -62,8 +62,9 @@ objects**, one object per candidate. **Delete object** asks first, naming how ma
 refused while a propagation or an export runs.
 
 The frame shows every visible object in its class colour; only the active object gets the outline. The timeline has
-one lane per project class (the active object's class tall), including a class with no object in this clip (an
-empty lane, its name with no count suffix); a class with more than one object gets one lane summarising all of them,
+one lane per class that has an object in this clip (the active object's class tall), so a project with many classes
+stays readable; a class with no object here gets a lane only while it is the class chosen for a new object (an empty
+lane, its name with no count suffix). A class with more than one object gets one lane summarising all of them,
 named "Class ×n". A name gutter sits on the left, and the playhead spans all lanes; past six lanes the lanes scroll
 with the mouse wheel. Clicking a lane (or its name) selects that class: its lowest-id object if it has one, else it
 starts a new object of it, same as the class select — clicking the class already active does nothing. Hovering a

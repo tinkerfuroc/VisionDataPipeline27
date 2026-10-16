@@ -107,6 +107,10 @@ describe("Timeline", () => {
     expect(screen.getByText("No classes yet")).toBeTruthy();
     expect(screen.queryAllByRole("button")).toHaveLength(0);
   });
+  it("names the single lane with emptyLabel when given", () => {
+    render(<Timeline {...noLanes} emptyLabel="No objects yet" onSeek={() => {}} />);
+    expect(screen.getByText("No objects yet")).toBeTruthy();
+  });
   it("is found by its label (it cannot be operated by keyboard — the global shortcuts cover seeking and selection)", () => {
     render(<Timeline {...noLanes} frame={4} onSeek={() => {}} />);
     expect(screen.getByLabelText("Timeline")).toBeTruthy();

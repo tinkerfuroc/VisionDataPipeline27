@@ -696,7 +696,7 @@ describe("Label page (objects)", () => {
     expect(row(/^#2 cup/).getAttribute("aria-pressed")).toBe("true");
   });
 
-  it("the reported bug: a class with no object still gets a lane, and picking or clicking it starts a new object rather than relabelling", async () => {
+  it("a class with no object in the clip gets no lane until it is picked, and picking it starts a new object rather than relabelling", async () => {
     // one Module object (class 0) and a project class GreenTab (class 1) with none in this clip
     const oneModuleTwoClasses: ClipDetail = {
       ...detail,
@@ -706,13 +706,13 @@ describe("Label page (objects)", () => {
     renderLabel();
     await screen.findByText("bench.mp4");
     expect(screen.getByRole("button", { name: "Module" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "GreenTab" })).toBeTruthy(); // shown despite having no object
+    expect(screen.queryByRole("button", { name: "GreenTab" })).toBeNull(); // no object in this clip: no lane
     fireEvent.change(screen.getByLabelText("Class"), { target: { value: "1" } });
     expect(panel().getByText("New object (GreenTab)", { selector: "div" }).getAttribute("aria-current")).toBe("true");
+    expect(screen.getByRole("button", { name: "GreenTab" })).toBeTruthy(); // the chosen class shows its lane
     expect(api.relabelObject).not.toHaveBeenCalled();
-    fireEvent.click(row(/^#1 Module/)); // back to the existing object
-    fireEvent.click(screen.getByRole("button", { name: "GreenTab" })); // the empty class's timeline lane
-    expect(panel().getByText("New object (GreenTab)", { selector: "div" }).getAttribute("aria-current")).toBe("true");
+    fireEvent.click(row(/^#1 Module/)); // back to the existing object: the empty class's lane goes again
+    expect(screen.queryByRole("button", { name: "GreenTab" })).toBeNull();
     expect(api.relabelObject).not.toHaveBeenCalled();
   });
 

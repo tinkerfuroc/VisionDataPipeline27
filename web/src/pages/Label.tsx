@@ -390,7 +390,7 @@ export function Label() {
     }
   }, [store, clipId, frame, playing, overlay, detail, overlayStyle, activeId, editing, frameCount, maskVersion, running, hidden]);
 
-  const lanes = useMemo(() => (detail === null ? [] : lanesFor(detail, hidden)), [detail, hidden]);
+  const lanes = useMemo(() => (detail === null ? [] : lanesFor(detail, hidden, objects.classId)), [detail, hidden, objects.classId]);
 
   const addClass = useCallback(
     async (name: string) => {
@@ -669,6 +669,7 @@ export function Label() {
           states={detail.states}
           lanes={lanes}
           activeClassId={objects.classId}
+          emptyLabel={detail.classes.length === 0 ? undefined : "No objects yet"}
           frame={frame}
           thumb={{ url: (i) => thumbUrl(clipId, i), aspect: width / height }}
           range={range}

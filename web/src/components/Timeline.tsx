@@ -7,7 +7,7 @@ import { frameAtX, runs } from "../lib/timeline";
 type Props = {
   /** the whole clip per frame: sets the frame count, and is drawn as the single lane of a clip without objects */
   states: FrameState[];
-  /** one lane per project class, in class-id order (`lanesFor`) */
+  /** one lane per class with an object in the clip (plus the chosen class), in class-id order (`lanesFor`) */
   lanes: Lane[];
   /** the active object's class, or the class chosen for a "New object" row: its lane is drawn 30 px tall; null
    * before a class is chosen (or a project with no classes), when every lane is short */
@@ -24,6 +24,8 @@ type Props = {
   onRange?: (range: [number, number]) => void;
   /** a click on a lane, or on its name in the gutter, selects that class; omit while the selection is locked */
   onSelect?: (id: number) => void;
+  /** the name of the single lane drawn when there are no lanes */
+  emptyLabel?: string;
 };
 
 const TOP = 6; // room above the lanes for the playhead's flag
@@ -104,7 +106,7 @@ function drawLane(ctx: CanvasRenderingContext2D, states: readonly FrameState[], 
 }
 
 /** One lane per class (spec §9): the active lane tall, the names in a gutter on the left, the playhead across all. */
-export function Timeline({ states, lanes, activeClassId, frame, thumb, range = null, regions, onSeek, onRange, onSelect }: Props) {
+export function Timeline({ states, lanes, activeClassId, frame, thumb, range = null, regions, onSeek, onRange, onSelect, emptyLabel = NO_CLASSES }: Props) {
   const wrap = useRef<HTMLDivElement>(null);
   const canvas = useRef<HTMLCanvasElement>(null);
   const [width, setWidth] = useState(0);
@@ -315,7 +317,7 @@ export function Timeline({ states, lanes, activeClassId, frame, thumb, range = n
           if (lane === undefined) {
             return (
               <span key="none" className="absolute left-0 flex w-full items-center truncate pr-1 font-cond text-xs text-dim" style={style}>
-                {NO_CLASSES}
+                {emptyLabel}
               </span>
             );
           }

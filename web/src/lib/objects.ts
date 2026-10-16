@@ -145,16 +145,19 @@ export function maskParts(
 }
 
 /**
- * The Timeline's lanes: one per project class, in class-id order (spec §9), including classes with no object in
- * this clip. A class's per-frame state is the `aggregateAt` of its objects' lanes (masked if any has a mask,
+ * The Timeline's lanes: one per project class that has an object in this clip, in class-id order, so a project with
+ * many classes does not crowd the timeline with empty lanes. `keep` (the class chosen for the active or a new object)
+ * gets its lane even with no object yet, so the user sees where the next object goes. A class's per-frame state is the `aggregateAt` of its objects' lanes (masked if any has a mask,
  * keyframe if any has one, deleted stays deleted), falling back to an all-empty lane (with the clip's deleted
  * frames still hatched) for a class with none. The label gets a "×n" suffix once the class has more than one
  * object; a class lane is hidden once it has objects and every one of them is hidden.
  */
-export function lanesFor(detail: ClipDetail, hidden: ReadonlySet<number>): Lane[] {
+export function lanesFor(detail: ClipDetail, hidden: ReadonlySet<number>, keep: number | null = null): Lane[] {
   const objects = sortedObjects(detail);
   const fallback = emptyLane(detail.states);
+  const used = new Set(objects.map((o) => o.class_id));
   return [...detail.classes]
+    .filter((c) => used.has(c.id) || c.id === keep)
     .sort((a, b) => a.id - b.id)
     .map((c) => {
       const inClass = objects.filter((o) => o.class_id === c.id);

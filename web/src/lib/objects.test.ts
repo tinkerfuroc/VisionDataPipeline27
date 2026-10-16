@@ -144,13 +144,21 @@ describe("maskParts", () => {
 });
 
 describe("lanesFor", () => {
-  it("gives one lane per project class, in class-id order, including a class with no object", () => {
+  it("leaves out classes with no object in the clip, except the chosen class", () => {
     const d = detail();
-    d.classes.push({ id: 2, name: "plate", color: "#0000ff" }); // no objects: an empty lane, deleted frame still hatched
+    d.classes.push({ id: 2, name: "plate", color: "#0000ff" }, { id: 3, name: "fork", color: "#ffff00" });
+    expect(lanesFor(d, new Set()).map((l) => l.id)).toEqual([0, 1]);
+    // the class chosen for a new object keeps its lane: an empty lane, deleted frame still hatched
+    expect(lanesFor(d, new Set(), 2).find((l) => l.id === 2)).toEqual(
+      { id: 2, label: "plate", color: "#0000ff", states: S("eeed"), hidden: false },
+    );
+    expect(lanesFor(d, new Set(), 2).map((l) => l.id)).toEqual([0, 1, 2]);
+  });
+  it("gives one lane per class with an object, in class-id order", () => {
+    const d = detail();
     expect(lanesFor(d, new Set())).toEqual([
       { id: 0, label: "cup", color: "#ff0000", states: S("keed"), hidden: false },
       { id: 1, label: "bowl", color: "#00ff00", states: S("emed"), hidden: false },
-      { id: 2, label: "plate", color: "#0000ff", states: S("eeed"), hidden: false },
     ]);
   });
   it("aggregates two objects of the same class and appends the count to the label", () => {
