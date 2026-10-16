@@ -55,4 +55,44 @@ describe("RegionsPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "Discard" }));
     expect(p.onDiscard).toHaveBeenCalled();
   });
+
+  it("commits a typed frame number once, on blur or Enter, not per keystroke", () => {
+    const regions = [{ start: 40, end: 120, crop: null, blocks: [] }];
+    const p = props({ regions, frame: 50, frameCount: 200 });
+    render(<RegionsPanel {...p} />);
+    const end = screen.getByLabelText("End frame") as HTMLInputElement;
+    fireEvent.change(end, { target: { value: "1" } });
+    fireEvent.change(end, { target: { value: "13" } });
+    fireEvent.change(end, { target: { value: "130" } });
+    expect(p.onChange).not.toHaveBeenCalled();
+    fireEvent.blur(end);
+    expect(p.onChange).toHaveBeenCalledTimes(1);
+    expect(p.onChange).toHaveBeenCalledWith([{ ...regions[0], end: 130 }]);
+    fireEvent.change(end, { target: { value: "140" } });
+    fireEvent.keyDown(end, { key: "Enter" });
+    expect(p.onChange).toHaveBeenLastCalledWith([{ ...regions[0], end: 140 }]);
+  });
+
+  it("an emptied frame field commits nothing and snaps back; Escape reverts", () => {
+    const regions = [{ start: 40, end: 120, crop: null, blocks: [] }];
+    const p = props({ regions, frame: 50, frameCount: 200 });
+    render(<RegionsPanel {...p} />);
+    const start = screen.getByLabelText("Start frame") as HTMLInputElement;
+    fireEvent.change(start, { target: { value: "" } });
+    fireEvent.blur(start);
+    expect(p.onChange).not.toHaveBeenCalled();
+    expect(start.value).toBe("40");
+    fireEvent.change(start, { target: { value: "45" } });
+    fireEvent.keyDown(start, { key: "Escape" });
+    fireEvent.blur(start);
+    expect(p.onChange).not.toHaveBeenCalled();
+    expect(start.value).toBe("40");
+  });
+
+  it("Clear on a range with no crop and no blocks does nothing", () => {
+    const p = props({ regions: [{ start: 0, end: 9, crop: null, blocks: [] }], frame: 4 });
+    render(<RegionsPanel {...p} />);
+    fireEvent.click(screen.getByRole("button", { name: "Clear" }));
+    expect(p.onChange).not.toHaveBeenCalled();
+  });
 });

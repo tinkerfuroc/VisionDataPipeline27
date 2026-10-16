@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import type { RegionRange } from "../api/types";
 import { addRangeFrom, problem, rangeIndexAt, removeRange, setBounds, splitAt, updateRange } from "../lib/regions";
 
@@ -17,6 +18,26 @@ type Props = {
   onSave: () => void;
   onDiscard: () => void;
 };
+
+/** A frame-number field that holds what is typed locally and commits only on blur or Enter (Escape reverts), so a
+ * half-typed number never becomes a range that no frame belongs to. Empty or non-numeric text commits nothing. */
+function FrameField(p: { label: string; value: number; max: number; onCommit: (v: number) => void }) {
+  const [text, setText] = useState(String(p.value));
+  useEffect(() => setText(String(p.value)), [p.value]);
+  const commit = () => {
+    const v = Number(text);
+    if (text.trim() === "" || !Number.isFinite(v)) setText(String(p.value));
+    else if (v !== p.value) p.onCommit(v);
+  };
+  return (
+    <input aria-label={p.label} type="number" min={0} max={p.max} className="field w-16" value={text}
+      onChange={(e) => setText(e.target.value)} onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") commit();
+        else if (e.key === "Escape") setText(String(p.value));
+      }} />
+  );
+}
 
 /** The Regions tool: the frame range the current frame belongs to, its crop and blocked boxes (drawn on the
  * frame), saved together with one request. Excluded areas are invisible to SAM3 and cut out of exports. */
@@ -38,11 +59,11 @@ export function RegionsPanel(p: Props) {
       ) : (
         <>
           <div className="flex items-center gap-1">
-            <input aria-label="Start frame" type="number" min={0} max={p.frameCount - 1} className="field w-16" value={range.start}
-              onChange={(e) => p.onChange(setBounds(p.regions, index, Number(e.target.value), range.end, p.frameCount))} />
+            <FrameField label="Start frame" value={range.start} max={p.frameCount - 1}
+              onCommit={(v) => p.onChange(setBounds(p.regions, index, v, range.end, p.frameCount))} />
             <span className="text-dim">to</span>
-            <input aria-label="End frame" type="number" min={0} max={p.frameCount - 1} className="field w-16" value={range.end}
-              onChange={(e) => p.onChange(setBounds(p.regions, index, range.start, Number(e.target.value), p.frameCount))} />
+            <FrameField label="End frame" value={range.end} max={p.frameCount - 1}
+              onCommit={(v) => p.onChange(setBounds(p.regions, index, range.start, v, p.frameCount))} />
           </div>
           <div className="flex gap-1">
             <button type="button" className="btn flex-1"
@@ -73,7 +94,10 @@ export function RegionsPanel(p: Props) {
               onClick={() => p.onChange(splitAt(p.regions, index, p.frame).regions)}>
               New range from here
             </button>
-            <button type="button" className="btn" onClick={() => p.onChange(updateRange(p.regions, index, { crop: null, blocks: [] }))}>
+            <button type="button" className="btn" disabled={range.crop === null && range.blocks.length === 0}
+              onClick={() => {
+                if (range.crop !== null || range.blocks.length > 0) p.onChange(updateRange(p.regions, index, { crop: null, blocks: [] }));
+              }}>
               Clear
             </button>
             <button type="button" className="btn" onClick={() => p.onChange(removeRange(p.regions, index))}>Remove range</button>
