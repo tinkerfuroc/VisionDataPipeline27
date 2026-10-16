@@ -1,7 +1,7 @@
 import threading
 
 import pytest
-from vdp.jobs import INTERACTIVE, TERMINAL, JobBusy, JobManager, JobNotFound
+from vdp.jobs import INTERACTIVE, TERMINAL, JobBusy, JobFailed, JobManager, JobNotFound
 
 
 def test_job_runs_and_finishes_with_result_and_events():
@@ -34,6 +34,17 @@ def test_exception_becomes_error_status():
     job.join(5)
     assert job.status == "error" and job.error == "ValueError: bad video"
     assert job.events_since(0)[-1] == {"type": "error", "message": "ValueError: bad video", "seq": 0}
+
+
+def test_an_expected_failure_keeps_its_message_as_is():
+    jobs = JobManager()
+
+    def fails(job):
+        raise JobFailed("a training run was queued on cuda:0")
+
+    job = jobs.start("vram_estimate", fails)
+    job.join(5)
+    assert job.status == "error" and job.error == "a training run was queued on cuda:0"
 
 
 def test_cancel_is_cooperative():

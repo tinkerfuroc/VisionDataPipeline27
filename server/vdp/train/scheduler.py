@@ -9,7 +9,8 @@ Hooks (the server's SAM3 pause uses both): `before_queue`, passed to a request, 
 once the request has been validated, right before its run(s) are queued; if it raises, nothing is
 queued. `on_gpu_idle(gpu)` fires outside the lock whenever a GPU is left with nothing queued or
 running (and once per GPU at `start()`); it may be stale by the time it runs, so a listener that
-cares re-checks `gpu_idle()`.
+cares re-checks `gpu_idle()`. `before_launch(gpu)` is called outside the lock right before a GPU thread takes
+its next queued item (the server's VRAM probe uses it to get off that GPU first); it may block.
 """
 
 from __future__ import annotations
@@ -246,6 +247,7 @@ class TrainScheduler:
         self._threads: list[threading.Thread] = []
         self._stopping = False
         self.on_gpu_idle: Callable[[int], None] | None = None  # see the module docstring
+        self.before_launch: Callable[[int], None] | None = None  # see the module docstring
 
     # ---- lifecycle ----
 
@@ -581,6 +583,16 @@ class TrainScheduler:
             except Exception:  # a listener must never take a GPU thread down
                 log.exception("on_gpu_idle(%d) failed", gpu)
 
+    def _before_launch(self, gpu: int) -> None:
+        """Calls `before_launch(gpu)` (outside the lock), which may block until the GPU is free of other work."""
+        hook = self.before_launch
+        if hook is None:
+            return
+        try:
+            hook(gpu)
+        except Exception:  # a listener must never take a GPU thread down
+            log.exception("before_launch(%d) failed", gpu)
+
     def _idle_locked(self, gpu: int) -> bool:
         return not self._queues.get(gpu) and gpu not in self._running
 
@@ -594,6 +606,12 @@ class TrainScheduler:
                     self._cv.wait()
                 if self._stopping:
                     return
+            self._before_launch(gpu)
+            with self._cv:
+                if self._stopping:
+                    return
+                if not self._queues[gpu]:  # cancelled while the hook ran
+                    continue
                 run_id, kind = self._queues[gpu].popleft()
                 if not self._should_launch(run_id, kind):
                     continue

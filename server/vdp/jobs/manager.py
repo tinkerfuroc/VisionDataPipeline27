@@ -25,6 +25,11 @@ class JobNotFound(KeyError):
     pass
 
 
+class JobFailed(Exception):
+    """An expected failure a job's work function raises: its message becomes the job error as is, without the
+    exception's class name (which other exceptions get, to tell unexpected errors apart)."""
+
+
 class Job:
     def __init__(self, kind: str, exclusive: str | None) -> None:
         self.id = uuid.uuid4().hex[:12]
@@ -112,7 +117,7 @@ class JobManager:
             result = fn(job) or {}
         except Exception as e:  # a job must never take the server down
             log.exception("job %s (%s) failed", job.id, job.kind)
-            job.error = f"{type(e).__name__}: {e}"
+            job.error = str(e) if isinstance(e, JobFailed) else f"{type(e).__name__}: {e}"
             job.emit({"type": "error", "message": job.error})
             job.status = "error"
             return

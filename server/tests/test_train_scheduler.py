@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 
 import pytest
@@ -877,3 +878,47 @@ def test_before_queue_on_submit_from_resume_and_complete(env):
     until(sched, rid, "running")
     sched.cancel(rid)
     until(sched, rid, "cancelled")
+
+
+def test_before_launch_runs_and_finishes_before_the_worker_starts(env):
+    sched, export = env
+    release = threading.Event()
+    calls = []
+
+    def hook(gpu):
+        calls.append(gpu)
+        release.wait(10)  # e.g. the VRAM probe getting off this GPU
+
+    sched.before_launch = hook
+    sched.start()
+    (rid,) = sched.submit(export, [("yolo26s-seg", 1)], TrainParams(epochs=2))
+    wait_for(lambda: calls == [1])
+    time.sleep(0.2)
+    assert status(sched, rid) == "queued"  # the worker waits for the hook
+    release.set()
+    until(sched, rid, "done")
+
+
+def test_a_run_cancelled_while_before_launch_runs_never_starts(env):
+    sched, export = env
+    entered, release = threading.Event(), threading.Event()
+    sched.before_launch = lambda gpu: (entered.set(), release.wait(10))
+    sched.start()
+    (rid,) = sched.submit(export, [("yolo26s-seg", 1)], TrainParams(epochs=2))
+    assert entered.wait(5)
+    sched.cancel(rid)
+    release.set()
+    time.sleep(0.3)
+    assert status(sched, rid) == "cancelled" and sched.gpu_idle(1)
+
+
+def test_a_failing_before_launch_does_not_stop_the_gpu(env):
+    sched, export = env
+
+    def boom(gpu):
+        raise RuntimeError("listener bug")
+
+    sched.before_launch = boom
+    sched.start()
+    (rid,) = sched.submit(export, [("yolo26s-seg", 1)], TrainParams(epochs=2))
+    until(sched, rid, "done")
