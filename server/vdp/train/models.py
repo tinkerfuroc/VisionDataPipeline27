@@ -1,4 +1,5 @@
-"""Training request validation: the model whitelist, hyper-parameters and yolo_seg export lookup."""
+"""Training request validation: the model whitelist (segmentation and detection), hyper-parameters and export
+lookup."""
 
 from __future__ import annotations
 
@@ -18,9 +19,23 @@ from ..store import NotFound
 
 FAMILIES = ("yolo26", "yolo11")
 SIZES = ("n", "s", "m", "l", "x")
-MODELS = tuple(f"{family}{size}-seg" for family in FAMILIES for size in SIZES)
+SEGMENT_MODELS = tuple(f"{family}{size}-seg" for family in FAMILIES for size in SIZES)
+DETECT_MODELS = tuple(f"yolo26{size}" for size in SIZES)  # plain YOLO26: bounding boxes only
+MODELS = SEGMENT_MODELS + DETECT_MODELS
 DEFAULT_MODELS = ("yolo26s-seg", "yolo26m-seg", "yolo11s-seg", "yolo11m-seg")
 _EXPORT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+Task = Literal["segment", "detect"]
+
+
+def model_task(model: str) -> Task:
+    """The Ultralytics task a whitelisted model trains: "segment" (masks) for a -seg model, else "detect" (boxes)."""
+    return "segment" if model.endswith("-seg") else "detect"
+
+
+def run_data_dir(run: dict) -> Path:
+    """The export dataset a run trains on: run.json's `data_format` (chosen when the run was created), or yolo_seg
+    for runs from before detection models (every one of them trained on it)."""
+    return Path(run["export_dir"]) / run.get("data_format", "yolo_seg")
 
 
 class AugParams(BaseModel):
@@ -107,6 +122,16 @@ class ExportInfo:
     @property
     def yolo_dir(self) -> Path:
         return self.dir / "yolo_seg"
+
+    def train_format(self, task: Task) -> str:
+        """The dataset a model of `task` trains on: yolo_det for detection when the export has it (one box per object),
+        else yolo_seg -- every listed export has it, and Ultralytics turns its polygons into boxes for detection."""
+        if task == "detect" and "yolo_det" in self.formats and (self.dir / "yolo_det" / "data.yaml").is_file():
+            return "yolo_det"
+        return "yolo_seg"
+
+    def data_dir(self, task: Task) -> Path:
+        return self.dir / self.train_format(task)
 
     def to_json(self) -> dict:
         return {

@@ -13,7 +13,7 @@ from pathlib import Path
 
 from ..store import NotFound
 from ..store.project import now_iso
-from .models import ExportInfo, TrainParams
+from .models import ExportInfo, TrainParams, model_task
 from .sampling import epoch_plan
 
 TERMINAL = frozenset({"done", "error", "cancelled", "interrupted"})
@@ -82,6 +82,8 @@ class RunStore:
             "id": run_id, "created_at": now_iso(), "started_at": None, "finished_at": None,
             "export_id": export.id, "export_dir": str(export.dir), "project_name": export.project_name,
             "model": model, "gpu": gpu, "params": params.model_dump(),
+            # what it trains (masks or boxes) and on which of the export's datasets (worker.prepare_data reads it)
+            "task": model_task(model), "data_format": export.train_format(model_task(model)),
             # sampled epochs for this export (None: whole epochs); a resume keeps it, a new run works it out anew
             "sampling": epoch_plan(params.model_dump(), export.train_images, export.val_images),
             "status": "queued", "error": None, "pid": None, "owner_pid": owner_pid,

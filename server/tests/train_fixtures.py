@@ -19,28 +19,32 @@ import pytest
 FAKE_WORKER = [sys.executable, str(Path(__file__).with_name("fake_train_worker.py"))]
 EXPORT_ID = "20260101-000000-abcdef"
 SQUARE = "0 0.25 0.25 0.75 0.25 0.75 0.75 0.25 0.75"
+SQUARE_BOX = "0 0.5 0.5 0.5 0.5"  # SQUARE as a yolo_det line: class, centre x/y, width, height
 JPEG = b"\xff\xd8\xff\xe0fakejpeg"
 
 
 def make_export(
     data_root: Path, export_id: str = EXPORT_ID, n_train: int = 2, n_val: int = 2, *,
     created_at: str = "2026-01-01T00:00:00+00:00", name: str | None = None,
-    classes: tuple[str, ...] = ("Module",),
+    classes: tuple[str, ...] = ("Module",), det: bool = False,
 ) -> Path:
     """An export directory shaped like vdp's exporter output, with one class (or `classes`, for
-    testing the same-classes rule) and a square on every image (always labelled class 0)."""
+    testing the same-classes rule) and a square on every image (always labelled class 0); `det`
+    adds a yolo_det dataset (the same images, the square as a box) next to the yolo_seg one."""
     d = data_root / "exports" / export_id
-    y = d / "yolo_seg"
-    for split, n in (("train", n_train), ("val", n_val)):
-        (y / "images" / split).mkdir(parents=True, exist_ok=True)
-        (y / "labels" / split).mkdir(parents=True, exist_ok=True)
-        for i in range(n):
-            img = np.full((64, 96, 3), 90, np.uint8)
-            cv2.rectangle(img, (24, 16), (72, 48), (200, 200, 200), -1)
-            assert cv2.imwrite(str(y / "images" / split / f"clip_{i:06d}.jpg"), img)
-            (y / "labels" / split / f"clip_{i:06d}.txt").write_text(SQUARE + "\n")
+    fmts = (("yolo_seg", SQUARE), ("yolo_det", SQUARE_BOX)) if det else (("yolo_seg", SQUARE),)
     names_yaml = "".join(f'  {i}: "{c}"\n' for i, c in enumerate(classes))
-    (y / "data.yaml").write_text(f"path: .\ntrain: images/train\nval: images/val\nnames:\n{names_yaml}")
+    for fmt, line in fmts:
+        y = d / fmt
+        for split, n in (("train", n_train), ("val", n_val)):
+            (y / "images" / split).mkdir(parents=True, exist_ok=True)
+            (y / "labels" / split).mkdir(parents=True, exist_ok=True)
+            for i in range(n):
+                img = np.full((64, 96, 3), 90, np.uint8)
+                cv2.rectangle(img, (24, 16), (72, 48), (200, 200, 200), -1)
+                assert cv2.imwrite(str(y / "images" / split / f"clip_{i:06d}.jpg"), img)
+                (y / "labels" / split / f"clip_{i:06d}.txt").write_text(line + "\n")
+        (y / "data.yaml").write_text(f"path: .\ntrain: images/train\nval: images/val\nnames:\n{names_yaml}")
     manifest = {
         "export_id": export_id, "created_at": created_at,
         "project": {"id": "p1", "name": "Bench"},
@@ -50,9 +54,10 @@ def make_export(
         ],
         "formats": [
             {
-                "name": "yolo_seg", "images": {"train": n_train, "val": n_val},
+                "name": fmt, "images": {"train": n_train, "val": n_val},
                 "annotations": {"train": n_train, "val": n_val}, "linked": True,
             }
+            for fmt, _ in fmts
         ],
     }
     if name is not None:

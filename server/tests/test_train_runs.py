@@ -93,3 +93,15 @@ def test_create_records_the_epoch_plan_for_the_export(tmp_path):
     assert run["params"]["train_images_per_epoch"] == 10  # what was asked, as asked
     plain = store.create(export, "yolo26s-seg", 0, TrainParams(), owner_pid=os.getpid())
     assert plain["sampling"] is None
+
+
+def test_create_records_the_task_and_the_dataset_it_trains_on(tmp_path):
+    store = RunStore(tmp_path / "runs")
+    both = find_export(tmp_path, make_export(tmp_path, "both", det=True).name)
+    seg_only = find_export(tmp_path, make_export(tmp_path, "seg-only").name)
+    seg = store.create(both, "yolo26s-seg", 0, TrainParams(), owner_pid=os.getpid())
+    assert (seg["task"], seg["data_format"]) == ("segment", "yolo_seg")
+    det = store.create(both, "yolo26s", 0, TrainParams(), owner_pid=os.getpid())
+    assert (det["task"], det["data_format"]) == ("detect", "yolo_det")
+    fallback = store.create(seg_only, "yolo26n", 0, TrainParams(), owner_pid=os.getpid())
+    assert (fallback["task"], fallback["data_format"]) == ("detect", "yolo_seg")

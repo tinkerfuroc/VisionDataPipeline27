@@ -15,6 +15,8 @@ from vdp.train.models import (
     TrainParams,
     check_model,
     find_export,
+    model_task,
+    run_data_dir,
     list_exports,
     rename_export,
     run_classes,
@@ -23,11 +25,37 @@ from vdp.train.models import (
 
 
 def test_model_whitelist():
-    assert "yolo26s-seg" in MODELS and "yolo11x-seg" in MODELS and len(MODELS) == 10
+    assert "yolo26s-seg" in MODELS and "yolo11x-seg" in MODELS and len(MODELS) == 15
+    assert MODELS[10:] == ("yolo26n", "yolo26s", "yolo26m", "yolo26l", "yolo26x")  # detection: YOLO26 only
     assert DEFAULT_MODELS == ("yolo26s-seg", "yolo26m-seg", "yolo11s-seg", "yolo11m-seg")
     check_model("yolo26m-seg")
-    with pytest.raises(BadRequest):
-        check_model("yolov8s-seg")
+    check_model("yolo26s")
+    for bad in ("yolov8s-seg", "yolo11s", "yolo26s-pose"):
+        with pytest.raises(BadRequest):
+            check_model(bad)
+
+
+def test_model_task():
+    assert model_task("yolo26s-seg") == "segment" and model_task("yolo11x-seg") == "segment"
+    assert model_task("yolo26n") == "detect" and model_task("yolo26x") == "detect"
+
+
+def test_export_train_format_prefers_yolo_det_for_detection(tmp_path):
+    seg_only = find_export(tmp_path, make_export(tmp_path, "seg-only").name)
+    both = find_export(tmp_path, make_export(tmp_path, "both", det=True).name)
+    assert both.formats == ("yolo_seg", "yolo_det")
+    assert both.train_format("detect") == "yolo_det" and both.train_format("segment") == "yolo_seg"
+    assert seg_only.train_format("detect") == "yolo_seg"  # boxes from the polygons (Ultralytics does this)
+    assert seg_only.data_dir("detect") == seg_only.dir / "yolo_seg"
+    assert both.data_dir("detect") == both.dir / "yolo_det"
+    # listed in the manifest but its data.yaml is missing (a half-written export): not used
+    (both.dir / "yolo_det" / "data.yaml").unlink()
+    assert both.train_format("detect") == "yolo_seg"
+
+
+def test_run_data_dir_defaults_to_yolo_seg_for_older_runs(tmp_path):
+    assert run_data_dir({"export_dir": str(tmp_path)}) == tmp_path / "yolo_seg"
+    assert run_data_dir({"export_dir": str(tmp_path), "data_format": "yolo_det"}) == tmp_path / "yolo_det"
 
 
 def test_params_defaults_and_bounds():
