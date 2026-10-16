@@ -42,7 +42,9 @@ from ..labeling.errors import BadRequest
 from ..train.models import find_export
 from .backgrounds import POOLS, list_images
 from .composite import Cutout, cutout_from, make_composite
+from .cutout_pack import pack_cutouts
 from .lighting import LOW_SHARE, relight
+from .parallel import run_units
 
 MAX_LIGHTING = 3
 LIGHTING_STREAM = 1  # seeds lighting rngs as [seed, LIGHTING_STREAM, frame, k]; composites use [seed, n]
@@ -120,8 +122,53 @@ def _coco_train_objects(source_dir: Path) -> dict[str, list[tuple[int, list[Poly
 MAX_PAINT_OBJECTS = 255
 
 
+UNIT_STEMS = 64  # mask files per work unit
+
+
+def _cutout_unit(
+    args: tuple[Path, list[str], bool, dict[str, list], int],
+) -> tuple[list[Cutout], list[tuple[int, int]]]:
+    """(source_dir, mask stems in order, per_object, COCO objects for those stems, min_area_px) -> the unit's
+    cutouts and sizes, in order (the per-frame logic of `_cutouts_and_sizes`). Module-level so the process
+    pool can run it."""
+    source_dir, stems, per_object, by_stem, min_area_px = args
+    masks_dir = source_dir / "masks" / "masks" / "train"
+    cutouts: list[Cutout] = []
+    sizes: list[tuple[int, int]] = []
+    for stem in stems:
+        with Image.open(masks_dir / f"{stem}.png") as png:
+            width, height = png.size
+            semantic = np.array(png)
+        sizes.append((width, height))
+        objects = by_stem.get(stem, [])
+        counts: dict[int, int] = {}
+        for cls, _polygons in objects:
+            counts[cls] = counts.get(cls, 0) + 1
+        if per_object and all(n <= MAX_PAINT_OBJECTS for n in counts.values()):
+            found: list[tuple[int, np.ndarray] | None] = [None] * len(objects)
+            for cls in counts:
+                idxs = [i for i, (c, _polygons) in enumerate(objects) if c == cls]
+                class_masks = [polygons_to_mask(objects[i][1], width, height) for i in idxs]
+                canvas, _overlap = paint(list(enumerate(class_masks, start=1)), height, width)
+                for k, i in enumerate(idxs, start=1):
+                    found[i] = (cls, (canvas == k) & (semantic == cls + 1))
+        else:
+            found = [(int(v) - 1, semantic == v) for v in sorted(int(v) for v in np.unique(semantic) if v > 0)]
+        found = [(cls, clean_mask(mask, min_area_px)) for cls, mask in found]
+        found = [(cls, mask) for cls, mask in found if mask.any()]
+        if not found:
+            continue
+        image = np.array(Image.open(source_dir / "images" / f"{stem}.jpg").convert("RGB"))
+        for cls, mask in found:
+            cut = cutout_from(image, mask, cls)
+            if cut is not None:
+                cutouts.append(cut)
+    return cutouts, sizes
+
+
 def _cutouts_and_sizes(
     source_dir: Path, formats: list[str], min_area_px: int, tick: Callable[[], None],
+    workers: int | None = None, cancel: Callable[[], bool] = lambda: False,
 ) -> tuple[list[Cutout], list[tuple[int, int]], CutoutMode]:
     """Cutouts and `(width, height)` of every real train frame (the frames are listed from the `masks` format).
     Per object from the COCO train annotations when the source has `coco`, else per class region of the indexed
@@ -147,37 +194,19 @@ def _cutouts_and_sizes(
     """
     per_object = "coco" in formats
     by_stem = _coco_train_objects(source_dir) if per_object else {}
-    cutouts: list[Cutout] = []
-    sizes: list[tuple[int, int]] = []
-    for mask_path in sorted((source_dir / "masks" / "masks" / "train").glob("*.png")):
-        tick()
-        with Image.open(mask_path) as png:
-            width, height = png.size
-            semantic = np.array(png)
-        sizes.append((width, height))
-        objects = by_stem.get(mask_path.stem, [])
-        counts: dict[int, int] = {}
-        for cls, _polygons in objects:
-            counts[cls] = counts.get(cls, 0) + 1
-        if per_object and all(n <= MAX_PAINT_OBJECTS for n in counts.values()):
-            found: list[tuple[int, np.ndarray] | None] = [None] * len(objects)
-            for cls in counts:
-                idxs = [i for i, (c, _polygons) in enumerate(objects) if c == cls]
-                class_masks = [polygons_to_mask(objects[i][1], width, height) for i in idxs]
-                canvas, _overlap = paint(list(enumerate(class_masks, start=1)), height, width)
-                for k, i in enumerate(idxs, start=1):
-                    found[i] = (cls, (canvas == k) & (semantic == cls + 1))
-        else:
-            found = [(int(v) - 1, semantic == v) for v in sorted(int(v) for v in np.unique(semantic) if v > 0)]
-        found = [(cls, clean_mask(mask, min_area_px)) for cls, mask in found]
-        found = [(cls, mask) for cls, mask in found if mask.any()]
-        if not found:
-            continue
-        image = np.array(Image.open(source_dir / "images" / f"{mask_path.stem}.jpg").convert("RGB"))
-        for cls, mask in found:
-            cut = cutout_from(image, mask, cls)
-            if cut is not None:
-                cutouts.append(cut)
+    stems = sorted(p.stem for p in (source_dir / "masks" / "masks" / "train").glob("*.png"))
+    chunks = [stems[i:i + UNIT_STEMS] for i in range(0, len(stems), UNIT_STEMS)]
+    units = [(source_dir, chunk, per_object, {s: by_stem[s] for s in chunk if s in by_stem}, min_area_px)
+             for chunk in chunks]
+
+    def on_done(n: int) -> None:
+        for _ in range(n):
+            tick()
+
+    results = run_units(_cutout_unit, units, workers=workers, weight=lambda u: len(u[1]), on_done=on_done,
+                        cancel=cancel)
+    cutouts = [c for unit_cutouts, _sizes in results for c in unit_cutouts]
+    sizes = [s for _cutouts, unit_sizes in results for s in unit_sizes]
     return cutouts, sizes, "per_object" if per_object else "per_class_region"
 
 
@@ -323,7 +352,7 @@ def _merged_format_summaries(
 def run_augment(
     data_root: Path, export_id: str, opts: AugmentOptions,
     progress: Callable[[int, int], None] | None = None, cancel: Callable[[], bool] | None = None,
-    workers: int | None = None,  # accepted for the process pool; not used yet
+    workers: int | None = None,
 ) -> dict:
     data_root = Path(data_root)
     manifest = check_augment(data_root, export_id, opts)
@@ -359,13 +388,17 @@ def run_augment(
 
         cutout_mode: CutoutMode | None = None
         if opts.per_image:
-            cutouts, sizes, cutout_mode = _cutouts_and_sizes(source_dir, formats, min_area_px, tick)
+            cutouts, sizes, cutout_mode = _cutouts_and_sizes(
+                source_dir, formats, min_area_px, tick, workers, cancel or (lambda: False),
+            )
             pool_images = list_images(data_root, opts.pool)
 
         work = out / ".work"
         work_masks, work_images = work / "masks", work / "images"
         work_masks.mkdir(parents=True)
         work_images.mkdir(parents=True)
+        if opts.per_image:
+            pack_cutouts(cutouts, work)  # for the composite workers to memory-map
 
         synthetic: list[PlanFrame] = []
         for n in range(total_composites):

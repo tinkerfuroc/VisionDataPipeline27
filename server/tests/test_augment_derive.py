@@ -718,3 +718,55 @@ def test_a_copy_with_composites_and_lighting_names_both(store, make_clip, tmp_pa
     result = run_augment(data_root, src["export_id"], AugmentOptions(per_image=2, lighting=1))
     assert result["name"] == f"{src['export_id']} ×2 augmented +1 lighting"
     assert "-aug2x-lit1-" in result["export_id"]
+
+
+def _same_cutouts(a, b):
+    assert len(a) == len(b)
+    for x, y in zip(a, b, strict=True):
+        assert x.class_id == y.class_id
+        assert np.array_equal(x.image, y.image) and np.array_equal(x.mask, y.mask)
+
+
+@pytest.mark.parametrize("formats", [["yolo_seg", "coco", "masks"], ["yolo_seg", "masks"]])
+def test_cutouts_are_identical_for_one_and_two_workers(store, make_clip, tmp_path, formats):
+    from vdp.augment import derive
+
+    project, clip = _multi(store, make_clip, n=6)
+    src = _export(store, project, clip, formats, tmp_path / "data")
+    old = derive.UNIT_STEMS
+    derive.UNIT_STEMS = 2  # several units even for a small fixture (the worker processes use the default)
+    try:
+        ticks = []
+        one = _cutouts_and_sizes(Path(src["path"]), formats, 64, lambda: ticks.append(1), workers=1)
+        two = _cutouts_and_sizes(Path(src["path"]), formats, 64, lambda: None, workers=2)
+    finally:
+        derive.UNIT_STEMS = old
+    _same_cutouts(one[0], two[0])
+    assert one[1] == two[1] and one[2] == two[2]
+    assert len(ticks) == _train_images(src)
+
+
+def test_a_unit_without_objects_contributes_nothing_and_keeps_order(store, make_clip, tmp_path):
+    from vdp.augment import derive
+
+    project, clip = _labelled_at(store, make_clip, 6, [0, 1, 4, 5])  # frames 2, 3 are empty
+    formats = ["yolo_seg", "coco", "masks"]
+    src = _export(store, project, clip, formats, tmp_path / "data")
+    whole = _cutouts_and_sizes(Path(src["path"]), formats, 64, lambda: None, workers=1)
+    old = derive.UNIT_STEMS
+    derive.UNIT_STEMS = 1
+    try:
+        split = _cutouts_and_sizes(Path(src["path"]), formats, 64, lambda: None, workers=1)
+    finally:
+        derive.UNIT_STEMS = old
+    _same_cutouts(whole[0], split[0])
+    assert whole[1] == split[1]
+    assert len(split[0]) < len(split[1])
+
+
+def test_cancel_is_passed_to_the_unit_runner(store, make_clip, tmp_path):
+    project, clip = _labelled(store, make_clip)
+    formats = ["yolo_seg", "masks"]
+    src = _export(store, project, clip, formats, tmp_path / "data")
+    with pytest.raises(ExportCancelled):
+        _cutouts_and_sizes(Path(src["path"]), formats, 64, lambda: None, workers=1, cancel=lambda: True)
