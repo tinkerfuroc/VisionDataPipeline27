@@ -319,7 +319,9 @@ def _train(settings: Settings, args, *, gpus=None, worker_cmd=None, poll: float 
             return 2
     try:
         params = TrainParams(epochs=args.epochs, imgsz=args.imgsz, batch=args.batch, patience=args.patience,
-                             workers=args.workers, seed=args.seed, augment=args.augment)
+                             workers=args.workers, seed=args.seed, augment=args.augment,
+                             train_images_per_epoch=args.images_per_epoch,
+                             val_images_per_epoch=args.val_images_per_epoch)
     except ValidationError as e:
         print(f"error: {e}")
         return 2
@@ -481,6 +483,12 @@ def main(argv: list[str] | None = None) -> int:
     p_train.add_argument("--workers", type=int, default=8)
     p_train.add_argument("--seed", type=int, default=0)
     p_train.add_argument("--augment", choices=["default", "strong"], default="default")
+    p_train.add_argument("--images-per-epoch", type=int, default=None,
+                         help="train on this many images per epoch, a new slice of the shuffled train set each epoch "
+                              "(default: all of them)")
+    p_train.add_argument("--val-images-per-epoch", type=int, default=None,
+                         help="validate each epoch on a fixed subset of this many val images; the final evaluation "
+                              "still uses all of them (default: all of them)")
     p_bg = sub.add_parser("backgrounds", help="manage background image pools for synthetic composites")
     bg_sub = p_bg.add_subparsers(dest="bg_cmd", required=True)
     p_bg_fetch = bg_sub.add_parser("fetch", help="download and extract a background pool")

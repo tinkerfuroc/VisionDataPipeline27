@@ -58,6 +58,7 @@ def summarize(rows: list[dict]) -> dict | None:
 
 
 FINAL_VAL = "final_val.json"  # in the run dir: best.pt on the whole val split, for a run validated on a subset
+SPEED = "speed.json"  # in the run dir: the last measured train and val throughput (images per second)
 
 
 def run_summary(run_dir: Path) -> dict | None:

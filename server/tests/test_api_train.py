@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 
 import pytest
@@ -396,3 +397,23 @@ def test_predictions_filters_and_counts(client):
     assert item["index"] == 0 and 0.0 < item["iou"] <= 1.0
     assert client.get(f"/api/train/runs/{rid}/predictions?filter=missed").json()["total"] == 0
     assert client.get(f"/api/train/runs/{rid}/predictions?filter=nope").status_code == 422
+
+
+def test_sampled_epoch_params_and_the_runs_measured_speed(client, tmp_path):
+    params = {"epochs": 2, "imgsz": 640, "batch": 1, "train_images_per_epoch": 1, "val_images_per_epoch": 1}
+    r = client.post("/api/train/runs", json={"export_id": EXPORT_ID, "runs": [{"model": "yolo26s-seg", "gpu": 0}],
+                                             "params": params})
+    assert r.status_code == 201, r.text
+    rid = r.json()["run_ids"][0]
+    view = until(client, rid, "done")
+    assert view["params"]["train_images_per_epoch"] == 1 and view["params"]["val_images_per_epoch"] == 1
+    assert view["sampling"] == {"train_images": 2, "train_images_per_epoch": 1, "val_images": 2,
+                                "val_images_per_epoch": 1, "warmup_epochs": 1.0, "close_mosaic": 2}
+    assert view["speed"] is None
+    speed = {"train_images_per_s": 65.0, "val_images_per_s": 80.0, "batch": 1, "imgsz": 640}
+    (tmp_path / "data" / "runs" / rid / "speed.json").write_text(json.dumps(speed))
+    assert client.get("/api/train/runs").json()[0]["speed"] == speed
+    assert client.get("/api/train/status").json()["defaults"]["train_images_per_epoch"] is None
+    bad = client.post("/api/train/runs", json={"export_id": EXPORT_ID, "runs": [{"model": "yolo26s-seg", "gpu": 0}],
+                                               "params": {**params, "batch": 4, "train_images_per_epoch": 2}})
+    assert bad.status_code == 422

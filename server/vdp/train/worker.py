@@ -19,7 +19,7 @@ from pathlib import Path
 import yaml
 
 from .models import train_overrides
-from .results import FINAL_VAL, run_summary
+from .results import FINAL_VAL, SPEED, run_summary
 from .runs import atomic_write_json, best_weights, last_weights, onnx_weights, read_json
 from .sampled_trainer import sampled_trainer
 from .sampling import IMAGE_SUFFIXES, VAL_SUBSET_DIR, choose_val_subset, read_image_classes, write_val_subset
@@ -37,7 +37,6 @@ from .lighting_aug import Lighting
 CANCELLED_EXIT = 2
 PREDICT_CONF = 0.25
 _IMAGE_SUFFIXES = IMAGE_SUFFIXES
-SPEED = "speed.json"  # in the run dir: the last epoch's measured train and val throughput (images per second)
 
 
 def write_data_yaml(yolo_dir: Path, out: Path) -> Path:

@@ -27,7 +27,7 @@ from ..train.models import (
     rename_export,
     run_classes,
 )
-from ..train.results import read_metrics, tail
+from ..train.results import SPEED, read_metrics, tail
 from ..train.runs import best_weights, onnx_weights, read_json
 from ..train.scheduler import (
     Gpu,
@@ -77,6 +77,8 @@ def _view(state, run: dict, *, detail: bool = False) -> dict:
         source_run=run.get("source_run"),
         start_mode=run.get("start_mode"),
         continued_from_epoch=run.get("continued_from_epoch"),
+        sampling=run.get("sampling"),  # sampled epochs (vdp.train.sampling); None for whole epochs and older runs
+        speed=read_json(run_dir / SPEED),  # the worker's last measured train/val images per second, if any
         # "Train from a previous run" eligibility, mirroring TrainScheduler.submit_from's own checks.
         continuable=resumable,
         finetunable=has_best,

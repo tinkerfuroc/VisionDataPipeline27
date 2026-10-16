@@ -41,7 +41,8 @@ def _settings(tmp_path):
 
 def _args(**kw):
     base = {"list": False, "export": EXPORT_ID, "model": None, "from_run": None, "mode": None, "gpu": 1,
-            "epochs": 2, "imgsz": 640, "batch": 8, "patience": 30, "workers": 0, "seed": 0, "augment": "default"}
+            "epochs": 2, "imgsz": 640, "batch": 8, "patience": 30, "workers": 0, "seed": 0, "augment": "default",
+            "images_per_epoch": None, "val_images_per_epoch": None}
     return argparse.Namespace(**{**base, **kw})
 
 
@@ -205,6 +206,18 @@ def test_sighup_is_routed_unless_ignored(tmp_path, capsys, monkeypatch, inherite
         assert signal.getsignal(signal.SIGHUP) is inherited and signal.getsignal(signal.SIGTERM) is original_term
     finally:
         signal.signal(signal.SIGHUP, original_hup)
+
+
+def test_images_per_epoch(tmp_path, capsys):
+    s = _settings(tmp_path)
+    rc = vdp.cli._train(s, _args(model=["yolo26s-seg"], batch=1, images_per_epoch=1, val_images_per_epoch=1),
+                        gpus=[Gpu(1, "B", 1)], worker_cmd=FAKE_WORKER, poll=0.05)
+    assert rc == 0
+    (run_dir,) = (s.project.data_root / "runs").iterdir()
+    run = json.loads((run_dir / "run.json").read_text())
+    assert run["params"]["train_images_per_epoch"] == 1 and run["params"]["val_images_per_epoch"] == 1
+    assert run["sampling"]["train_images_per_epoch"] == 1
+    assert vdp.cli._train(s, _args(images_per_epoch=4), gpus=[Gpu(0, "A", 1)], worker_cmd=FAKE_WORKER) == 2  # < batch
 
 
 def test_bad_input(tmp_path, capsys):
