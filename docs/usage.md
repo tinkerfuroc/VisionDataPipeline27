@@ -72,6 +72,25 @@ current frame; the others are named as skipped) or **Selected** only; lost objec
 "Clear masks" acts on the **Active object** (default) or **All objects**. `K`, `G` and "has a mask here" follow the
 active object's own lane, not its class's.
 
+## Hiding confusing areas (regions)
+
+Some footage has areas that only confuse SAM3: a second machine in the corner, a reflection, a label that looks like
+the part. The **Regions** tool (in the tool rail; it needs no engine) lets you take them out. Two shapes are available
+per frame range: a **crop** (keep only this rectangle) and **blocked boxes** (exclude these). SAM3 never sees an
+excluded area, no label pixels are written there (a mask that reaches into one is trimmed), and exports are cropped
+to the crop and greyed over the blocked boxes. A click on an excluded spot is ignored with a note. The outlines show
+on the frame with every tool.
+
+Regions apply to a **frame range**, because a camera or a part moves: press **Add region from here** on a frame no
+range covers, **New range from here** to split the range at the current frame (the new range starts as a copy), or
+**Set start / end to this frame** to change a range's bounds. Choose Crop or Block, then drag on the frame to draw; drag a box to
+move it and its corners to resize it. Edits are a draft ("Unsaved changes") until you press **Save regions**;
+**Discard** drops them. Leaving the tool, going back to the clips list or closing the page asks first while a draft is
+open. A running propagation keeps the regions it started with.
+
+Saving regions does not rewrite existing masks: labels already on disk are cut at export, not changed. Re-propagate
+or re-prompt a frame to get a mask trimmed to the regions.
+
 ## Keyboard
 
 `Enter` accept · `Esc` clear · `Z` undo click · `←/→` step · `Shift+←/→` ±10 · `Space` play/pause · `K` / `Shift+K`

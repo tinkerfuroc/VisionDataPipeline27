@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, type MouseEvent } from "react";
-import type { Box, Candidate } from "../api/types";
+import type { Box, Candidate, Rect, RegionRange } from "../api/types";
 import type { BrushMode } from "../lib/brush";
 import { MASK_ALPHA, PREVIEW_ALPHA, compositeKey, type FrameStore, type MaskPart } from "../lib/frameCache";
 import {
@@ -7,6 +7,7 @@ import {
 } from "../lib/geometry";
 import { hexToRgb, type Outline } from "../lib/mask";
 import type { Draft, Tool } from "../lib/promptState";
+import { dragRect, hitTest, isExcluded, normRect, type Hit } from "../lib/regions";
 
 type Props = {
   store: FrameStore;
@@ -38,7 +39,17 @@ type Props = {
     size: number; layer: HTMLCanvasElement | null; baseVersion: number;
     onStart: (mode: BrushMode, x: number, y: number) => void; onExtend: (x: number, y: number) => void; onEnd: () => void;
   } | null;
+  /** the current frame's region: outside the crop darkened, blocked boxes grey and hatched. Drawn always. */
+  region?: RegionRange | null;
+  /** when set, left-button drags edit the region: a press on a handle or inside a block or the crop moves/resizes
+   * it, on a block's × deletes it, elsewhere draws a new block (or replaces the crop when `draw` is "crop").
+   * `onChange` is called once on mouseup. Prompting input (`tool`) is ignored meanwhile; pan and zoom still work. */
+  regionEdit?: { draw: "block" | "crop"; onChange: (next: RegionEdit) => void } | null;
+  /** called instead of `onPoint` for a positive click in the region's excluded area */
+  onExcluded?: () => void;
 };
+
+type RegionEdit = { crop: Rect | null; blocks: Rect[] };
 
 const DRAG_PX = 4;
 const MAX_SCALE = 40;
@@ -53,10 +64,48 @@ type Drag = {
   button: number; sx: number; sy: number; ix: number; iy: number; lastX: number; lastY: number; moved: boolean;
   /** a brush stroke is in progress; the box/click logic is skipped for this drag */
   painting?: boolean;
+  /** a region edit is in progress (state in `regionDrag`); the box/click logic is skipped for this drag */
+  region?: boolean;
 };
 
+const HANDLE_PX = 8;
+const DELETE_PX = 12;
+
+/** Outside the crop darkened, blocked boxes grey and hatched: what SAM3 and the export will not see. */
+function drawRegion(ctx: CanvasRenderingContext2D, r: RegionEdit, w: number, h: number, scale: number) {
+  if (r.crop) {
+    const [x0, y0, x1, y1] = r.crop;
+    ctx.fillStyle = "rgba(0, 0, 0, 0.6)";
+    ctx.beginPath();
+    ctx.rect(0, 0, w, h);
+    ctx.rect(x0, y0, x1 - x0, y1 - y0);
+    ctx.fill("evenodd");
+    ctx.strokeStyle = "#e5e5e5";
+    ctx.lineWidth = 1 / scale;
+    ctx.strokeRect(x0, y0, x1 - x0, y1 - y0);
+  }
+  for (const [x0, y0, x1, y1] of r.blocks) {
+    ctx.fillStyle = "rgba(114, 114, 114, 0.85)";
+    ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(x0, y0, x1 - x0, y1 - y0);
+    ctx.clip();
+    ctx.strokeStyle = "rgba(30, 31, 33, 0.7)";
+    ctx.lineWidth = 1 / scale;
+    ctx.beginPath();
+    const step = 8 / scale;
+    for (let hx = x0 - (y1 - y0); hx < x1; hx += step) {
+      ctx.moveTo(hx, y1);
+      ctx.lineTo(hx + (y1 - y0), y0);
+    }
+    ctx.stroke();
+    ctx.restore();
+  }
+}
+
 export function FrameCanvas(props: Props) {
-  const { store, width, height, frameUrl, masks, color, outline, tool, candidates, onPoint, onBox, onPickCandidate, fitSignal, brush } = props;
+  const { store, width, height, frameUrl, masks, color, outline, tool, candidates, onPoint, onBox, onPickCandidate, fitSignal, brush, regionEdit } = props;
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const size = useRef({ w: 0, h: 0 });
@@ -66,6 +115,8 @@ export function FrameCanvas(props: Props) {
   const layers = useRef<LayerState>({ owner: null, items: [] });
   const drag = useRef<Drag | null>(null);
   const dragBox = useRef<Box | null>(null);
+  /** a live region edit: what was grabbed (null: drawing a new rect), where, and the region as edited so far */
+  const regionDrag = useRef<{ hit: Hit | null; start: [number, number]; draft: RegionEdit } | null>(null);
   const latest = useRef(props);
   latest.current = props;
   const rgb = useMemo(() => hexToRgb(color), [color]);
@@ -117,7 +168,40 @@ export function FrameCanvas(props: Props) {
         ctx.globalAlpha = 1;
       }
     }
+    const live = regionDrag.current?.draft ?? p.region ?? null;
+    if (live) drawRegion(ctx, live, p.width, p.height, v.scale);
     ctx.restore();
+
+    if (p.regionEdit) {
+      const region = regionDrag.current?.draft ?? p.region ?? null;
+      const rects = region ? [...(region.crop ? [region.crop] : []), ...region.blocks] : [];
+      ctx.lineWidth = 1;
+      for (const r of rects) {
+        for (const [cx, cy] of [[r[0], r[1]], [r[2], r[1]], [r[0], r[3]], [r[2], r[3]]]) {
+          const [x, y] = toScreen(v, cx, cy);
+          ctx.fillStyle = "#ffffff";
+          ctx.strokeStyle = "#000000";
+          ctx.fillRect(x - HANDLE_PX / 2, y - HANDLE_PX / 2, HANDLE_PX, HANDLE_PX);
+          ctx.strokeRect(x - HANDLE_PX / 2, y - HANDLE_PX / 2, HANDLE_PX, HANDLE_PX);
+        }
+      }
+      ctx.font = "bold 12px sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      for (const b of region?.blocks ?? []) {
+        const [x, y] = toScreen(v, b[2], b[1]);
+        ctx.beginPath();
+        ctx.arc(x, y, DELETE_PX / 2, 0, 2 * Math.PI);
+        ctx.fillStyle = "#ef4444";
+        ctx.fill();
+        ctx.strokeStyle = "#ffffff";
+        ctx.stroke();
+        ctx.fillStyle = "#ffffff";
+        ctx.fillText("\u00d7", x, y);
+      }
+      ctx.textAlign = "start";
+      ctx.textBaseline = "alphabetic";
+    }
 
     if (p.brush !== null && pointer.current !== null) {
       const [px, py] = pointer.current;
@@ -277,6 +361,15 @@ export function FrameCanvas(props: Props) {
     const [ix, iy] = toImage(view.current, sx, sy);
     const d: Drag = { button: e.button, sx, sy, ix, iy, lastX: sx, lastY: sy, moved: false };
     drag.current = d;
+    if (regionEdit && e.button === 0) {
+      const region = props.region ?? null;
+      regionDrag.current = {
+        hit: hitTest(region, ix, iy, 6 / view.current.scale), start: [ix, iy],
+        draft: { crop: region?.crop ?? null, blocks: region?.blocks ?? [] },
+      };
+      d.region = true;
+      return;
+    }
     if (brush !== null && (e.button === 0 || e.button === 2)) {
       const bx = Number.isFinite(ix) ? Math.floor(ix) : 0;
       const by = Number.isFinite(iy) ? Math.floor(iy) : 0;
@@ -285,6 +378,9 @@ export function FrameCanvas(props: Props) {
       draw();
     }
   };
+
+  // the Regions tool owns left-drags and clicks, so prompting is off while it is active
+  const promptTool = regionEdit ? null : tool;
 
   const onMouseMove = (e: MouseEvent) => {
     const d = drag.current;
@@ -309,12 +405,33 @@ export function FrameCanvas(props: Props) {
       draw();
       return;
     }
+    if (d.region) {
+      const rd = regionDrag.current;
+      if (e.buttons === 0 || rd === null) {
+        endDrag(false);
+        return;
+      }
+      const [ix, iy] = toImage(view.current, sx, sy);
+      const base = props.region ?? null;
+      const crop = base?.crop ?? null;
+      const blocks = base?.blocks ?? [];
+      const { hit } = rd;
+      if (hit === null) {
+        const r = normRect(rd.start, [ix, iy], width, height);
+        rd.draft = regionEdit?.draw === "crop" ? { crop: r, blocks } : { crop, blocks: [...blocks, r] };
+      } else if (hit.part !== "delete") {
+        const r = dragRect(hit.kind === "crop" ? crop! : blocks[hit.index], hit.part, ix - rd.start[0], iy - rd.start[1], width, height);
+        rd.draft = hit.kind === "crop" ? { crop: r, blocks } : { crop, blocks: blocks.map((b, i) => (i === hit.index ? r : b)) };
+      }
+      draw();
+      return;
+    }
     if (d.button === 1) {
       view.current = panBy(view.current, sx - d.lastX, sy - d.lastY);
       d.lastX = sx;
       d.lastY = sy;
       draw();
-    } else if (d.button === 0 && tool === "box" && d.moved) {
+    } else if (d.button === 0 && promptTool === "box" && d.moved) {
       dragBox.current = normBox([d.ix, d.iy], toImage(view.current, sx, sy), width, height);
       draw();
     }
@@ -328,6 +445,13 @@ export function FrameCanvas(props: Props) {
       draw();
       return;
     }
+    if (d?.region) {
+      const rd = regionDrag.current;
+      regionDrag.current = null;
+      if (commit && rd !== null && regionEdit) commitRegion(rd, regionEdit.onChange);
+      draw();
+      return;
+    }
     const box = dragBox.current;
     dragBox.current = null;
     if (d === null || d.button === 1) return;
@@ -336,16 +460,40 @@ export function FrameCanvas(props: Props) {
       draw();
       return;
     }
-    if (!commit || d.moved || tool === null) return;
+    if (!commit || d.moved || promptTool === null) return;
     const [ix, iy] = [d.ix, d.iy];
     if (!insideImage(ix, iy, width, height)) return;
     const [x, y] = clampPoint(ix, iy, width, height);
-    if (tool === "text") {
+    if (promptTool === "text") {
       const index = pickCandidate(candidates.map((c) => c.bbox), x, y);
       if (index !== null) onPickCandidate(index);
       return;
     }
+    if (d.button === 0 && props.onExcluded && isExcluded(props.region ?? null, x, y)) {
+      props.onExcluded();
+      return;
+    }
     onPoint(x, y, d.button === 2 ? 0 : 1);
+  };
+
+  /** report a finished region edit, unless it changed nothing (a click, a too-small new rect) */
+  const commitRegion = (rd: NonNullable<typeof regionDrag.current>, onChange: (next: RegionEdit) => void) => {
+    const base = props.region ?? null;
+    const blocks = base?.blocks ?? [];
+    const { hit, draft } = rd;
+    if (hit === null) {
+      // untouched arrays mean the pointer never moved: a plain click draws nothing
+      const crop = regionEdit?.draw === "crop";
+      const r = crop ? draft.crop : draft.blocks[draft.blocks.length - 1];
+      const drawn = crop ? draft.crop !== (base?.crop ?? null) : draft.blocks !== blocks;
+      if (drawn && r && r[2] - r[0] >= 2 && r[3] - r[1] >= 2) onChange(draft);
+    } else if (hit.part === "delete") {
+      onChange({ crop: base?.crop ?? null, blocks: blocks.filter((_, i) => i !== hit.index) });
+    } else {
+      const before = hit.kind === "crop" ? base?.crop : blocks[hit.index];
+      const after = hit.kind === "crop" ? draft.crop : draft.blocks[hit.index];
+      if (before && after && before.some((v, i) => v !== after[i])) onChange(draft);
+    }
   };
 
   return (
@@ -354,7 +502,7 @@ export function FrameCanvas(props: Props) {
         ref={canvasRef}
         aria-label="Frame"
         className="block h-full w-full"
-        style={{ cursor: brush !== null ? "none" : tool === null ? "default" : "crosshair" }}
+        style={{ cursor: brush !== null ? "none" : regionEdit || tool !== null ? "crosshair" : "default" }}
         onMouseDown={onMouseDown}
         onMouseMove={onMouseMove}
         onMouseUp={() => endDrag(true)}

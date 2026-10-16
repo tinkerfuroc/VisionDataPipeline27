@@ -1,6 +1,6 @@
 import { isLoginRequired, toLogin } from "./auth";
 import type {
-  AcceptResult, AugmentRequest, BackgroundPool, Candidate, ClassDef, ClipDetail, ClipSummary, Direction, ExportInfo, ExportRequest, ExportSample, FromCheckpointRequest, Health, JobSnapshot, MaskResult, ObjectSelection, PredictionFilter, PredictionPage, Project, PromptSpec, Run, RunDetail, StartRunsRequest, TrainStatus, UploadInfo, WriteTarget,
+  AcceptResult, AugmentRequest, BackgroundPool, Candidate, ClassDef, ClipDetail, ClipSummary, Direction, ExportInfo, ExportRequest, ExportSample, FromCheckpointRequest, Health, JobSnapshot, MaskResult, ObjectSelection, PredictionFilter, PredictionPage, Project, PromptSpec, RegionRange, Run, RunDetail, StartRunsRequest, TrainStatus, UploadInfo, WriteTarget,
 } from "./types";
 
 /** The `job_id` the server reports while a prompt/accept/clear-range call holds the GPU lease. */
@@ -150,6 +150,12 @@ const patch = (body: unknown): RequestInit => ({
   body: JSON.stringify(body),
 });
 
+const put = (body: unknown): RequestInit => ({
+  method: "PUT",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify(body),
+});
+
 /** `object_id` is always sent (the server requires the key; null = a new object); `class_id` only for a new object. */
 const targetBody = (t: WriteTarget) =>
   t.objectId === null ? { object_id: null, class_id: t.classId } : { object_id: t.objectId };
@@ -210,6 +216,9 @@ export const api = {
     ),
   setMask: (clipId: string, frame: number, maskPngB64: string, target: WriteTarget) =>
     request<MaskResult>(`/api/clips/${clipId}/mask`, post({ frame, mask_png_b64: maskPngB64, ...targetBody(target) })),
+  /** replaces the clip's regions; saved masks are left as they are */
+  setRegions: (clipId: string, regions: RegionRange[]) =>
+    request<ClipDetail>(`/api/clips/${clipId}/regions`, put({ regions })),
   propagate: (clipId: string, fromFrame: number, direction: Direction, objects: ObjectSelection = "all") =>
     request<{ job_id: string }>(`/api/clips/${clipId}/propagate`, post({ from_frame: fromFrame, direction, objects })),
 

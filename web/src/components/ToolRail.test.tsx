@@ -35,4 +35,13 @@ describe("ToolRail", () => {
     }
     expect((screen.getByRole("button", { name: "Fit" }) as HTMLButtonElement).disabled).toBe(false);
   });
+
+  it("offers the Regions tool even when prompting is disabled (no engine)", () => {
+    const onTool = vi.fn();
+    render(<ToolRail tool="clicks" disabled brushDisabled={false} locked={false} onTool={onTool} onFit={() => {}} />);
+    const button = screen.getByRole("button", { name: "Regions" }) as HTMLButtonElement;
+    expect(button.disabled).toBe(false);
+    fireEvent.click(button);
+    expect(onTool).toHaveBeenCalledWith("regions");
+  });
 });

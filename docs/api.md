@@ -53,6 +53,21 @@ that object.
   each object's id (as a string key) to its own per-frame state list (`empty`/`masked`/`keyframe`/`deleted`),
   alongside the `states` field, which keeps reporting the whole clip (any object).
 
+## Clip regions
+
+`PUT /api/clips/{clip_id}/regions` replaces the clip's regions, the per-frame-range crop and blocked boxes that SAM3
+never sees:
+
+```json
+{"regions": [{"start": 0, "end": 49, "crop": [x0, y0, x1, y1], "blocks": [[x0, y0, x1, y1]]}]}
+```
+
+`start` and `end` are inclusive frame indices, `crop` is `null` or a rectangle in pixels, and `blocks` may be empty.
+The empty list clears all regions. Responses: `200` with the same body as `GET /api/clips/{id}` (the clip's `regions`
+holds the saved list); `400` when the regions are invalid, the message naming the range (for example
+`region 3–8 overlaps region 0–5`); `404` for an unknown clip; `422` for a malformed body. Saved masks are not
+rewritten (they are cut at export), and a propagation that is already running keeps the regions it started with.
+
 ## Login
 
 When a team password is set (`vdp set-password`), every route needs the `vdp_session` cookie except `GET /login`,

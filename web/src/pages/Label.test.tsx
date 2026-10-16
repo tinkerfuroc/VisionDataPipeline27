@@ -27,6 +27,7 @@ vi.mock("../api/rest", async (original) => ({
     clearRange: vi.fn(),
     getJob: vi.fn(),
     setMask: vi.fn(),
+    setRegions: vi.fn(),
   },
 }));
 
@@ -747,5 +748,38 @@ describe("Label page (objects)", () => {
     fireEvent.click(within(screen.getByRole("group", { name: "Objects to clear" })).getByRole("radio", { name: "All objects" }));
     fireEvent.click(screen.getByRole("button", { name: "Clear masks in frame 0" }));
     await waitFor(() => expect(api.clearRange).toHaveBeenLastCalledWith("c1", 0, 0, "all"));
+  });
+});
+
+describe("Label page (regions)", () => {
+  const openRegions = async () => {
+    vi.mocked(api.getClip).mockResolvedValue(detail);
+    renderLabel();
+    fireEvent.click(await screen.findByRole("button", { name: "Regions" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add region from here" }));
+  };
+
+  it("edits, saves and discards regions with the Regions tool", async () => {
+    await openRegions();
+    expect(screen.getByText("Unsaved changes")).toBeTruthy();
+    vi.mocked(api.setRegions).mockResolvedValue({
+      ...detail,
+      clip: { ...detail.clip, regions: [{ start: 0, end: detail.clip.frame_count - 1, crop: null, blocks: [] }] },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save regions" }));
+    await waitFor(() => expect(api.setRegions).toHaveBeenCalledWith("c1", [expect.objectContaining({ start: 0 })]));
+    await waitFor(() => expect(screen.queryByText("Unsaved changes")).toBeNull());
+  });
+
+  it("asks before leaving the Regions tool with unsaved changes", async () => {
+    await openRegions();
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    fireEvent.click(screen.getByRole("button", { name: "Click" }));
+    expect(confirm).toHaveBeenCalled();
+    expect(screen.getByText("Unsaved changes")).toBeTruthy(); // stayed
+    confirm.mockReturnValue(true);
+    fireEvent.click(screen.getByRole("button", { name: "Click" }));
+    expect(screen.queryByText("Unsaved changes")).toBeNull();
+    confirm.mockRestore();
   });
 });

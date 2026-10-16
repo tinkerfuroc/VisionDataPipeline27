@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
-import type { FrameState } from "../api/types";
+import type { FrameState, RegionRange } from "../api/types";
 import { GUTTER, clampScroll, laneAt, layoutLanes, scrollToShow, type Lane } from "../lib/lanes";
+import { regionRuns, regionWords } from "../lib/regions";
 import { frameAtX, runs } from "../lib/timeline";
 
 type Props = {
@@ -16,6 +17,8 @@ type Props = {
   thumb?: { url: (frame: number) => string; aspect: number };
   /** frames marked for clearing (inclusive), drawn as a bracket over the lanes */
   range?: [number, number] | null;
+  /** clip regions: a status line under the lanes, excluded frames solid, all-clear frames a hairline; omit to leave it out */
+  regions?: RegionRange[];
   onSeek: (frame: number) => void;
   /** Shift-drag marks a range instead of seeking; omit to disable marking */
   onRange?: (range: [number, number]) => void;
@@ -25,6 +28,8 @@ type Props = {
 
 const TOP = 6; // room above the lanes for the playhead's flag
 const RULER = 18; // the frame-number ruler under the lanes
+const REGION_H = 4; // the regions status line under the lanes
+const REGION_GAP = 2;
 const THUMB_W = 176;
 const HIDDEN_ALPHA = 0.4;
 // canvas cannot read the Tailwind theme; these mirror tailwind.config.js
@@ -34,6 +39,7 @@ const LINE = "#4A4D52";
 const WELL = "#1E1F21";
 const PANEL = "#36383C";
 const KEY = "#F59E0B";
+const REGION = "#38BDF8";
 const STEPS = [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000];
 const WORDS: Record<FrameState, string> = { keyframe: "keyframe", masked: "masked", empty: "no mask", deleted: "deleted" };
 const NO_CLASSES = "No classes yet";
@@ -98,7 +104,7 @@ function drawLane(ctx: CanvasRenderingContext2D, states: readonly FrameState[], 
 }
 
 /** One lane per class (spec §9): the active lane tall, the names in a gutter on the left, the playhead across all. */
-export function Timeline({ states, lanes, activeClassId, frame, thumb, range = null, onSeek, onRange, onSelect }: Props) {
+export function Timeline({ states, lanes, activeClassId, frame, thumb, range = null, regions, onSeek, onRange, onSelect }: Props) {
   const wrap = useRef<HTMLDivElement>(null);
   const canvas = useRef<HTMLCanvasElement>(null);
   const [width, setWidth] = useState(0);
@@ -113,7 +119,8 @@ export function Timeline({ states, lanes, activeClassId, frame, thumb, range = n
     // eslint-disable-next-line react-hooks/exhaustive-deps -- idsKey stands for the lane ids, all layoutLanes reads
     [idsKey, activeClassId],
   );
-  const height = TOP + layout.view + RULER;
+  const regionsH = regions === undefined ? 0 : REGION_H + REGION_GAP;
+  const height = TOP + layout.view + regionsH + RULER;
 
   // keep the active lane in view whenever it (or the set of lanes) changes; the wheel scrolls freely in between
   useEffect(() => setScroll((s) => scrollToShow(s, layout, activeClassId)), [layout, activeClassId]);
@@ -181,8 +188,29 @@ export function Timeline({ states, lanes, activeClassId, frame, thumb, range = n
       ctx.fillRect(width - 3, TOP + (scroll * view) / layout.content, 3, (view * view) / layout.content);
     }
 
+    // regions status line: a solid run where a crop or block applies, a hairline where the frames are all clear
+    if (regions !== undefined) {
+      const y = TOP + view + REGION_GAP;
+      for (const r of regionRuns(regions, states.length)) {
+        const x = GUTTER + r.start * px;
+        const w = (r.end - r.start + 1) * px;
+        if (r.excluded) {
+          ctx.fillStyle = REGION;
+          ctx.fillRect(x, y, w, REGION_H);
+        } else {
+          ctx.fillStyle = LINE;
+          ctx.fillRect(x, y + REGION_H / 2 - 0.5, w, 1);
+        }
+      }
+      ctx.fillStyle = DIM;
+      ctx.font = '500 12px "Barlow Semi Condensed", sans-serif';
+      ctx.textAlign = "left";
+      ctx.textBaseline = "middle"; // centred on the strip; the text is taller than it and spills into the gap
+      ctx.fillText("Regions", 0, y + REGION_H / 2);
+    }
+
     // ruler
-    const rulerTop = TOP + view;
+    const rulerTop = TOP + view + regionsH;
     const step = STEPS.find((s) => s * px >= 56) ?? STEPS[STEPS.length - 1];
     ctx.fillStyle = DIM;
     ctx.font = '500 12px "Barlow Semi Condensed", sans-serif';
@@ -231,7 +259,7 @@ export function Timeline({ states, lanes, activeClassId, frame, thumb, range = n
     ctx.lineTo(cx, 6);
     ctx.closePath();
     ctx.fill();
-  }, [states, lanes, layout, scroll, frame, width, height, hover, range, fontsReady]);
+  }, [states, lanes, layout, scroll, frame, width, height, hover, range, regions, regionsH, fontsReady]);
 
   const point = (e: MouseEvent<HTMLCanvasElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
@@ -311,7 +339,7 @@ export function Timeline({ states, lanes, activeClassId, frame, thumb, range = n
             <img src={thumb.url(hover)} alt="" className="block w-full bg-well object-contain" style={{ aspectRatio: thumb.aspect }} />
           )}
           <p className="flex justify-between px-1.5 py-0.5 font-cond text-xs">
-            <span>{`frame ${hover}`}</span>
+            <span>{regions === undefined ? `frame ${hover}` : `frame ${hover} · ${regionWords(regions, hover)}`}</span>
             {lanes.length === 0 && <span className="text-dim">{WORDS[states[hover] ?? "empty"]}</span>}
           </p>
           {lanes.length > 0 && (
