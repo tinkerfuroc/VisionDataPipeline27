@@ -10,7 +10,7 @@ import { FrameCanvas } from "../components/FrameCanvas";
 import { ObjectsPanel } from "../components/ObjectsPanel";
 import { OverlayPanel } from "../components/OverlayPanel";
 import { PromptPanel } from "../components/PromptPanel";
-import { RegionsPanel } from "../components/RegionsPanel";
+import { RegionsPanel, type Highlight } from "../components/RegionsPanel";
 import { PropagatePanel, type PropagateScope } from "../components/PropagatePanel";
 import { Timeline } from "../components/Timeline";
 import { ToolRail, type RailTool } from "../components/ToolRail";
@@ -54,6 +54,7 @@ export function Label() {
   const [mode, setMode] = useState<"prompt" | "brush" | "regions">("prompt");
   const [regionDraft, setRegionDraft] = useState<RegionRange[] | null>(null); // null = no unsaved region edits
   const [regionDrawMode, setRegionDrawMode] = useState<"block" | "crop">("block");
+  const [regionHighlight, setRegionHighlight] = useState<Highlight | null>(null);
   const [regionSaving, setRegionSaving] = useState(false);
   const [regionError, setRegionError] = useState<string | null>(null);
   const [excludedNote, setExcludedNote] = useState<string | null>(null);
@@ -241,6 +242,8 @@ export function Label() {
     setRegionDraft(null);
     setRegionError(null);
   }, [clipId]);
+  // a highlight is an index into the current range: drop it when the frame, range or draft changes
+  useEffect(() => setRegionHighlight(null), [frame, regionDraft]);
   useEffect(() => {
     if (regionDraft === null) return;
     const warn = (e: BeforeUnloadEvent) => {
@@ -551,6 +554,7 @@ export function Label() {
             onPickCandidate={(index) => dispatch({ type: "candidate", index })}
             fitSignal={fitSignal}
             region={region}
+            regionHighlight={mode === "regions" ? regionHighlight : null}
             regionEdit={
               mode === "regions" && regionIndex !== null
                 ? {
@@ -598,7 +602,7 @@ export function Label() {
           ) : mode === "regions" ? (
             <RegionsPanel regions={regions} frame={frame} frameCount={frameCount} width={width} height={height}
               draw={regionDrawMode} dirty={regionDraft !== null} saving={regionSaving} error={regionError}
-              onDraw={setRegionDrawMode} onChange={(rs) => setRegionDraft(rs)} onSave={() => void saveRegions()}
+              onDraw={setRegionDrawMode} onChange={(rs) => setRegionDraft(rs)} onHighlight={setRegionHighlight} onSave={() => void saveRegions()}
               onDiscard={() => { setRegionDraft(null); setRegionError(null); }} />
           ) : (
             <>

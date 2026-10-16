@@ -162,4 +162,19 @@ describe("FrameCanvas regions", () => {
     fireEvent.mouseUp(canvas, at(30, 30));
     expect(onPoint).toHaveBeenCalledWith(30, 30, 0);
   });
+
+  it("outlines the highlighted rect in the highlight colour", () => {
+    const strokes: string[] = [];
+    const rec: Record<string, unknown> = {};
+    const ctx = new Proxy(rec, {
+      get: (t, k) => (k in t ? t[k as string] : (k === "strokeRect" ? () => strokes.push(String(t.strokeStyle)) : () => undefined)),
+      set: (t, k, v) => { t[k as string] = v; return true; },
+    });
+    HTMLCanvasElement.prototype.getContext = (() => ctx) as unknown as HTMLCanvasElement["getContext"];
+    const region = { start: 0, end: 5, crop: null, blocks: [[20, 20, 40, 40]] as R[] };
+    const { rerender } = render(<FrameCanvas {...baseProps({ region })} />);
+    expect(strokes).not.toContain("#38BDF8");
+    rerender(<FrameCanvas {...baseProps({ region, regionHighlight: { kind: "block", index: 0 } })} />);
+    expect(strokes).toContain("#38BDF8");
+  });
 });

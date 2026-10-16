@@ -17,7 +17,11 @@ type Props = {
   onChange: (regions: RegionRange[]) => void;
   onSave: () => void;
   onDiscard: () => void;
+  /** the crop or blocked box whose list row is hovered or focused (null: none), for the frame to outline */
+  onHighlight?: (h: Highlight | null) => void;
 };
+
+export type Highlight = { kind: "crop" } | { kind: "block"; index: number };
 
 /** A frame-number field that holds what is typed locally and commits only on blur or Enter (Escape reverts), so a
  * half-typed number never becomes a range that no frame belongs to. Empty or non-numeric text commits nothing. */
@@ -44,6 +48,10 @@ function FrameField(p: { label: string; value: number; max: number; onCommit: (v
 export function RegionsPanel(p: Props) {
   const index = rangeIndexAt(p.regions, p.frame);
   const range = index === null ? null : p.regions[index];
+  const hover = (h: Highlight) => ({
+    onMouseEnter: () => p.onHighlight?.(h), onMouseLeave: () => p.onHighlight?.(null),
+    onFocus: () => p.onHighlight?.(h), onBlur: () => p.onHighlight?.(null),
+  });
   const issue = problem(p.regions, p.width, p.height, p.frameCount);
   return (
     <section aria-label="Regions" className="flex flex-col gap-2">
@@ -86,9 +94,26 @@ export function RegionsPanel(p: Props) {
               Crop
             </label>
           </fieldset>
-          <p className="note">
-            {range.crop ? `Crop ${range.crop[2] - range.crop[0]}×${range.crop[3] - range.crop[1]}` : "No crop"}, {range.blocks.length} blocked
-          </p>
+          <ul aria-label="Blocked boxes" className="flex flex-col gap-1 text-xs">
+            {range.crop && (
+              <li className="flex items-center gap-1" {...hover({ kind: "crop" })}>
+                <span className="flex-1">Crop {range.crop[2] - range.crop[0]}×{range.crop[3] - range.crop[1]}</span>
+                <button type="button" className="btn" onClick={() => p.onChange(updateRange(p.regions, index, { crop: null }))}>
+                  Remove crop
+                </button>
+              </li>
+            )}
+            {range.blocks.map((b, i) => (
+              <li key={i} className="flex items-center gap-1" {...hover({ kind: "block", index: i })}>
+                <span className="flex-1">{i + 1}. {b[2] - b[0]}×{b[3] - b[1]} at ({b[0]}, {b[1]})</span>
+                <button type="button" className="btn" aria-label={`Delete box ${i + 1}`}
+                  onClick={() => p.onChange(updateRange(p.regions, index, { blocks: range.blocks.filter((_, j) => j !== i) }))}>
+                  Delete
+                </button>
+              </li>
+            ))}
+          </ul>
+          {range.blocks.length === 0 && <p className="note">No blocked boxes</p>}
           <div className="flex gap-1">
             <button type="button" className="btn flex-1" disabled={p.frame === range.start}
               onClick={() => p.onChange(splitAt(p.regions, index, p.frame).regions)}>

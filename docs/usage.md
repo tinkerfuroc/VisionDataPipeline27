@@ -87,7 +87,8 @@ range covers, **New range from here** to split the range at the current frame (t
 End (press Enter or leave the field to apply), or use the buttons. Choose the **Blocked box** or **Crop** radio, then
 drag on the frame to draw; drag a box to move it and its corners to resize it. To remove things: the × beside a blocked
 box's top-right corner deletes it, **Clear** empties the range's crop and boxes, and **Remove range** deletes the
-range. Edits are a draft ("Unsaved changes") until you press **Save regions**; **Discard** drops them. Leaving the
+range. The panel also lists the range's crop and blocked boxes with **Delete** (and **Remove crop**) buttons, handy for
+boxes whose × is hard to reach at the frame edge; hovering a row outlines that box on the frame. Edits are a draft ("Unsaved changes") until you press **Save regions**; **Discard** drops them. Leaving the
 tool, going back to the clips list or closing the page asks first while a draft is open. A running propagation keeps
 the regions it started with.
 

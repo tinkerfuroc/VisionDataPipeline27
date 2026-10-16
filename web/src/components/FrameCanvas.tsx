@@ -41,6 +41,8 @@ type Props = {
   } | null;
   /** the current frame's region: outside the crop darkened, blocked boxes grey and hatched. Drawn always. */
   region?: RegionRange | null;
+  /** a crop or blocked box (by index in `region.blocks`) to outline brightly, e.g. the one hovered in the panel */
+  regionHighlight?: { kind: "crop" } | { kind: "block"; index: number } | null;
   /** when set, left-button drags edit the region: a press on a handle or inside a block or the crop moves/resizes
    * it, on a block's × deletes it, elsewhere draws a new block (or replaces the crop when `draw` is "crop").
    * `onChange` is called once on mouseup. Prompting input (`tool`) is ignored meanwhile; pan and zoom still work. */
@@ -176,6 +178,13 @@ export function FrameCanvas(props: Props) {
     }
     const live = regionDrag.current?.draft ?? p.region ?? null;
     if (live) drawRegion(ctx, live, p.width, p.height, v.scale);
+    const hl = p.regionHighlight;
+    const hlRect = !live || !hl ? null : hl.kind === "crop" ? live.crop : live.blocks[hl.index] ?? null;
+    if (hlRect) {
+      ctx.strokeStyle = "#38BDF8";
+      ctx.lineWidth = 2 / v.scale;
+      ctx.strokeRect(hlRect[0], hlRect[1], hlRect[2] - hlRect[0], hlRect[3] - hlRect[1]);
+    }
     ctx.restore();
 
     if (p.regionEdit) {

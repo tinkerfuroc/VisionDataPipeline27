@@ -95,4 +95,55 @@ describe("RegionsPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "Clear" }));
     expect(p.onChange).not.toHaveBeenCalled();
   });
+
+  const two = () => ({
+    start: 0, end: 9, crop: [0, 0, 80, 60] as [number, number, number, number],
+    blocks: [[1, 2, 11, 22], [30, 40, 60, 50]] as [number, number, number, number][],
+  });
+
+  it("lists blocked boxes and the crop with their sizes", () => {
+    render(<RegionsPanel {...props({ regions: [two()], frame: 4 })} />);
+    expect(screen.getByText("1. 10×20 at (1, 2)")).toBeTruthy();
+    expect(screen.getByText("2. 30×10 at (30, 40)")).toBeTruthy();
+    expect(screen.getByText("Crop 80×60")).toBeTruthy();
+    expect(screen.queryByText("No blocked boxes")).toBeNull();
+  });
+
+  it("says so when there are no blocked boxes", () => {
+    render(<RegionsPanel {...props({ regions: [{ start: 0, end: 9, crop: null, blocks: [] }], frame: 4 })} />);
+    expect(screen.getByText("No blocked boxes")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Remove crop" })).toBeNull();
+  });
+
+  it("Delete box 2 removes exactly the second block", () => {
+    const r = two();
+    const p = props({ regions: [r], frame: 4 });
+    render(<RegionsPanel {...p} />);
+    fireEvent.click(screen.getByRole("button", { name: "Delete box 2" }));
+    expect(p.onChange).toHaveBeenCalledWith([{ ...r, blocks: [r.blocks[0]] }]);
+  });
+
+  it("Remove crop sets the crop to null and keeps the blocks", () => {
+    const r = two();
+    const p = props({ regions: [r], frame: 4 });
+    render(<RegionsPanel {...p} />);
+    fireEvent.click(screen.getByRole("button", { name: "Remove crop" }));
+    expect(p.onChange).toHaveBeenCalledWith([{ ...r, crop: null }]);
+  });
+
+  it("hovering or focusing a row highlights it; leaving or blurring clears it", () => {
+    const onHighlight = vi.fn();
+    render(<RegionsPanel {...props({ regions: [two()], frame: 4, onHighlight })} />);
+    const row2 = screen.getByText("2. 30×10 at (30, 40)").closest("li")!;
+    fireEvent.mouseEnter(row2);
+    expect(onHighlight).toHaveBeenLastCalledWith({ kind: "block", index: 1 });
+    fireEvent.mouseLeave(row2);
+    expect(onHighlight).toHaveBeenLastCalledWith(null);
+    fireEvent.focus(screen.getByRole("button", { name: "Delete box 1" }));
+    expect(onHighlight).toHaveBeenLastCalledWith({ kind: "block", index: 0 });
+    fireEvent.blur(screen.getByRole("button", { name: "Delete box 1" }));
+    expect(onHighlight).toHaveBeenLastCalledWith(null);
+    fireEvent.mouseEnter(screen.getByText("Crop 80×60").closest("li")!);
+    expect(onHighlight).toHaveBeenLastCalledWith({ kind: "crop" });
+  });
 });
