@@ -1,7 +1,7 @@
 import { useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { ApiError, INTERACTIVE, api, frameUrl, objectMaskUrl, retryInteractive, thumbUrl } from "../api/rest";
-import type { ClipDetail, Direction, JobEvent, ObjectSelection } from "../api/types";
+import type { ClipDetail, Direction, JobEvent, ObjectSelection, RegionRange } from "../api/types";
 import { AppHeader } from "../components/AppHeader";
 import { BrushPanel } from "../components/BrushPanel";
 import { CleanupPanel, type ClearScope, type Range } from "../components/CleanupPanel";
@@ -10,6 +10,7 @@ import { FrameCanvas } from "../components/FrameCanvas";
 import { ObjectsPanel } from "../components/ObjectsPanel";
 import { OverlayPanel } from "../components/OverlayPanel";
 import { PromptPanel } from "../components/PromptPanel";
+import { RegionsPanel } from "../components/RegionsPanel";
 import { PropagatePanel, type PropagateScope } from "../components/PropagatePanel";
 import { Timeline } from "../components/Timeline";
 import { ToolRail, type RailTool } from "../components/ToolRail";
@@ -28,6 +29,7 @@ import { isTerminal } from "../lib/jobReducer";
 import { hexToRgb } from "../lib/mask";
 import { FALLBACK_COLOR, className, classColor, isLabeled, labeledCount, laneOf, lanesFor, maskParts, objectLabel, parseFrameEvent, sortedObjects, type FrameEvent } from "../lib/objects";
 import { loadStyle, outlineFor, saveStyle, type OverlayStyle } from "../lib/overlayStyle";
+import { activeRegion, rangeIndexAt, updateRange } from "../lib/regions";
 import { clampFrame, findNext } from "../lib/timeline";
 
 const jobKey = (clipId: string) => `vdp.job.${clipId}`;
@@ -49,7 +51,12 @@ export function Label() {
   const [propagateError, setPropagateError] = useState<string | null>(null);
   const [cleanupError, setCleanupError] = useState<string | null>(null);
   const [classColorError, setClassColorError] = useState<string | null>(null);
-  const [mode, setMode] = useState<"prompt" | "brush">("prompt");
+  const [mode, setMode] = useState<"prompt" | "brush" | "regions">("prompt");
+  const [regionDraft, setRegionDraft] = useState<RegionRange[] | null>(null); // null = no unsaved region edits
+  const [regionDrawMode, setRegionDrawMode] = useState<"block" | "crop">("block");
+  const [regionSaving, setRegionSaving] = useState(false);
+  const [regionError, setRegionError] = useState<string | null>(null);
+  const [excludedNote, setExcludedNote] = useState<string | null>(null);
   const [propagateScope, setPropagateScope] = useState<PropagateScope>("all");
   const [clearScope, setClearScope] = useState<ClearScope>("active");
 
@@ -229,6 +236,41 @@ export function Label() {
     selection: objects.selection, onCreated: select, apply,
   });
   const lockReason = brush.dirty ? `Save or discard the brush strokes on frame ${frame} first.` : null;
+  // unsaved region edits belong to this clip and this page
+  useEffect(() => {
+    setRegionDraft(null);
+    setRegionError(null);
+  }, [clipId]);
+  useEffect(() => {
+    if (regionDraft === null) return;
+    const warn = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [regionDraft === null]);
+  useEffect(() => setExcludedNote(null), [frame, prompting.draft.points.length]);
+  const confirmLeaveRegions = () => {
+    if (regionDraft === null) return true;
+    if (!window.confirm("Discard the unsaved region changes?")) return false;
+    setRegionDraft(null);
+    setRegionError(null);
+    return true;
+  };
+  const saveRegions = async () => {
+    if (regionDraft === null) return;
+    setRegionSaving(true);
+    setRegionError(null);
+    try {
+      clip.apply(await api.setRegions(clipId, regionDraft), false);
+      setRegionDraft(null);
+    } catch (e) {
+      setRegionError(message(e));
+    } finally {
+      setRegionSaving(false);
+    }
+  };
   // while the active object is being edited, its preview or brush layer is drawn in its place
   const editing = (mode === "brush" && brushReason === null) || prompting.candidates.length > 0;
 
@@ -284,15 +326,15 @@ export function Label() {
     switch (action.type) {
       case "accept":
         if (mode === "brush") void brush.save();
-        else if (prompting.canAccept) void prompting.accept();
+        else if (mode === "prompt" && prompting.canAccept) void prompting.accept();
         break;
       case "clear":
         if (mode === "brush") brush.discard();
-        else prompting.clear();
+        else if (mode === "prompt") prompting.clear();
         break;
       case "undo":
         if (mode === "brush") brush.undo();
-        else prompting.dispatch({ type: "undo" });
+        else if (mode === "prompt") prompting.dispatch({ type: "undo" });
         break;
       case "brushSize":
         if (mode === "brush") brush.grow(action.dir);
@@ -407,7 +449,7 @@ export function Label() {
   }, [detail, objects.active, clipId, apply]);
 
   const back = (
-    <Link to="/" aria-label="Back to clips" className="flex items-center gap-1 font-cond text-dim hover:text-ink">
+    <Link to="/" aria-label="Back to clips" onClick={(e) => { if (!confirmLeaveRegions()) e.preventDefault(); }} className="flex items-center gap-1 font-cond text-dim hover:text-ink">
       <span aria-hidden>‹</span> Clips
     </Link>
   );
@@ -458,8 +500,15 @@ export function Label() {
         ? "Choose a class for the new object in the Objects panel."
         : `Accept creates a new ${newClass} object.`;
   const { source, width, height, stride } = detail.clip;
+  const regions = regionDraft ?? detail.clip.regions ?? [];
+  const region = activeRegion(regions, frame);
+  const regionIndex = rangeIndexAt(regions, frame);
   const onTool = (t: RailTool) => {
-    if (t === "brush") {
+    if (mode === "regions" && t !== "regions" && !confirmLeaveRegions()) return;
+    if (t === "regions") {
+      prompting.clear();
+      setMode("regions");
+    } else if (t === "brush") {
       prompting.clear();
       setMode("brush");
     } else {
@@ -501,6 +550,16 @@ export function Label() {
             onBox={(box) => dispatch({ type: "box", box })}
             onPickCandidate={(index) => dispatch({ type: "candidate", index })}
             fitSignal={fitSignal}
+            region={region}
+            regionEdit={
+              mode === "regions" && regionIndex !== null
+                ? {
+                    draw: regionDrawMode,
+                    onChange: ({ crop, blocks }) => setRegionDraft(updateRange(regions, regionIndex, { crop, blocks })),
+                  }
+                : null
+            }
+            onExcluded={() => setExcludedNote("That spot is excluded on this frame.")}
             brush={
               mode === "brush" && brushReason === null
                 ? {
@@ -512,7 +571,7 @@ export function Label() {
           />
         </div>
         {/* every control sits to the right of the frame: the tools first, then the inspector */}
-        <ToolRail tool={mode === "brush" ? "brush" : draft.tool} disabled={disabledReason !== null}
+        <ToolRail tool={mode === "brush" ? "brush" : mode === "regions" ? "regions" : draft.tool} disabled={disabledReason !== null}
           brushDisabled={brushReason !== null || detail === null} locked={lockReason !== null} onTool={onTool}
           onFit={() => setFitSignal((n) => n + 1)} />
         <aside className="flex w-80 shrink-0 flex-col gap-5 overflow-y-auto border-l border-line bg-panel p-3">
@@ -536,8 +595,16 @@ export function Label() {
           />
           {mode === "brush" ? (
             <BrushPanel brush={brush} frame={frame} disabledReason={brushReason} />
+          ) : mode === "regions" ? (
+            <RegionsPanel regions={regions} frame={frame} frameCount={frameCount} width={width} height={height}
+              draw={regionDrawMode} dirty={regionDraft !== null} saving={regionSaving} error={regionError}
+              onDraw={setRegionDrawMode} onChange={(rs) => setRegionDraft(rs)} onSave={() => void saveRegions()}
+              onDiscard={() => { setRegionDraft(null); setRegionError(null); }} />
           ) : (
-            <PromptPanel prompting={prompting} disabledReason={disabledReason} target={promptTarget} />
+            <>
+              <PromptPanel prompting={prompting} disabledReason={disabledReason} target={promptTarget} />
+              {excludedNote !== null && <p role="status" className="text-xs text-warn">{excludedNote}</p>}
+            </>
           )}
           <PropagatePanel
             job={job}
@@ -601,6 +668,7 @@ export function Label() {
           frame={frame}
           thumb={{ url: (i) => thumbUrl(clipId, i), aspect: width / height }}
           range={range}
+          regions={regions}
           onSeek={lockReason === null ? seek : () => {}}
           onRange={setRange}
           onSelect={lockReason === null ? selectClass : undefined}
