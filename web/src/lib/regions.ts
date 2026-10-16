@@ -136,3 +136,23 @@ export function dragRect(rect: Rect, part: Part, dx: number, dy: number, width: 
   const my = part === "nw" || part === "ne" ? y0 + dy : y1 + dy;
   return normRect([ax, ay], [mx, my], width, height);
 }
+
+/** the clip as runs of frames that have something excluded (a crop or a block) or are all clear */
+export function regionRuns(regions: RegionRange[], frameCount: number) {
+  const runs: { start: number; end: number; excluded: boolean }[] = [];
+  for (let i = 0; i < frameCount; i++) {
+    const excluded = activeRegion(regions, i) !== null;
+    const last = runs[runs.length - 1];
+    if (last && last.excluded === excluded) last.end = i;
+    else runs.push({ start: i, end: i, excluded });
+  }
+  return runs;
+}
+
+/** "crop + 2 blocked", "crop", "1 blocked" or "all clear" for one frame */
+export function regionWords(regions: RegionRange[], frame: number): string {
+  const r = activeRegion(regions, frame);
+  if (r === null) return "all clear";
+  const blocked = r.blocks.length > 0 ? `${r.blocks.length} blocked` : "";
+  return r.crop ? (blocked ? `crop + ${blocked}` : "crop") : blocked;
+}

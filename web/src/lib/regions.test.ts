@@ -74,3 +74,14 @@ describe("geometry", () => {
     expect(normRect([50.7, 10.2], [-5, 40.9], 100, 100)).toEqual([0, 10, 51, 41]);
   });
 });
+
+import { regionRuns } from "./regions";
+
+it("splits the clip into excluded and all-clear runs", () => {
+  const rs = [R(2, 4, null, [[0, 0, 5, 5]]), R(5, 6), R(7, 8, [0, 0, 40, 40])];
+  expect(regionRuns(rs, 10)).toEqual([
+    { start: 0, end: 1, excluded: false }, { start: 2, end: 4, excluded: true },
+    { start: 5, end: 6, excluded: false }, { start: 7, end: 8, excluded: true }, { start: 9, end: 9, excluded: false },
+  ]);
+  expect(regionRuns([], 3)).toEqual([{ start: 0, end: 2, excluded: false }]);
+});

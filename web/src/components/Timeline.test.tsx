@@ -168,3 +168,66 @@ describe("Timeline lanes", () => {
     expect(screen.getByRole("button", { name: "class 1" }).style.top).toBe("-36px");
   });
 });
+
+describe("Timeline regions", () => {
+  /** the fillStyle in force at each fillRect, and the text drawn */
+  function recordFills() {
+    const fills: string[] = [];
+    const texts: string[] = [];
+    let style = "";
+    const ctx = new Proxy(
+      {},
+      {
+        get: (_t, name) => (...args: unknown[]) => {
+          if (name === "fillRect") fills.push(style);
+          if (name === "fillText") texts.push(String(args[0]));
+        },
+        set: (_t, name, value) => {
+          if (name === "fillStyle") style = String(value);
+          return true;
+        },
+      },
+    );
+    HTMLCanvasElement.prototype.getContext = (() => ctx) as unknown as HTMLCanvasElement["getContext"];
+    return { fills, texts };
+  }
+  const withWidth = (run: () => void) => {
+    Object.defineProperty(HTMLElement.prototype, "clientWidth", { configurable: true, get: () => 172 });
+    try {
+      run();
+    } finally {
+      delete (HTMLElement.prototype as unknown as Record<string, unknown>).clientWidth;
+    }
+  };
+  const blocked = [{ start: 2, end: 5, crop: null, blocks: [[0, 0, 5, 5]] as [number, number, number, number][] }];
+
+  it("draws excluded frames solid and labels the row", () =>
+    withWidth(() => {
+      const { fills, texts } = recordFills();
+      render(<Timeline {...noLanes} regions={blocked} onSeek={() => {}} />);
+      expect(fills).toContain("#38BDF8");
+      expect(texts).toContain("Regions");
+    }));
+  it("draws only the hairline when every frame is clear", () =>
+    withWidth(() => {
+      const { fills, texts } = recordFills();
+      render(<Timeline {...noLanes} regions={[]} onSeek={() => {}} />);
+      expect(fills).not.toContain("#38BDF8");
+      expect(texts).toContain("Regions");
+    }));
+  it("leaves the status line out without the prop", () =>
+    withWidth(() => {
+      const { fills, texts } = recordFills();
+      render(<Timeline {...noLanes} onSeek={() => {}} />);
+      expect(fills).not.toContain("#38BDF8");
+      expect(texts).not.toContain("Regions");
+    }));
+  it("says what the hovered frame has excluded", () => {
+    render(<Timeline {...noLanes} regions={blocked} onSeek={() => {}} />);
+    const strip = screen.getByLabelText("Timeline");
+    fireEvent.mouseMove(strip, { clientX: X(3), buttons: 0 });
+    expect(screen.getByText(/1 blocked/)).toBeTruthy();
+    fireEvent.mouseMove(strip, { clientX: X(8), buttons: 0 });
+    expect(screen.getByText(/all clear/)).toBeTruthy();
+  });
+});
