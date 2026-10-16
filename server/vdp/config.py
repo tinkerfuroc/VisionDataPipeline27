@@ -62,6 +62,7 @@ class PropagateCfg(_Cfg):
 class ExportCfg(_Cfg):
     val_fraction: float = 0.2
     min_area_px: int = 64
+    workers: int | None = Field(default=None, ge=1)  # None: cpu_count - 4 (min 1); 1 = in-process
 
 
 class AugmentCfg(_Cfg):

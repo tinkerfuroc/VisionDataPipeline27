@@ -938,7 +938,8 @@ def _fake_clocks(monkeypatch, derive_calls: int, pool_calls: int) -> None:
     import time
     from types import SimpleNamespace
 
-    from vdp.augment import derive, parallel
+    from vdp import parallel
+    from vdp.augment import derive
 
     monkeypatch.setattr(derive, "_now", _Clock(derive_calls))
     monkeypatch.setattr(parallel, "time", SimpleNamespace(monotonic=_Clock(pool_calls), sleep=time.sleep))

@@ -9,8 +9,8 @@ from pathlib import Path
 
 import cv2
 import pytest
-from vdp.augment.parallel import default_workers, run_units
 from vdp.export import ExportCancelled
+from vdp.parallel import default_workers, run_units
 
 
 def square(x):
@@ -105,7 +105,7 @@ def test_pool_checks_cancel_while_units_run():
 _ORPHAN_HELPER = textwrap.dedent('''
     import os, sys, time
     from pathlib import Path
-    from vdp.augment.parallel import run_units
+    from vdp.parallel import run_units
 
     def unit(i):
         (Path(sys.argv[1]) / f"{os.getpid()}-{os.getppid()}").touch()
@@ -185,7 +185,7 @@ def test_cancel_wins_over_the_deadline():
 
 
 def test_pool_deadline_already_passed_starts_no_pool(monkeypatch):
-    from vdp.augment import parallel
+    from vdp import parallel
 
     def no_pool(*args, **kwargs):
         raise AssertionError("a pool was started after the deadline")

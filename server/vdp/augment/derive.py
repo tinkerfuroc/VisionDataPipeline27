@@ -3,7 +3,7 @@
 Real frames are never re-labelled: their images are hard-linked in (as for any export) and their per-format
 label artifacts (`yolo_seg`/`yolo_det` label files, `masks` PNGs, COCO images+annotations) are copied
 verbatim from the source, for both splits. Synthetic (composite) frames are made on a process pool
-(`vdp.augment.parallel`); each worker writes its composites' images and per-format label files itself, with the
+(`vdp.parallel`); each worker writes its composites' images and per-format label files itself, with the
 same per-frame label functions every exporter uses (`yolo_seg_lines`, `write_semantic_png`, ...), and the main
 process appends their COCO images/annotations to the train JSON (everything else lives in its own per-stem
 file, so "merge" is just placing more files side by side).
@@ -49,13 +49,13 @@ from ..export.plan import ExportPlan, classes_from_manifest, options_from_manife
 from ..export.polygons import Polygon, clean_mask, polygons_to_mask
 from ..export.yolo import yolo_det_lines, yolo_seg_lines
 from ..labeling.errors import BadRequest
+from ..parallel import run_units
 from ..train.models import find_export
 from .backgrounds import POOLS, list_images
 from .composite import Cutout, cutout_from, make_composite
 from .cutout_pack import load_cutouts, pack_cutouts
 from .lighting import LOW_SHARE, relight
 from .limits import GenerationPlan, plan_generation
-from .parallel import run_units
 
 MAX_LIGHTING = 3
 MAX_TRAIN_IMAGES = 10_000_000  # upper bound on `max_train_images` (keeps the export id and name short)

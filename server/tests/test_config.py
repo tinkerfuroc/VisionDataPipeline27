@@ -72,3 +72,10 @@ def test_augment_workers_setting():
     assert Settings.model_validate({"augment": {"workers": 2}}).augment.workers == 2
     with pytest.raises(ValidationError):
         Settings.model_validate({"augment": {"workers": 0}})
+
+
+def test_export_workers_setting():
+    assert Settings.load(None).export.workers is None
+    assert Settings.model_validate({"export": {"workers": 3}}).export.workers == 3
+    with pytest.raises(ValidationError):
+        Settings.model_validate({"export": {"workers": 0}})
