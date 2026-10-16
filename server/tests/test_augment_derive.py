@@ -867,3 +867,174 @@ def test_lighting_copies_are_identical_for_one_and_three_workers(store, make_cli
     assert a.keys() == b.keys()
     assert [k for k in a if a[k] != b[k]] == []
     assert _comparable_manifest(one["path"]) == _comparable_manifest(three["path"])
+
+
+# --- limits: an image cap and a time limit ------------------------------------------------------------------
+
+
+def _train_stems(path) -> list[str]:
+    return sorted(p.stem for p in (Path(path) / "yolo_seg" / "images" / "train").glob("*.jpg"))
+
+
+def test_a_capped_run_is_an_exact_subset_of_the_uncapped_run(store, make_clip, tmp_path):
+    project, clip = _multi(store, make_clip, n=10)
+    data_root = tmp_path / "data"
+    src = _export(store, project, clip, ["yolo_seg", "yolo_det", "coco", "masks"], data_root)
+    _make_pool(data_root)
+    real = src["counts"]["train"]["images"]
+    cap = real + 5
+    full = run_augment(data_root, src["export_id"], AugmentOptions(per_image=2, seed=4, lighting=1))
+    seen = []
+    capped = run_augment(data_root, src["export_id"],
+                         AugmentOptions(per_image=2, seed=4, lighting=1, max_train_images=cap),
+                         progress=lambda done, total: seen.append((done, total)))
+
+    a, b = _files(Path(full["path"])), _files(Path(capped["path"]))
+    skip = {"export.json", "coco/annotations/instances_train.json"}
+    extra = sorted(k for k in b if k not in skip and k not in a)
+    assert extra == []
+    assert [k for k in b if k not in skip and b[k] != a[k]] == []
+
+    manifest = json.loads((Path(capped["path"]) / "export.json").read_text())
+    stems = _train_stems(capped["path"])
+    assert len(stems) <= cap and manifest["counts"]["train"]["images"] == len(stems)
+    # room 5 split 16:8 -> 3 composites (n = 0, 1, 2) and 2 lighting copies (k = 0, frames 0 and 4)
+    real_stems = sorted(s for s in stems if not s.startswith(("syn_", "lit_")))
+    assert len(real_stems) == real
+    assert [s for s in stems if s.startswith("syn_")] == ["syn_4_000000", "syn_4_000001", "syn_4_000002"]
+    assert sorted(s for s in stems if s.startswith("lit_")) == [f"lit_4_{real_stems[0]}_0",
+                                                               f"lit_4_{real_stems[4]}_0"]
+    limits = manifest["augment"]["limits"]
+    assert limits == {
+        "max_train_images": cap, "time_limit_s": None,
+        "requested": {"composites": 2 * real, "lighting": real}, "planned": {"composites": 3, "lighting": 2},
+        "produced": {"composites": 3, "lighting": 2}, "stopped_by": "images",
+    }
+    assert capped["limits"] == limits
+    assert manifest["augment"]["synthetic_images"] == 3 and manifest["augment"]["lighting_images"] == 2
+    assert capped["name"].endswith(f" ≤{cap} images") and manifest["name"] == capped["name"]
+    assert f"-aug2x-lit1-cap{cap}-" in capped["export_id"]
+    coco = json.loads((Path(capped["path"]) / "coco" / "annotations" / "instances_train.json").read_text())
+    assert sorted(Path(im["file_name"]).stem for im in coco["images"]) == stems
+    assert len({t for _, t in seen}) == 1 and seen[-1][0] == seen[-1][1]
+    assert seen[-1][1] == real + 3 + 2 + real + src["counts"]["val"]["images"]  # cutouts, planned, merge
+
+
+class _Clock:
+    """A fake monotonic clock: `start` for the first `calls` calls, then `later`."""
+
+    def __init__(self, calls: int, start: float = 0.0, later: float = 1e9):
+        self.calls, self.start, self.later = calls, start, later
+
+    def __call__(self) -> float:
+        self.calls -= 1
+        return self.start if self.calls >= 0 else self.later
+
+
+def _fake_clocks(monkeypatch, derive_calls: int, pool_calls: int) -> None:
+    import time
+    from types import SimpleNamespace
+
+    from vdp.augment import derive, parallel
+
+    monkeypatch.setattr(derive, "_now", _Clock(derive_calls))
+    monkeypatch.setattr(parallel, "time", SimpleNamespace(monotonic=_Clock(pool_calls), sleep=time.sleep))
+
+
+def test_a_time_limit_already_passed_keeps_only_the_real_frames(store, make_clip, tmp_path, monkeypatch):
+    project, clip = _multi(store, make_clip, n=10)
+    data_root = tmp_path / "data"
+    src = _export(store, project, clip, ["yolo_seg", "coco", "masks"], data_root)
+    _make_pool(data_root)
+    src_dir = Path(src["path"])
+    _fake_clocks(monkeypatch, derive_calls=1, pool_calls=0)  # the deadline has passed when generation starts
+    seen = []
+    result = run_augment(data_root, src["export_id"],
+                         AugmentOptions(per_image=2, seed=4, lighting=1, time_limit_s=60), workers=1,
+                         progress=lambda done, total: seen.append((done, total)))
+
+    new_dir = Path(result["path"])
+    manifest = json.loads((new_dir / "export.json").read_text())
+    real = src["counts"]["train"]["images"]
+    assert manifest["augment"]["limits"]["produced"] == {"composites": 0, "lighting": 0}
+    assert manifest["augment"]["limits"]["planned"] == {"composites": 2 * real, "lighting": real}
+    assert manifest["augment"]["limits"]["stopped_by"] == "time"
+    assert result["limits"] == manifest["augment"]["limits"]
+    assert _train_stems(new_dir) == _train_stems(src_dir)
+    assert manifest["counts"]["train"]["images"] == real
+    assert manifest["counts"]["val"] == src["counts"]["val"]
+    for rel in ("yolo_seg/labels/val", "masks/masks/val", "yolo_seg/images/val"):
+        assert sorted(os.listdir(new_dir / rel)) == sorted(os.listdir(src_dir / rel))
+    assert (new_dir / "coco/annotations/instances_val.json").read_bytes() == \
+        (src_dir / "coco/annotations/instances_val.json").read_bytes()
+    assert result["name"].endswith(" ≤1 min") and "-aug2x-lit1-t60-" in result["export_id"]
+    assert len({t for _, t in seen}) == 1 and seen[-1][0] == seen[-1][1]  # the bar completes
+    assert not (new_dir / ".work").exists()
+
+
+def test_a_time_cut_keeps_a_mix_of_composites_and_lighting(store, make_clip, tmp_path, monkeypatch):
+    from vdp.augment import derive
+
+    monkeypatch.setattr(derive, "UNIT_COMPOSITES", 2)
+    monkeypatch.setattr(derive, "UNIT_LIGHTING", 2)
+    project, clip = _multi(store, make_clip, n=10)
+    data_root = tmp_path / "data"
+    src = _export(store, project, clip, ["yolo_seg", "coco", "masks"], data_root)
+    _make_pool(data_root)
+    real = src["counts"]["train"]["images"]  # 8: four composite units and four lighting units, alternating
+    _fake_clocks(monkeypatch, derive_calls=1, pool_calls=4)  # the inline runner checks the clock per unit
+    result = run_augment(data_root, src["export_id"],
+                         AugmentOptions(per_image=1, seed=4, lighting=1, time_limit_s=60), workers=1)
+
+    limits = result["limits"]
+    assert limits["stopped_by"] == "time"
+    assert limits["produced"] == {"composites": 4, "lighting": 4}
+    assert limits["planned"] == {"composites": real, "lighting": real}
+    stems = _train_stems(result["path"])
+    assert sum(s.startswith("syn_") for s in stems) == 4 and sum(s.startswith("lit_") for s in stems) == 4
+
+
+def test_a_run_without_limits_reports_an_unlimited_plan(store, make_clip, tmp_path):
+    project, clip = _labelled(store, make_clip)
+    data_root = tmp_path / "data"
+    src = _export(store, project, clip, ["yolo_seg", "masks"], data_root)
+    _make_pool(data_root)
+    result = run_augment(data_root, src["export_id"], AugmentOptions(per_image=2, seed=1, lighting=1))
+    manifest = json.loads((Path(result["path"]) / "export.json").read_text())
+    real = src["counts"]["train"]["images"]
+    counts = {"composites": 2 * real, "lighting": real}
+    assert manifest["augment"]["limits"] == {
+        "max_train_images": None, "time_limit_s": None, "requested": counts, "planned": counts,
+        "produced": counts, "stopped_by": None,
+    }
+    assert result["limits"] == manifest["augment"]["limits"]
+    assert result["name"] == f"{src['export_id']} ×2 augmented +1 lighting"
+
+
+def test_a_generous_time_limit_changes_only_the_name_and_id(store, make_clip, tmp_path):
+    project, clip = _labelled(store, make_clip)
+    data_root = tmp_path / "data"
+    src = _export(store, project, clip, ["yolo_seg", "masks"], data_root)
+    _make_pool(data_root)
+    opts = AugmentOptions(per_image=2, seed=1, lighting=1)
+    plain = run_augment(data_root, src["export_id"], opts)
+    timed = run_augment(data_root, src["export_id"], AugmentOptions(per_image=2, seed=1, lighting=1,
+                                                                    time_limit_s=86400))
+    assert timed["limits"]["stopped_by"] is None and timed["limits"]["time_limit_s"] == 86400
+    assert timed["name"] == f"{src['export_id']} ×2 augmented +1 lighting ≤1440 min"
+    assert "-aug2x-lit1-t86400-" in timed["export_id"]
+    a, b = _files(Path(plain["path"])), _files(Path(timed["path"]))
+    a.pop("export.json")
+    b.pop("export.json")
+    assert a == b
+
+
+def test_the_derived_name_with_limits_stays_within_max_name():
+    from vdp.augment.derive import _derived_name
+    from vdp.export.naming import MAX_NAME
+
+    assert _derived_name("src", 2, 1, max_train_images=2000, time_limit_s=601) == \
+        "src ×2 augmented +1 lighting ≤2000 images ≤11 min"
+    assert _derived_name("src", 0, 1, time_limit_s=600) == "src +1 lighting ≤10 min"
+    long = _derived_name("x" * 200, 3, 2, max_train_images=12345, time_limit_s=86400)
+    assert len(long) <= MAX_NAME and long.endswith(" ×3 augmented +2 lighting ≤12345 images ≤1440 min")

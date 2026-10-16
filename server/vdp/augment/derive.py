@@ -17,12 +17,19 @@ Cutouts for composites are cut per object from the source's COCO train annotatio
 `coco` format (two touching objects of one class stay two cutouts), and per class region of the semantic `masks`
 PNGs otherwise; the derived manifest records which (`augment.cutouts`). Either way they feed composites only,
 never a real frame's own labels.
+
+Composites and lighting copies are made in one pooled phase, their units interleaved in proportion. An image
+limit (`max_train_images`) trims the plan up front (`vdp.augment.limits.plan_generation`) to an exact subset of
+an unlimited run; a time limit (`time_limit_s` after the job starts) drops the units still queued at the deadline
+and keeps what was made. The manifest's `augment.limits` records what was asked for, planned and produced.
 """
 
 from __future__ import annotations
 
 import json
+import math
 import shutil
+import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from functools import lru_cache
@@ -47,6 +54,7 @@ from .backgrounds import POOLS, list_images
 from .composite import Cutout, cutout_from, make_composite
 from .cutout_pack import load_cutouts, pack_cutouts
 from .lighting import LOW_SHARE, relight
+from .limits import GenerationPlan, plan_generation
 from .parallel import run_units
 
 MAX_LIGHTING = 3
@@ -54,6 +62,8 @@ UNIT_STEMS = 64  # mask files per cutout work unit
 UNIT_COMPOSITES = 16  # composites per work unit
 UNIT_LIGHTING = 16  # source frames per lighting work unit
 LIGHTING_STREAM = 1  # seeds lighting rngs as [seed, LIGHTING_STREAM, frame, k]; composites use [seed, n]
+
+_now = time.monotonic  # the job's start time comes from here (tests swap in a fake clock)
 
 
 @dataclass(frozen=True)
@@ -67,12 +77,19 @@ class AugmentOptions:
     time_limit_s: int | None = None  # stop generating this many seconds after the job starts
 
 
-def _derived_name(source_name: str, per_image: int, lighting: int = 0) -> str:
+def _derived_name(
+    source_name: str, per_image: int, lighting: int = 0, max_train_images: int | None = None,
+    time_limit_s: int | None = None,
+) -> str:
     """The source's display name (name, else id) plus ` ×<N> augmented` (with composites) and/or
-    ` +<K> lighting` (with lighting variants), truncated so the result never exceeds `MAX_NAME`: the suffix
-    is always kept whole, and the source part is shortened (trailing whitespace stripped off the cut) to
-    make room for it."""
+    ` +<K> lighting` (with lighting variants), then ` ≤<N> images` (image limit) and/or ` ≤<M> min` (time limit,
+    minutes rounded up), truncated so the result never exceeds `MAX_NAME`: the suffix is always kept whole, and
+    the source part is shortened (trailing whitespace stripped off the cut) to make room for it."""
     suffix = (f" ×{per_image} augmented" if per_image else "") + (f" +{lighting} lighting" if lighting else "")
+    if max_train_images is not None:
+        suffix += f" ≤{max_train_images} images"
+    if time_limit_s is not None:
+        suffix += f" ≤{math.ceil(time_limit_s / 60)} min"
     base = source_name
     max_base = MAX_NAME - len(suffix)
     if len(base) > max_base:
@@ -365,47 +382,79 @@ def _merge_real_frames(source_dir: Path, out: Path, formats: list[str], tick: Ca
 
 
 
-def _lighting_unit(args: tuple[Path, Path, list[str], list[tuple[int, str]], int, int]) -> list[tuple[str, str]]:
-    """(source_dir, out, formats, [(frame index i in the full sorted list, stem), ...], seed, lighting) -> the
-    unit's `(stem, new_stem)` pairs, in order. Module-level so the process pool can pickle it."""
-    source_dir, out, formats, frames, seed, lighting = args
+def _lighting_unit(items: list[tuple[int, str, int]]) -> list[tuple[str, str]]:
+    """Relit copies `(frame index i in the full sorted list, stem, copy k)`, in order (a frame's copies are
+    adjacent, so its image is read once) -> the unit's `(stem, new_stem)` pairs, in order. Each copy is written
+    into `out/images/`, placed into each format's train images, and gets its source frame's per-format labels
+    under the new stem (COCO's are added in `_merge_coco`). Reads `source_dir`, `out`, `formats` and `seed`
+    from the worker state set by `_init_generation_worker`."""
+    w = _worker
+    source_dir, out, formats, seed = w["source_dir"], w["out"], w["formats"], w["seed"]
     pairs: list[tuple[str, str]] = []
-    for i, stem in frames:
-        image = np.array(Image.open(source_dir / "images" / f"{stem}.jpg").convert("RGB"))
-        for k in range(lighting):
-            rng = np.random.default_rng([seed, LIGHTING_STREAM, i, k])
-            kind = "low" if rng.random() < LOW_SHARE else "over"
-            new_stem = f"lit_{seed}_{stem}_{k}"
-            image_path = out / "images" / f"{new_stem}.jpg"
-            Image.fromarray(relight(image, rng, kind)).save(image_path, quality=95)
-            for fmt in formats:
-                place_image(image_path, out / fmt / "images" / "train" / f"{new_stem}.jpg")
-                _copy_label(source_dir, out, fmt, "train", stem, new_stem)
-            pairs.append((stem, new_stem))
+    loaded: tuple[int, np.ndarray] | None = None
+    for i, stem, k in items:
+        if loaded is None or loaded[0] != i:
+            loaded = (i, np.array(Image.open(source_dir / "images" / f"{stem}.jpg").convert("RGB")))
+        rng = np.random.default_rng([seed, LIGHTING_STREAM, i, k])
+        kind = "low" if rng.random() < LOW_SHARE else "over"
+        new_stem = f"lit_{seed}_{stem}_{k}"
+        image_path = out / "images" / f"{new_stem}.jpg"
+        Image.fromarray(relight(loaded[1], rng, kind)).save(image_path, quality=95)
+        for fmt in formats:
+            place_image(image_path, out / fmt / "images" / "train" / f"{new_stem}.jpg")
+            _copy_label(source_dir, out, fmt, "train", stem, new_stem)
+        pairs.append((stem, new_stem))
     return pairs
 
 
-def _write_lighting_variants(
-    source_dir: Path, out: Path, formats: list[str], opts: AugmentOptions, tick: Callable[[], None],
-    workers: int | None = None, cancel: Callable[[], bool] | None = None,
-) -> list[tuple[str, str]]:
-    """`opts.lighting` relit copies of every real train frame: the image is written into `out/images/` and
-    placed into each format's train images, and its per-format labels are the source frame's, copied under the
-    new stem (COCO's are added in `_merge_coco`). Returns `(source stem, new stem)` pairs, in order."""
-    stems = sorted(p.stem for p in (source_dir / "masks" / "masks" / "train").glob("*.png"))
-    indexed = list(enumerate(stems))  # i is the index in the full list, whatever unit a frame lands in
-    units = [(source_dir, out, formats, indexed[j:j + UNIT_LIGHTING], opts.seed, opts.lighting)
-             for j in range(0, len(indexed), UNIT_LIGHTING)]
+def _init_generation_worker(
+    composite_initargs: tuple | None, source_dir: Path, out: Path, formats: list[str], seed: int,
+) -> None:
+    """Pool initializer for the generation phase (also called in-process for one worker): the composite worker
+    state when composites are planned, plus what lighting units read."""
+    _worker.clear()
+    if composite_initargs is not None:
+        _init_composite_worker(*composite_initargs)
+    _worker.update(source_dir=source_dir, out=out, formats=formats, seed=seed)
 
-    def on_done(n: int) -> None:
-        for _ in range(n):
-            tick()
 
-    results = run_units(
-        _lighting_unit, units, workers=workers, weight=lambda u: len(u[3]) * opts.lighting, on_done=on_done,
-        cancel=cancel or (lambda: False),
-    )
-    return [pair for unit in results for pair in unit]
+GenerationUnit = tuple[Literal["composite", "lighting"], list]
+
+
+def _generation_unit(unit: GenerationUnit) -> list:
+    """One composite unit (`("composite", [n, ...])`) or lighting unit (`("lighting", [(i, stem, k), ...])`)."""
+    kind, items = unit
+    return _composite_unit(items) if kind == "composite" else _lighting_unit(items)
+
+
+def _interleave(a: list, b: list) -> list:
+    """`a` and `b` merged in proportion to their lengths (Bresenham style), each keeping its own order: item
+    `j` of a list lands where `(j + 1/2) / len` of it would, so `a` = 3 units and `b` = 2 give a b a b a."""
+    merged, i, j = [], 0, 0
+    while i < len(a) or j < len(b):
+        if j >= len(b) or (i < len(a) and (2 * i + 1) * len(b) <= (2 * j + 1) * len(a)):
+            merged.append(a[i])
+            i += 1
+        else:
+            merged.append(b[j])
+            j += 1
+    return merged
+
+
+def _generation_units(plan: GenerationPlan, stems: list[str]) -> list[GenerationUnit]:
+    """The plan's composites (chunks of UNIT_COMPOSITES, in `n` order) and lighting copies (UNIT_LIGHTING source
+    frames per unit) interleaved in proportion. The planner lists lighting copies in selection order (round by
+    round); they are written in `(i, k)` order -- each frame's copies together, frames ascending -- which is the
+    order an unlimited run has always used, so a limited run is an exact subset and an unlimited one unchanged."""
+    ns = plan.composites
+    composite = [("composite", ns[j:j + UNIT_COMPOSITES]) for j in range(0, len(ns), UNIT_COMPOSITES)]
+    by_frame: dict[int, list[tuple[int, str, int]]] = {}
+    for i, k in sorted(plan.lighting):
+        by_frame.setdefault(i, []).append((i, stems[i], k))
+    frames = list(by_frame.values())
+    lighting = [("lighting", [item for frame in frames[j:j + UNIT_LIGHTING] for item in frame])
+                for j in range(0, len(frames), UNIT_LIGHTING)]
+    return _interleave(composite, lighting)
 
 
 def _lighting_annotations(source_dir: Path, fmt: str, pairs: list[tuple[str, str]]) -> int:
@@ -498,10 +547,18 @@ def run_augment(
     progress: Callable[[int, int], None] | None = None, cancel: Callable[[], bool] | None = None,
     workers: int | None = None,
 ) -> dict:
+    """Derive an augmented copy of export `export_id`. Cutouts are extracted first (always to the end), then
+    one pooled generation phase makes the planned composites and lighting copies, interleaved, until done or
+    `opts.time_limit_s` after the job started (whatever was made by then is kept); real frames, COCO and the
+    manifest follow. `opts.max_train_images` caps the plan up front (see `plan_generation`)."""
+    start = _now()
+    deadline = start + opts.time_limit_s if opts.time_limit_s is not None else None
     data_root = Path(data_root)
     manifest = check_augment(data_root, export_id, opts)
     source_dir = data_root / "exports" / export_id
     tags = ([f"aug{opts.per_image}x"] if opts.per_image else []) + ([f"lit{opts.lighting}"] if opts.lighting else [])
+    tags += [f"cap{opts.max_train_images}"] if opts.max_train_images is not None else []
+    tags += [f"t{opts.time_limit_s}"] if opts.time_limit_s is not None else []
     new_id = f"{export_id}-{'-'.join(tags)}-{uuid4().hex[:4]}"
     out = data_root / "exports" / new_id
     out.mkdir()  # outside the try: as run_export, fail without touching (or later deleting) another export
@@ -510,12 +567,11 @@ def run_augment(
         min_area_px = int(manifest["options"]["min_area_px"])
         real_train_n = manifest["counts"]["train"]["images"]
         real_val_n = manifest["counts"]["val"]["images"]
-        total_composites = opts.per_image * real_train_n
-        # computed once, up front, from the source manifest alone; never shrunk or grown as the job runs
+        gen = plan_generation(real_train_n, opts.per_image, opts.lighting, opts.max_train_images)
+        # computed once, up front, from the source manifest and the plan; never shrunk or grown as the job runs
         merge_ticks = real_train_n + real_val_n
         cutout_ticks = real_train_n if opts.per_image else 0
-        lighting_ticks = opts.lighting * real_train_n
-        total = cutout_ticks + total_composites + merge_ticks + lighting_ticks
+        total = cutout_ticks + len(gen.composites) + merge_ticks + len(gen.lighting)
         state = {"done": 0, "total": max(1, total)}
 
         def tick() -> None:
@@ -534,25 +590,31 @@ def run_augment(
         work = out / ".work"
         work.mkdir()
         cutout_mode: CutoutMode | None = None
-        synthetic: list[SynthResult] = []
-        if opts.per_image:
+        composite_initargs = None
+        if opts.per_image:  # no deadline: composites need every cutout, and the phase is short
             cutouts, sizes, cutout_mode = _cutouts_and_sizes(
                 source_dir, formats, min_area_px, tick, workers, cancel or (lambda: False),
             )
             pack_cutouts(cutouts, work)  # for the composite workers to memory-map
             del cutouts
-            units = [list(range(i, min(i + UNIT_COMPOSITES, total_composites)))
-                     for i in range(0, total_composites, UNIT_COMPOSITES)]
-            initargs = (work, list_images(data_root, opts.pool), sizes, asdict(opts), formats, min_area_px,
-                        palette_for(classes), out)
-            try:
-                results = run_units(
-                    _composite_unit, units, workers=workers, weight=len, on_done=on_done,
-                    cancel=cancel or (lambda: False), initializer=_init_composite_worker, initargs=initargs,
-                )
-            finally:
-                _worker.clear()  # a one-worker run initialised this process: drop its memmap and cache
-            synthetic = [r for unit in results for r in unit if r is not None]  # units and results in n order
+            composite_initargs = (work, list_images(data_root, opts.pool), sizes, asdict(opts), formats,
+                                  min_area_px, palette_for(classes), out)
+
+        train_stems = sorted(p.stem for p in (source_dir / "masks" / "masks" / "train").glob("*.png"))
+        units = _generation_units(gen, train_stems)
+        try:
+            results = run_units(
+                _generation_unit, units, workers=workers, weight=lambda u: len(u[1]), on_done=on_done,
+                cancel=cancel or (lambda: False), initializer=_init_generation_worker,
+                initargs=(composite_initargs, source_dir, out, formats, opts.seed), deadline=deadline,
+            )
+        finally:
+            _worker.clear()  # a one-worker run initialised this process: drop its memmap and cache
+        timed_out = any(r is None for r in results)
+        # units, and the items within them, are in n order (composites) and (i, k) order (lighting)
+        done = [(unit[0], r) for unit, r in zip(units, results, strict=True) if r is not None]
+        synthetic = [s for kind, r in done if kind == "composite" for s in r if s is not None]
+        lit = [pair for kind, r in done if kind == "lighting" for pair in r]
 
         options = options_from_manifest(manifest["options"])
         plan = ExportPlan(  # for manifest_for only: no frames (real ones are copied, composites written above)
@@ -565,7 +627,6 @@ def run_augment(
         synth_linked = all(s.linked for s in synth_summaries)
 
         real_linked = _merge_real_frames(source_dir, out, formats, tick)
-        lit = _write_lighting_variants(source_dir, out, formats, opts, tick, workers, cancel)
         lit_counts = {
             fmt: (len(lit), _lighting_annotations(source_dir, fmt, lit)) for fmt in formats if fmt != "coco"
         }
@@ -585,6 +646,13 @@ def run_augment(
             },
             "val": manifest["counts"]["val"],
         }
+        limits = {
+            "max_train_images": opts.max_train_images, "time_limit_s": opts.time_limit_s,
+            "requested": {"composites": gen.requested_composites, "lighting": gen.requested_lighting},
+            "planned": {"composites": len(gen.composites), "lighting": len(gen.lighting)},
+            "produced": {"composites": len(synthetic), "lighting": len(lit)},
+            "stopped_by": "time" if timed_out else "images" if gen.capped else None,
+        }
         linked = synth_linked and real_linked
         result_manifest = manifest_for(plan, new_id, synth_summaries, counts, linked)
         result_manifest["clips"] = manifest["clips"]
@@ -595,19 +663,23 @@ def run_augment(
         result_manifest["counts"] = counts
         result_manifest["derived_from"] = export_id
         result_manifest["name"] = _derived_name(
-            manifest.get("name") or export_id, opts.per_image, opts.lighting,
+            manifest.get("name") or export_id, opts.per_image, opts.lighting, opts.max_train_images,
+            opts.time_limit_s,
         )
         result_manifest["augment"] = {
             "per_image": opts.per_image, "max_objects": opts.max_objects, "seed": opts.seed,
             "pool": opts.pool if opts.per_image else None, "synthetic_images": len(synthetic),
             "cutouts": cutout_mode, "lighting_variants": opts.lighting, "lighting_images": len(lit),
+            "limits": limits,
         }
         (out / "export.json").write_text(json.dumps(result_manifest, indent=2))
         shutil.rmtree(work)
+        if timed_out and progress is not None:
+            progress(state["total"], state["total"])  # the dropped units' ticks never came: complete the bar
     except BaseException:
         shutil.rmtree(out, ignore_errors=True)
         raise
     return {
         "export_id": new_id, "path": str(out), "counts": counts, "synthetic": len(synthetic),
-        "name": result_manifest["name"], "cutouts": cutout_mode,
+        "name": result_manifest["name"], "cutouts": cutout_mode, "limits": limits,
     }
