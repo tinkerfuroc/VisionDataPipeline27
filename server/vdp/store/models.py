@@ -44,6 +44,20 @@ class ClipSource(BaseModel):
     name: str
 
 
+# [x0, y0, x1, y1], integer pixels of the original frame, half-open; checked by labeling.regions.validate_regions
+Rect = tuple[int, int, int, int]
+
+
+class RegionRange(BaseModel):
+    """Frames start..end (inclusive) share one crop (keep only this rectangle) and blocked boxes (exclude these).
+    Only the shape is checked here, so a clip always loads; the geometry is checked where regions are used."""
+
+    start: int
+    end: int
+    crop: Rect | None = None
+    blocks: list[Rect] = Field(default_factory=list)
+
+
 class Clip(BaseModel):
     id: str
     project_id: str
@@ -59,3 +73,4 @@ class Clip(BaseModel):
     objects: list[LabelObject] = Field(default_factory=list)
     # ids are never reused: a deleted object's stale mask URLs and job events can never reach a new object
     next_object_id: int = 0
+    regions: list[RegionRange] = Field(default_factory=list)
