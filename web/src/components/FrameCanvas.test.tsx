@@ -115,9 +115,37 @@ describe("FrameCanvas regions", () => {
     fireEvent.mouseMove(canvas, { ...at(40, 35), buttons: 1 });
     fireEvent.mouseUp(canvas, at(40, 35));
     expect(onChange).toHaveBeenLastCalledWith({ crop: null, blocks: [[30, 25, 50, 45]] });
-    fireEvent.mouseDown(canvas, { ...at(40, 20), button: 0 });
-    fireEvent.mouseUp(canvas, at(40, 20));
+    // the region prop is unchanged, so the NE corner is still (40, 20); the × sits outside it: 1.5 handle radii (6 screen px) up and to the right
+    const tol = 6 / view.scale;
+    fireEvent.mouseDown(canvas, { ...at(40 + tol * 1.5, 20 - tol * 1.5), button: 0 });
+    fireEvent.mouseUp(canvas, at(40 + tol * 1.5, 20 - tol * 1.5));
     expect(onChange).toHaveBeenLastCalledWith({ crop: null, blocks: [] });
+  });
+
+  it("the NE corner of a block resizes it instead of deleting it", () => {
+    const onChange = vi.fn();
+    const region = { start: 0, end: 5, crop: null, blocks: [[20, 20, 40, 40]] as R[] };
+    render(<FrameCanvas {...baseProps({ region, regionEdit: { draw: "block", onChange } })} />);
+    const canvas = screen.getByLabelText("Frame");
+    fireEvent.mouseDown(canvas, { ...at(40, 20), button: 0 });
+    fireEvent.mouseMove(canvas, { ...at(50, 15), buttons: 1 });
+    fireEvent.mouseUp(canvas, at(50, 15));
+    expect(onChange).toHaveBeenCalledWith({ crop: null, blocks: [[20, 15, 50, 40]] });
+  });
+
+  it("a drag keeps the region and callback it started with when the frame changes mid-drag", () => {
+    const original = vi.fn();
+    const replacement = vi.fn();
+    const region = { start: 0, end: 5, crop: null, blocks: [[20, 20, 40, 40]] as R[] };
+    const other = { start: 6, end: 9, crop: [10, 10, 90, 90] as R, blocks: [] as R[] };
+    const { rerender } = render(<FrameCanvas {...baseProps({ region, regionEdit: { draw: "block", onChange: original } })} />);
+    const canvas = screen.getByLabelText("Frame");
+    fireEvent.mouseDown(canvas, { ...at(30, 30), button: 0 });
+    rerender(<FrameCanvas {...baseProps({ region: other, regionEdit: { draw: "block", onChange: replacement } })} />);
+    fireEvent.mouseMove(canvas, { ...at(40, 35), buttons: 1 });
+    fireEvent.mouseUp(canvas, at(40, 35));
+    expect(original).toHaveBeenCalledWith({ crop: null, blocks: [[30, 25, 50, 45]] });
+    expect(replacement).not.toHaveBeenCalled();
   });
 
   it("a positive click in an excluded area calls onExcluded, a negative one still prompts", () => {

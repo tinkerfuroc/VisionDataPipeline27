@@ -70,6 +70,8 @@ type Drag = {
 
 const HANDLE_PX = 8;
 const DELETE_PX = 12;
+/** handle radius on screen, the `tol` of hitTest */
+const HANDLE_TOL_PX = 6;
 
 /** Outside the crop darkened, blocked boxes grey and hatched: what SAM3 and the export will not see. */
 function drawRegion(ctx: CanvasRenderingContext2D, r: RegionEdit, w: number, h: number, scale: number) {
@@ -116,7 +118,11 @@ export function FrameCanvas(props: Props) {
   const drag = useRef<Drag | null>(null);
   const dragBox = useRef<Box | null>(null);
   /** a live region edit: what was grabbed (null: drawing a new rect), where, and the region as edited so far */
-  const regionDrag = useRef<{ hit: Hit | null; start: [number, number]; draft: RegionEdit } | null>(null);
+  const regionDrag = useRef<{
+    hit: Hit | null; start: [number, number]; draft: RegionEdit;
+    /** the region and callback as they were at mousedown: a frame change mid-drag must not redirect the edit */
+    base: RegionEdit; draw: "block" | "crop"; onChange: (next: RegionEdit) => void;
+  } | null>(null);
   const latest = useRef(props);
   latest.current = props;
   const rgb = useMemo(() => hexToRgb(color), [color]);
@@ -189,7 +195,10 @@ export function FrameCanvas(props: Props) {
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
       for (const b of region?.blocks ?? []) {
-        const [x, y] = toScreen(v, b[2], b[1]);
+        // outside the NE corner, where hitTest puts the delete target (1.5 handle radii up and right)
+        const off = HANDLE_TOL_PX * 1.5;
+        const [bx, by] = toScreen(v, b[2], b[1]);
+        const [x, y] = [bx + off, by - off];
         ctx.beginPath();
         ctx.arc(x, y, DELETE_PX / 2, 0, 2 * Math.PI);
         ctx.fillStyle = "#ef4444";
@@ -363,9 +372,10 @@ export function FrameCanvas(props: Props) {
     drag.current = d;
     if (regionEdit && e.button === 0) {
       const region = props.region ?? null;
+      const base: RegionEdit = { crop: region?.crop ?? null, blocks: region?.blocks ?? [] };
       regionDrag.current = {
-        hit: hitTest(region, ix, iy, 6 / view.current.scale), start: [ix, iy],
-        draft: { crop: region?.crop ?? null, blocks: region?.blocks ?? [] },
+        hit: hitTest(region, ix, iy, HANDLE_TOL_PX / view.current.scale), start: [ix, iy], draft: base,
+        base, draw: regionEdit.draw, onChange: regionEdit.onChange,
       };
       d.region = true;
       return;
@@ -412,13 +422,11 @@ export function FrameCanvas(props: Props) {
         return;
       }
       const [ix, iy] = toImage(view.current, sx, sy);
-      const base = props.region ?? null;
-      const crop = base?.crop ?? null;
-      const blocks = base?.blocks ?? [];
+      const { crop, blocks } = rd.base;
       const { hit } = rd;
       if (hit === null) {
         const r = normRect(rd.start, [ix, iy], width, height);
-        rd.draft = regionEdit?.draw === "crop" ? { crop: r, blocks } : { crop, blocks: [...blocks, r] };
+        rd.draft = rd.draw === "crop" ? { crop: r, blocks } : { crop, blocks: [...blocks, r] };
       } else if (hit.part !== "delete") {
         const r = dragRect(hit.kind === "crop" ? crop! : blocks[hit.index], hit.part, ix - rd.start[0], iy - rd.start[1], width, height);
         rd.draft = hit.kind === "crop" ? { crop: r, blocks } : { crop, blocks: blocks.map((b, i) => (i === hit.index ? r : b)) };
@@ -448,7 +456,7 @@ export function FrameCanvas(props: Props) {
     if (d?.region) {
       const rd = regionDrag.current;
       regionDrag.current = null;
-      if (commit && rd !== null && regionEdit) commitRegion(rd, regionEdit.onChange);
+      if (commit && rd !== null) commitRegion(rd);
       draw();
       return;
     }
@@ -477,20 +485,19 @@ export function FrameCanvas(props: Props) {
   };
 
   /** report a finished region edit, unless it changed nothing (a click, a too-small new rect) */
-  const commitRegion = (rd: NonNullable<typeof regionDrag.current>, onChange: (next: RegionEdit) => void) => {
-    const base = props.region ?? null;
-    const blocks = base?.blocks ?? [];
-    const { hit, draft } = rd;
+  const commitRegion = (rd: NonNullable<typeof regionDrag.current>) => {
+    const { base, hit, draft, onChange } = rd;
+    const blocks = base.blocks;
     if (hit === null) {
       // untouched arrays mean the pointer never moved: a plain click draws nothing
-      const crop = regionEdit?.draw === "crop";
+      const crop = rd.draw === "crop";
       const r = crop ? draft.crop : draft.blocks[draft.blocks.length - 1];
-      const drawn = crop ? draft.crop !== (base?.crop ?? null) : draft.blocks !== blocks;
+      const drawn = crop ? draft.crop !== base.crop : draft.blocks !== blocks;
       if (drawn && r && r[2] - r[0] >= 2 && r[3] - r[1] >= 2) onChange(draft);
     } else if (hit.part === "delete") {
-      onChange({ crop: base?.crop ?? null, blocks: blocks.filter((_, i) => i !== hit.index) });
+      onChange({ crop: base.crop, blocks: blocks.filter((_, i) => i !== hit.index) });
     } else {
-      const before = hit.kind === "crop" ? base?.crop : blocks[hit.index];
+      const before = hit.kind === "crop" ? base.crop : blocks[hit.index];
       const after = hit.kind === "crop" ? draft.crop : draft.blocks[hit.index];
       if (before && after && before.some((v, i) => v !== after[i])) onChange(draft);
     }

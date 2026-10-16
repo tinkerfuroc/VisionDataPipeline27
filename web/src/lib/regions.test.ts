@@ -59,7 +59,8 @@ describe("geometry", () => {
   });
 
   it("hit-tests blocks before the crop, handles before insides", () => {
-    expect(hitTest(region, 40, 20, 3)).toEqual({ kind: "block", index: 0, part: "delete" });
+    expect(hitTest(region, 40, 20, 3)).toEqual({ kind: "block", index: 0, part: "ne" });
+    expect(hitTest(region, 44.5, 15.5, 3)).toEqual({ kind: "block", index: 0, part: "delete" }); // x1 + 1.5 tol, y0 - 1.5 tol
     expect(hitTest(region, 20, 40, 3)).toEqual({ kind: "block", index: 0, part: "sw" });
     expect(hitTest(region, 30, 30, 3)).toEqual({ kind: "block", index: 0, part: "move" });
     expect(hitTest(region, 90, 90, 3)).toEqual({ kind: "crop", index: 0, part: "se" });

@@ -88,7 +88,8 @@ export function isExcluded(region: RegionRange | null, x: number, y: number): bo
 
 function rectHit(r: Rect, x: number, y: number, tol: number, withDelete: boolean): Part | null {
   const near = (ax: number, ay: number) => Math.abs(x - ax) <= tol && Math.abs(y - ay) <= tol;
-  if (withDelete && near(r[2], r[1])) return "delete";
+  // the × sits just outside the box's NE corner so that corner stays a resize handle
+  if (withDelete && Math.abs(x - (r[2] + tol * 1.5)) <= tol && Math.abs(y - (r[1] - tol * 1.5)) <= tol) return "delete";
   if (near(r[0], r[1])) return "nw";
   if (near(r[2], r[1])) return "ne";
   if (near(r[0], r[3])) return "sw";
