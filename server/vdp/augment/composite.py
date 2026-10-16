@@ -90,7 +90,9 @@ def transform_cutout(
 
 Placed = tuple[int, int, np.ndarray]    # (y0, x0, mask crop) in canvas coordinates, already clipped to the canvas
 
-_PAD = math.ceil(4 * ALPHA_SIGMA)       # the alpha blur's reach: beyond this the blurred mask is exactly 0
+# the alpha blur's kernel radius (the blur gets ksize 2*_PAD+1, what OpenCV picks for a float image at this sigma),
+# so beyond _PAD pixels from the mask the blurred alpha is exactly 0
+_PAD = math.ceil(4 * ALPHA_SIGMA)
 
 
 def _visible(mask: np.ndarray, pos: tuple[int, int], canvas_hw: tuple[int, int]) -> Placed | None:
@@ -180,7 +182,7 @@ def make_composite(rng: np.random.Generator, width: int, height: int, background
         layer[by:by + h, bx:bx + w][crop] = matched[crop]
         full = np.zeros(roi.shape[:2], bool)
         full[by:by + h, bx:bx + w] = crop
-        alpha = cv2.GaussianBlur(full.astype(np.float32), (0, 0), ALPHA_SIGMA)[..., None]
+        alpha = cv2.GaussianBlur(full.astype(np.float32), (2 * _PAD + 1, 2 * _PAD + 1), ALPHA_SIGMA)[..., None]
         # keep the object's own pixels solid
         alpha = np.where(full[..., None], np.maximum(alpha, 0.5), alpha)
         canvas[ry0:ry1, rx0:rx1] = roi * (1 - alpha) + layer * alpha

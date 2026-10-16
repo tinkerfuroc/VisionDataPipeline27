@@ -311,8 +311,6 @@ def test_the_mask_image_keeps_a_small_object_visible_on_a_large_one(store, make_
     assert "overlap_px" not in asdict(EXPORTERS["yolo_seg"].write(plan, out, lambda: None))
 
 
-
-
 def _square(h=40, w=60, y=(10, 30), x=(20, 50)):
     m = np.zeros((h, w), bool)
     m[y[0]:y[1], x[0]:x[1]] = True
@@ -384,6 +382,32 @@ def _old_coco(plan, split):
 
 def test_exporters_are_byte_identical_to_the_frozen_pre_refactor_logic(planned):
     plan, out, _clip = planned
+    _assert_matches_frozen_logic(plan, out)
+
+
+def test_exporters_match_the_frozen_logic_for_overlapping_and_split_objects(store, make_clip, tmp_path):
+    project, clip = make_clip(n_frames=5, classes=("bolt", "nut"))
+    clip.objects = [LabelObject(id=1, class_id=0), LabelObject(id=2, class_id=1), LabelObject(id=3, class_id=1)]
+    store.write_clip(clip)
+    blobs = np.zeros((H, W), bool)
+    blobs[5:15, 5:20] = True
+    blobs[40:55, 95:115] = True  # one object, two disjoint parts
+    for i in range(5):
+        store.write_mask(clip.id, 1, i, _disc(40 + 4 * i))
+        store.write_mask(clip.id, 2, i, _disc(60 + 4 * i))  # overlaps object 1
+        store.write_mask(clip.id, 3, i, blobs)
+    plan = build_plan(store, project.id, [clip.id], ExportOptions())
+    assert {len(f.objects) for f in plan.frames} == {3} and {f.split for f in plan.frames} == {"train", "val"}
+    out = tmp_path / "export"
+    (out / "images").mkdir(parents=True)
+    for frame in plan.frames:
+        shutil.copy2(frame.image_path, export_base.shared_image(out, frame))
+    _assert_matches_frozen_logic(plan, out)
+    seg = (out / "yolo_seg" / "labels" / plan.frames[0].split / f"{plan.frames[0].stem}.txt").read_text()
+    assert len(seg.splitlines()) == 4  # the split object gives two polygon lines
+
+
+def _assert_matches_frozen_logic(plan, out):
     for name in ("yolo_seg", "yolo_det", "masks", "coco"):
         _write(name, plan, out)
     for frame in plan.frames:

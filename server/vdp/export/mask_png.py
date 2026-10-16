@@ -4,7 +4,7 @@ visible; the pixels two objects share are counted."""
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -12,11 +12,12 @@ import numpy as np
 from PIL import Image
 
 from ..labeling.errors import BadRequest
+from ..store.models import ClassDef
 from .base import ExportSummary, Tick, place_image, read_mask, shared_image
 from .plan import ExportPlan
 
 
-def palette_for(classes) -> list[int]:
+def palette_for(classes: Iterable[ClassDef]) -> list[int]:
     palette = [0, 0, 0] * 256
     for c in classes:
         if 0 <= c.id + 1 <= 255:

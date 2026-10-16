@@ -851,7 +851,6 @@ def test_an_unreadable_background_fails_the_job_and_removes_output(store, make_c
 def test_lighting_copies_are_identical_for_one_and_three_workers(store, make_clip, tmp_path, monkeypatch):
     from vdp.augment import derive
 
-    assert hasattr(derive, "_lighting_unit")
     monkeypatch.setattr(derive, "UNIT_LIGHTING", 2)  # several lighting units even for a small fixture
     project, clip = _multi(store, make_clip, n=10)
     data_root = tmp_path / "data"

@@ -139,3 +139,44 @@ def test_roi_composite_matches_the_full_frame_reference():
             assert np.array_equal(a, b)
         diff = np.abs(new.image.astype(int) - old.image.astype(int))
         assert (diff <= 2).mean() >= 0.999, (seed, diff.max())
+
+
+def _assert_matches_reference(rng_key, width, height, background, cutouts, max_objects):
+    new = make_composite(np.random.default_rng(rng_key), width, height, background, cutouts, max_objects, 64)
+    old = reference_make_composite(np.random.default_rng(rng_key), width, height, background, cutouts, max_objects, 64)
+    assert [c for c, _ in new.objects] == [c for c, _ in old.objects]
+    for (_, a), (_, b) in zip(new.objects, old.objects, strict=True):
+        assert np.array_equal(a, b)
+    diff = np.abs(new.image.astype(int) - old.image.astype(int))
+    assert (diff <= 2).mean() >= 0.999, (rng_key, diff.max())
+    return new
+
+
+def test_centred_fallback_for_an_unplaceable_first_object_matches_the_reference(monkeypatch):
+    # with no placement tries at all, no cutout can be placed: the first object of every composite takes the
+    # centred fallback and the rest are dropped, in both implementations
+    import composite_reference
+    from vdp.augment import composite
+
+    monkeypatch.setattr(composite, "TRIES", 0)
+    monkeypatch.setattr(composite_reference, "TRIES", 0)
+    base = np.random.default_rng(5)
+    cutouts = _ref_cutouts(base)
+    background = base.integers(0, 255, (400, 600, 3), dtype=np.uint8)
+    for seed in range(10):
+        new = _assert_matches_reference([9, seed], 320, 240, background, cutouts, 3)
+        assert len(new.objects) == 1
+        ys, xs = np.nonzero(new.objects[0][1])
+        assert abs((ys.min() + ys.max()) / 2 - 120) <= 2 and abs((xs.min() + xs.max()) / 2 - 160) <= 2
+
+
+def test_objects_clipped_at_the_canvas_edge_match_the_reference():
+    base = np.random.default_rng(123)
+    cutouts = _ref_cutouts(base)
+    background = base.integers(0, 255, (400, 600, 3), dtype=np.uint8)
+    touching = 0
+    for seed in range(40):
+        new = _assert_matches_reference([11, seed], 320, 240, background, cutouts, 3)
+        for _, m in new.objects:
+            touching += bool(m[0].any() or m[-1].any() or m[:, 0].any() or m[:, -1].any())
+    assert touching > 0, "no object reached the canvas edge"

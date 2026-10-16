@@ -50,6 +50,9 @@ from .lighting import LOW_SHARE, relight
 from .parallel import run_units
 
 MAX_LIGHTING = 3
+UNIT_STEMS = 64  # mask files per cutout work unit
+UNIT_COMPOSITES = 16  # composites per work unit
+UNIT_LIGHTING = 16  # source frames per lighting work unit
 LIGHTING_STREAM = 1  # seeds lighting rngs as [seed, LIGHTING_STREAM, frame, k]; composites use [seed, n]
 
 
@@ -124,8 +127,6 @@ def _coco_train_objects(source_dir: Path) -> dict[str, list[tuple[int, list[Poly
 # (so it is exercised and understood), and a frame this crowded, in even one class, is far outside normal use.
 MAX_PAINT_OBJECTS = 255
 
-
-UNIT_STEMS = 64  # mask files per work unit
 
 
 def _cutout_unit(
@@ -214,8 +215,6 @@ def _cutouts_and_sizes(
     return cutouts, sizes, "per_object" if per_object else "per_class_region"
 
 
-UNIT_COMPOSITES = 16  # composites per work unit
-
 
 class SynthResult(NamedTuple):
     """What a worker reports for one composite with objects (its files are already written)."""
@@ -243,7 +242,7 @@ def _init_composite_worker(
     """Pool initializer (also called in-process for one worker): memory-maps the packed cutouts and sets up a
     per-worker background cache."""
 
-    @lru_cache(maxsize=64)  # per worker: gone with the worker (or cleared by run_augment when run in-process)
+    @lru_cache(maxsize=8)  # per worker: gone with the worker (or cleared by run_augment when run in-process)
     def load_background(path: Path) -> np.ndarray:
         return np.array(Image.open(path).convert("RGB"))
 
@@ -355,8 +354,6 @@ def _merge_real_frames(source_dir: Path, out: Path, formats: list[str], tick: Ca
                 _copy_label(source_dir, out, fmt, split, stem)
     return linked
 
-
-UNIT_LIGHTING = 16  # source frames per lighting work unit
 
 
 def _lighting_unit(args: tuple[Path, Path, list[str], list[tuple[int, str]], int, int]) -> list[tuple[str, str]]:
