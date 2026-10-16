@@ -17,6 +17,8 @@ from ..store.models import ClassDef, Clip, RegionRange
 from .polygons import clean_mask
 
 FORMATS = ("yolo_seg", "yolo_det", "coco", "masks")
+EXPORT_UNIT = 32  # frames per pool unit: enough work to amortise a unit's pickling and dispatch
+INLINE_BELOW = 64  # fewer frames than this run in-process: a pool's spawn cost would outweigh the work
 Split = Literal["train", "val"]
 
 
@@ -178,43 +180,82 @@ def _stems(clip: Clip, frames: list[int]) -> dict[int, str]:
     return out
 
 
+def _present_objects(
+    unit: tuple[Path, str, int, list[tuple[int, RegionRange | None]], list[tuple[int, int]]],
+) -> list[tuple[int, ...]]:
+    """Worker side of build_plan: for each frame of one clip, the ids of the selected objects whose mask, cut to the
+    frame's region and cleaned, keeps any pixel. Unit = (data_root, clip_id, min_area_px, [(frame idx, region)],
+    [(object id, export class id)])."""
+    data_root, clip_id, min_area_px, frames, objects = unit
+    store = ProjectStore(data_root)  # no side effects: only paths and locks
+    out: list[tuple[int, ...]] = []
+    for idx, region in frames:
+        present = []
+        for object_id, _ in objects:
+            mask = store.read_mask(clip_id, object_id, idx)
+            if mask is not None:
+                mask = apply_to_mask(mask, region)
+            # absent, or nothing but noise once cut and cleaned = the object is not in this frame
+            if mask is not None and clean_mask(mask, min_area_px).any():
+                present.append(object_id)
+        out.append(tuple(present))
+    return out
+
+
 def build_plan(
     store: ProjectStore, project_id: str, clip_ids: list[str], options: ExportOptions,
-    tick: Callable[[], None] | None = None,
+    tick: Callable[[], None] | None = None, *, workers: int | None = 1, advance: Callable[[int], None] | None = None,
 ) -> ExportPlan:
-    """`tick` is called once per frame considered (it may raise to cancel)."""
+    """Which masks are present is decided per frame on the process pool (`workers`; None = default, 1 = inline;
+    a plan with fewer than INLINE_BELOW candidate frames runs in-process). Progress: `advance(n)` per completed
+    unit of n frames, or else `tick` once per frame considered; either may raise to cancel."""
+    # here, not at module level: vdp.parallel imports ExportCancelled from this package
+    from .. import parallel
+
     resolved = check_request(store, project_id, clip_ids, list(FORMATS[:1]), options)
     project = store.read_project(project_id)
     clips = _read_clips(store, project_id, clip_ids)
     classes, class_map = select_classes(project.classes, resolved.class_ids)
     export_id_of = {project_class: export_class for export_class, project_class in class_map.items()}
-    frames: list[PlanFrame] = []
+    if advance is None:
+        def advance(n: int) -> None:
+            if tick is not None:
+                for _ in range(n):
+                    tick()
+
+    per_clip = []  # (clip, kept frames, stems, regions, [(object id, export class)])
     for clip in clips:
         check_regions(clip)
         deleted = set(clip.deleted_frames)
         kept = [i for i in range(clip.frame_count) if i not in deleted][:: resolved.stride]
-        stems = _stems(clip, kept)
+        # an unselected class is dropped BEFORE the empty-frame filter below
+        selected = [(o.id, export_id_of[o.class_id]) for o in clip.objects if o.class_id in export_id_of]
+        per_clip.append((clip, kept, _stems(clip, kept), {idx: region_for(clip, idx) for idx in kept}, selected))
+    total = sum(len(kept) for _, kept, _, _, _ in per_clip)
+    n = 1 if total < INLINE_BELOW else min(workers or parallel.default_workers(), -(-total // EXPORT_UNIT))
+    size = 1 if n <= 1 else EXPORT_UNIT
+    units = [
+        (store.root, clip.id, resolved.min_area_px, [(idx, regions[idx]) for idx in kept[i : i + size]], selected)
+        for clip, kept, _, regions, selected in per_clip
+        for i in range(0, len(kept), size)
+    ]
+    results = parallel.run_units(
+        _present_objects, units, workers=n, weight=lambda u: len(u[3]), on_done=advance,
+    )
+    present = iter(p for unit_result in results for p in unit_result)
+
+    frames: list[PlanFrame] = []
+    for clip, kept, stems, regions, selected in per_clip:
+        export_class_of = dict(selected)
         candidates: list[tuple[int, tuple[PlanObject, ...], RegionRange | None]] = []
         for idx in kept:
-            if tick is not None:
-                tick()
-            region = region_for(clip, idx)
-            objects = []
-            for obj in clip.objects:
-                export_class = export_id_of.get(obj.class_id)
-                if export_class is None:  # an unselected class: dropped BEFORE the empty-frame filter below
-                    continue
-                mask = store.read_mask(clip.id, obj.id, idx)
-                if mask is not None:
-                    mask = apply_to_mask(mask, region)
-                # absent, or nothing but noise once cut and cleaned = the object is not in this frame
-                if mask is None or not clean_mask(mask, resolved.min_area_px).any():
-                    continue
-                objects.append(PlanObject(
-                    obj.id, export_class, store.mask_path(clip.id, obj.id, idx), resolved.min_area_px, region,
-                ))
+            region = regions[idx]
+            objects = tuple(
+                PlanObject(oid, export_class_of[oid], store.mask_path(clip.id, oid, idx), resolved.min_area_px, region)
+                for oid in next(present)
+            )
             if objects or resolved.include_empty:
-                candidates.append((idx, tuple(objects), region))
+                candidates.append((idx, objects, region))
         # The split comes AFTER the empty-frame filter: the tail of what is actually exported, not of the frame range
         # (otherwise a clip labelled only at its start would get no validation frames at all).
         if resolved.split_mode == "contiguous":

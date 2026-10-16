@@ -147,6 +147,11 @@ Polygon and box coordinates share one convention in every format: continuous ima
 deleted while an export is reading it (409), and a request that turns out to have no usable mask at all is
 reported as a failed job ("nothing to export"), because finding that out means reading the masks.
 
+**Speed:** an export runs on `export.workers` processes, the same default as augmentation (all CPU cores but 4;
+`1` runs in-process). Both the pass that reads the masks to plan the export and the pass that writes every format
+run per frame on that pool; an export of fewer than 64 frames runs in-process. On a real 3-clip, 1,042-frame export
+in all four formats it took about 13 s instead of 261 s, with byte-identical output.
+
 ## Training
 
 `uv sync` installs Ultralytics (YOLO26 and YOLO11 segmentation). Train from the Train page (header → Train) or from

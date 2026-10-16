@@ -10,15 +10,13 @@ from dataclasses import asdict
 from pathlib import Path
 
 from ..store import ProjectStore, now_iso
+from . import plan as plan_module
 from .base import ExportSummary
 from .frame_unit import FrameJob, FrameResult, write_frames
 from .mask_png import MaskSummary, check_mask_classes, palette_for
 from .naming import clean_name, reserve_export_dir
 from .plan import ExportOptions, ExportPlan, build_plan, check_request
 from .yolo import data_yaml
-
-EXPORT_UNIT = 32  # frames per pool unit: enough work to amortise a unit's pickling and dispatch
-INLINE_BELOW = 64  # a plan with fewer frames runs in-process: a pool's spawn cost would outweigh the work
 
 
 class ExportCancelled(Exception):
@@ -88,8 +86,10 @@ def write_dataset(
                 tick()
 
     frames = list(plan.frames)
-    n = 1 if len(frames) < INLINE_BELOW else min(workers or parallel.default_workers(), -(-len(frames) // EXPORT_UNIT))
-    size = 1 if n <= 1 else EXPORT_UNIT
+    # read at call time from plan.py, the one home of both constants (tests patch them there)
+    unit, inline_below = plan_module.EXPORT_UNIT, plan_module.INLINE_BELOW
+    n = 1 if len(frames) < inline_below else min(workers or parallel.default_workers(), -(-len(frames) // unit))
+    size = 1 if n <= 1 else unit
     job = FrameJob(
         out=out, formats=tuple(formats), link_images=link_images,
         palette=tuple(palette_for(plan.classes)) if "masks" in formats else None,
@@ -181,7 +181,7 @@ def run_export(
 
     export_id, out = reserve_export_dir(exports_root, name)
     try:
-        plan = build_plan(store, project_id, clip_ids, options, tick=tick)
+        plan = build_plan(store, project_id, clip_ids, options, tick=tick, workers=workers, advance=advance)
         # include_empty=False may have dropped frames: shrink the total so the bar still ends at 100%
         state["total"] = state["done"] + len(plan.frames) * (1 + len(formats))
         summaries, counts, linked = write_dataset(

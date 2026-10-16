@@ -244,3 +244,28 @@ def test_manifest_helpers_restore_the_options_and_the_class_map():
         {"id": 1, "name": "b", "color": "#111111", "yolo_id": 1, "coco_id": 2, "mask_value": 2},
     ]})
     assert old_map == {0: 0, 1: 1}  # an export written before class selection maps to itself
+
+
+def test_build_plan_on_a_pool_matches_inline(store, make_clip, tmp_path, monkeypatch):
+    from export_reference import rich_project
+    from vdp import parallel
+    from vdp.export import plan as plan_module
+
+    project, clip_ids, options = rich_project(store, make_clip, tmp_path)
+    inline = build_plan(store, project.id, clip_ids, options, workers=1)
+    monkeypatch.setattr(plan_module, "INLINE_BELOW", 0)
+    monkeypatch.setattr(plan_module, "EXPORT_UNIT", 3)
+    calls, real = [], parallel.run_units
+
+    def spy(fn, units, **kw):
+        calls.append((kw["workers"], len(units)))
+        return real(fn, units, **kw)
+
+    monkeypatch.setattr(parallel, "run_units", spy)
+    done = []
+    pooled = build_plan(store, project.id, clip_ids, options, workers=3, advance=done.append)
+    assert calls == [(3, 3 + 2 + 2)]  # units never span clips: 8, 6 and 5 frames in units of 3
+    assert sorted(done) == [2, 2, 3, 3, 3, 3, 3] and sum(done) == 19
+    assert pooled == inline
+    assert any(not f.objects for f in inline.frames) and any(f.region for f in inline.frames)
+    assert {f.split for f in inline.frames} == {"train", "val"}

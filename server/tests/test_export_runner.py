@@ -5,6 +5,7 @@ import json
 import cv2
 import numpy as np
 import pytest
+from export_reference import rich_project
 from vdp.export import ExportCancelled, ExportOptions, run_export
 from vdp.store.models import LabelObject, RegionRange
 
@@ -166,58 +167,14 @@ def test_export_crops_greys_and_cuts_labels(store, make_clip, tmp_path):
 FORMATS_ALL = ["yolo_seg", "yolo_det", "coco", "masks"]
 
 
-def _blobs(*boxes, holes=()):
-    mask = np.zeros((60, 120), bool)
-    for y0, y1, x0, x1 in boxes:
-        mask[y0:y1, x0:x1] = True
-    for y0, y1, x0, x1 in holes:
-        mask[y0:y1, x0:x1] = False
-    return mask
-
-
-def _extra_clip(store, project_id, tmp_path, n):
-    import uuid
-
-    from vdp.ingest import FrameDirSource, import_clip
-    src = tmp_path / f"more_{uuid.uuid4().hex[:6]}"
-    src.mkdir()
-    for i in range(n):
-        assert cv2.imwrite(str(src / f"{i:04d}.png"), np.full((60, 120, 3), 40 + 10 * i, np.uint8))
-    return import_clip(store, project_id, FrameDirSource(src))
-
-
-def _rich_project(store, make_clip, tmp_path):
-    """3 clips, 3 classes (overlapping, two-blob and holed masks), a noise-only mask, empty frames, a region on part
-    of the first clip. Export with class_ids=(0, 2): the bowl is left out."""
-    project, first = make_clip(n_frames=8, classes=("cup", "bowl", "plate"))
-    second = _extra_clip(store, project.id, tmp_path, 6)
-    third = _extra_clip(store, project.id, tmp_path, 5)
-    for clip in (first, second, third):
-        clip = store.read_clip(clip.id)
-        clip.objects = [LabelObject(id=1, class_id=0), LabelObject(id=2, class_id=1), LabelObject(id=3, class_id=2)]
-        store.write_clip(clip)
-        for i in range(clip.frame_count):
-            if i in (5, 6) and clip.id == first.id:
-                continue  # empty frames
-            store.write_mask(clip.id, 1, i, _blobs((5 + i, 35 + i, 10, 50), (45, 55, 70, 90), holes=((15, 20, 20, 30),)))
-            store.write_mask(clip.id, 2, i, _blobs((20, 50, 30 + i, 80)))  # the bowl, overlapping both
-            if i % 2 == 0:  # the plate overlaps the cup on even frames
-                store.write_mask(clip.id, 3, i, _blobs((25, 45, 40, 100)))
-    # one frame where the cup's mask is nothing but noise (every blob < 64 px)
-    store.write_mask(second.id, 1, 3, _blobs((2, 6, 2, 6), (30, 34, 60, 64), (50, 57, 100, 108)))
-    first = store.read_clip(first.id)
-    first.regions = [RegionRange(start=1, end=3, crop=(5, 2, 110, 58), blocks=[(60, 30, 90, 50)])]
-    store.write_clip(first)
-    return project, [first.id, second.id, third.id], ExportOptions(class_ids=(0, 2))
-
-
 def _spy_pool(monkeypatch):
-    """Use a real pool (patch the inline threshold and unit size) and record each run_units call's worker count."""
+    """Use a real pool (patch the inline threshold and unit size) and record each run_units call's worker count
+    and unit count: one call for the plan, one for the writing pass."""
     from vdp import parallel
-    from vdp.export import runner
+    from vdp.export import plan
 
-    monkeypatch.setattr(runner, "INLINE_BELOW", 0)
-    monkeypatch.setattr(runner, "EXPORT_UNIT", 4)
+    monkeypatch.setattr(plan, "INLINE_BELOW", 0)
+    monkeypatch.setattr(plan, "EXPORT_UNIT", 4)
     calls = []
     real = parallel.run_units
 
@@ -242,7 +199,7 @@ def test_the_single_pass_export_is_byte_identical_to_the_per_format_reference(
     from export_reference import ref_write_dataset
     from vdp.export import build_plan, write_dataset
 
-    project, clip_ids, options = _rich_project(store, make_clip, tmp_path)
+    project, clip_ids, options = rich_project(store, make_clip, tmp_path)
     plan = build_plan(store, project.id, clip_ids, options)
     assert {f.split for f in plan.frames} == {"train", "val"} and any(f.region for f in plan.frames)
     assert any(not f.objects for f in plan.frames)
@@ -270,7 +227,7 @@ def test_run_export_progress_ends_at_the_same_total_with_a_pool(store, make_clip
     seen = []
     run_export(store, project.id, [clip.id], ["yolo_seg", "coco", "masks"], ExportOptions(), tmp_path / "exports",
                progress=lambda done, total: seen.append((done, total)), workers=3)
-    assert calls == [(3, 3)]
+    assert calls == [(3, 3), (3, 3)]  # the plan, then the writing pass
     assert seen[-1] == (10 * 5, 10 * 5)
     assert [d for d, _ in seen] == sorted(d for d, _ in seen)
 
@@ -290,7 +247,7 @@ def test_a_cancel_mid_pool_removes_the_export(store, make_clip, tmp_path, monkey
     with pytest.raises(ExportCancelled):
         run_export(store, project.id, [clip.id], ["yolo_seg", "masks"], ExportOptions(), tmp_path / "exports",
                    progress=progress, cancel=lambda: state["cancel"], workers=3)
-    assert state["cancel"] and calls == [(3, 4)]
+    assert state["cancel"] and calls == [(3, 4), (3, 4)]
     assert list((tmp_path / "exports").iterdir()) == []
     assert multiprocessing.active_children() == []
 
@@ -324,4 +281,19 @@ def test_a_worker_error_propagates_and_leaves_no_worker(store, make_clip, tmp_pa
     out.mkdir()
     with pytest.raises(FileNotFoundError):
         write_dataset(plan, ["yolo_det"], out, lambda: None, workers=3)
+    assert multiprocessing.active_children() == []
+
+
+def test_an_unreadable_mask_fails_the_export_and_removes_it(store, make_clip, tmp_path, monkeypatch):
+    import multiprocessing
+
+    from PIL import UnidentifiedImageError
+
+    calls = _spy_pool(monkeypatch)
+    project, clip_ids, options = rich_project(store, make_clip, tmp_path)
+    store.mask_path(clip_ids[1], 1, 2).write_bytes(b"not a png at all")
+    with pytest.raises(UnidentifiedImageError):
+        run_export(store, project.id, clip_ids, FORMATS_ALL, options, tmp_path / "exports", workers=3)
+    assert calls == [(3, 2 + 2 + 2)]  # only the plan ran (units of 4 per clip of 8, 6, 5 frames): writing never began
+    assert list((tmp_path / "exports").iterdir()) == []
     assert multiprocessing.active_children() == []
