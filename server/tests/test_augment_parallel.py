@@ -24,6 +24,9 @@ def boom(x):
 
 
 def pid(_):
+    # long enough that the first worker cannot drain every unit before the others have started (spawn start-up
+    # takes about a second on a slow CI runner)
+    time.sleep(0.5)
     return os.getpid()
 
 
