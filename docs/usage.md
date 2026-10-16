@@ -256,20 +256,24 @@ from the terminal):
   epoch counter, on its new export's images; Fine-tune starts again at epoch 1). Augmentation is unchanged (a mosaic
   still pulls its three extra images from the whole set). Ultralytics' warmup (3 epochs) and "close mosaic" (mosaic
   off for the last 10 epochs) are measured in epochs; they are scaled by train images / N so they still cover as many
-  images as with whole epochs (never more than the run's epochs; with many short epochs, mosaic may be off for a large
-  share of them, just as for the last 10 whole passes). Patience stays in (short) epochs, which is the point; the LR
+  images as with whole epochs. Warmup is capped at 30 % of the run's epochs (but never below Ultralytics' own 3), so a
+  short run does not warm up for most of its epochs; close mosaic never exceeds the run's epochs (with many short
+  epochs, mosaic may be off for a large share of them, just as for the last 10 whole passes). Optimizer "auto" picks
+  by the number of optimizer steps the sampled epochs actually make. Continuing a run onto an export no bigger than
+  its images per epoch trains whole epochs again, with Ultralytics' unscaled close mosaic. Patience stays in (short) epochs, which is the point; the LR
   schedule follows the epochs as before.
 - **Validation images per epoch**: each epoch validates on one fixed subset of M val images, chosen once with the
   run's seed, so the scores stay comparable from epoch to epoch. Clips keep their share of the val split (a clip is
   the `<clip_id>_` prefix of an image name), and every class present in the val split is in at least one chosen image.
   The subset is linked into the run folder (`val_subset/`, with its own label cache; the run's `data.yaml` points at
   it), so it never touches the export. The final evaluation of `best.pt` at the end of training (and "Mark complete")
-  still runs on the whole val split; those are the metrics in the Runs table and the run detail ("Final, best.pt
+  still runs on the whole val split (a run stopped during that evaluation runs it on Resume); those are the metrics in the Runs table and the run detail ("Final, best.pt
   (epoch N) on all … val images"), saved in the run folder as `final_val.json`. The per-epoch charts are labelled
   "(val subset of M)", and the validation-predictions gallery still covers every val image.
 
 Under the fields, a live estimate reads e.g. "1 epoch = 7,000 images (≈ 2 min) · 100 epochs ≈ 25 full passes" and
-"Validation: 400 of 1,643 images per epoch (≈ 5 s)". The times come from the newest run of the same model and image
+"Validation: 400 of 1,643 images per epoch (≈ 5 s)"; Start stays off (with that note) while images per epoch is below
+the batch size. The times come from the newest run of the same model and image
 size on the same GPU: every run records its measured training and validation images per second in `speed.json`
 (after each epoch); without such a run the times are left out. A run trained this way says so in its detail ("Each
 epoch trains on the next 7,000 of 28,000 images (warmup 12 epochs, mosaic off for the last 40). …"). Training stays

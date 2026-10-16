@@ -505,7 +505,7 @@ def test_new_sampled_run_scales_the_schedule_and_validates_on_a_fixed_subset(tmp
 
     kw = calls["train_kwargs"]
     assert kw["trainer"] == "SampledTrainer"
-    assert (kw["warmup_epochs"], kw["close_mosaic"]) == (9.0, 10)  # x3: warmup 9 (capped at epochs - 1), mosaic 30
+    assert (kw["warmup_epochs"], kw["close_mosaic"]) == (3.0, 10)  # x3: warmup 9 capped at 3 (30 %), mosaic 30
     data = yaml.safe_load((run_dir / "data.yaml").read_text())
     subset = run_dir / "val_subset" / "images" / "val"
     assert data["val"] == str(subset) and data["train"] == "images/train"
@@ -587,17 +587,8 @@ def test_mark_complete_of_a_subset_run_validates_best_on_the_full_val_split(tmp_
     (weights / "best.pt").write_bytes(b"best")
     (run_dir / "train" / "results.csv").write_text("epoch,time,metrics/mAP50-95(M)\n1,5.0,0.9\n")
     _install_fake_ultralytics(monkeypatch, strip_optimizer=lambda path: None)
-    validated = []
-
-    class FakeModel:
-        def __init__(self, path):
-            self.path = path
-
-        def val(self, **kwargs):
-            validated.append((self.path, kwargs))
-            return SimpleNamespace(results_dict={"metrics/mAP50-95(M)": 0.3, "fitness": 0.3})
-
-    sys.modules["ultralytics"].YOLO = FakeModel
+    validated: list = []
+    sys.modules["ultralytics"].YOLO = _fake_val_model(validated)
     monkeypatch.setattr(worker, "_predict", lambda rd, r, p: None)
 
     assert worker.train(run_dir) == 0
@@ -629,3 +620,58 @@ def test_speed_callbacks_measure_train_and_val_images_per_second(tmp_path):
     assert json.loads((tmp_path / "speed.json").read_text()) == {
         "train_images_per_s": 10.0, "val_images_per_s": 5.0, "batch": 8, "imgsz": 640,
     }
+
+
+def _fake_val_model(validated: list):
+    class FakeModel:
+        def __init__(self, path):
+            self.path = path
+
+        def val(self, **kwargs):
+            validated.append((self.path, kwargs))
+            return SimpleNamespace(results_dict={"metrics/mAP50-95(M)": 0.3, "fitness": 0.3})
+
+    return FakeModel
+
+
+@pytest.mark.parametrize("has_final", [False, True])
+def test_resume_of_a_finished_subset_run_runs_a_missing_final_full_validation(tmp_path, monkeypatch, has_final):
+    """Killed during Ultralytics' final_eval (last.pt already stamped finished): the resume only predicts, but first
+    evaluates best.pt on the whole val split when final_val.json is missing."""
+    run_dir = _sampled_run(tmp_path, resume=True)
+    weights = run_dir / "train" / "weights"
+    weights.mkdir(parents=True)
+    (weights / "best.pt").write_bytes(b"best")
+    (run_dir / "train" / "results.csv").write_text("epoch,time,metrics/mAP50-95(M)\n1,5.0,0.9\n")
+    if has_final:
+        (run_dir / "final_val.json").write_text(json.dumps({"images": 6, "metrics": {"metrics/mAP50-95(M)": 0.5}}))
+    monkeypatch.setattr(worker, "_resume_already_finished", lambda rd: True)
+    validated: list = []
+    _install_fake_ultralytics(monkeypatch, strip_optimizer=lambda path: None)
+    sys.modules["ultralytics"].YOLO = _fake_val_model(validated)
+    predicted = []
+    monkeypatch.setattr(worker, "_predict", lambda rd, r, p: predicted.append(rd))
+
+    assert worker.train(run_dir) == 0
+
+    assert len(validated) == (0 if has_final else 1) and predicted == [run_dir]
+    best = json.loads((run_dir / "result.json").read_text())["best"]
+    assert best["mask_map50_95"] == (0.5 if has_final else 0.3) and best["val_images"] == 6
+
+
+def test_resume_onto_whole_train_epochs_resets_close_mosaic(tmp_path, monkeypatch):
+    """A Continue of a sampled run onto an export no bigger than its images per epoch trains whole epochs: it must
+    not keep the source checkpoint's scaled close_mosaic."""
+    run_dir = _sampled_run(tmp_path, resume=True)
+    run = json.loads((run_dir / "run.json").read_text())
+    run["params"]["train_images_per_epoch"] = 40  # more than the 12 train images: whole epochs
+    run["sampling"] = epoch_plan(run["params"], 12, 6)
+    (run_dir / "run.json").write_text(json.dumps(run))
+    weights = run_dir / "train" / "weights"
+    weights.mkdir(parents=True)
+    (weights / "last.pt").write_bytes(b"last")
+    _fake_sampled_trainer(monkeypatch)
+    calls = _install_fake_yolo(monkeypatch)
+    monkeypatch.setattr(worker, "_predict", lambda rd, r, p: None)
+    assert worker.train(run_dir) == 0
+    assert calls["train_kwargs"]["close_mosaic"] == 10 and "warmup_epochs" not in calls["train_kwargs"]

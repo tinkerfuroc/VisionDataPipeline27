@@ -62,7 +62,9 @@ def test_scaled_schedule_keeps_the_same_amount_of_data():
 def test_scaled_schedule_never_exceeds_the_epochs():
     s = scaled_schedule(epochs=20, train_images=28000, per_epoch=2000)  # x14: warmup 42, close_mosaic 140
     assert s["close_mosaic"] == 20
-    assert s["warmup_epochs"] == 19  # Ultralytics leaves at least the last epoch out of warmup
+    assert s["warmup_epochs"] == 6  # at most 30 % of the run's epochs
+    assert scaled_schedule(epochs=5, train_images=100, per_epoch=10)["warmup_epochs"] == 3  # but at least Ultralytics' 3
+    assert scaled_schedule(epochs=3, train_images=100, per_epoch=10)["warmup_epochs"] == 2  # and never the last epoch
     assert scaled_schedule(epochs=1, train_images=100, per_epoch=50)["warmup_epochs"] == 0
 
 

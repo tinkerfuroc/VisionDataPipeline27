@@ -16,6 +16,7 @@ How Ultralytics (8.4.x) feeds the train loader, which the slice bookkeeping belo
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 from .runs import atomic_write_json
@@ -102,6 +103,15 @@ def sampled_trainer(*, train_images_per_epoch: int | None, seed: int, full_val: 
                 # rebuilds the loader mid-run, where `self.epoch` is the epoch it restarts
                 self.slice_feed = SliceFeed(loader, sampler, getattr(self, "epoch", 0))
             return loader
+
+        def build_optimizer(self, model, name="auto", lr=0.001, momentum=0.9, decay=1e-5, iterations=1e5):
+            # optimizer="auto" picks by the run's optimizer steps, which Ultralytics counts from the whole train set
+            # per epoch (`_build_train_pipeline`); count the sampled epochs instead. A resume rebuilds the optimizer
+            # the same way (then loads its state), so it gets the same choice.
+            if train_images_per_epoch and self.slice_feed is not None:
+                per_epoch = len(self.train_loader.sampler)
+                iterations = math.ceil(per_epoch / max(self.batch_size, self.args.nbs)) * self.epochs
+            return super().build_optimizer(model, name, lr, momentum, decay, iterations)
 
         def _close_dataloader_mosaic(self) -> None:
             super()._close_dataloader_mosaic()

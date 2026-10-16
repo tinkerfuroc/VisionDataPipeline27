@@ -245,3 +245,27 @@ def test_real_cpu_resume_picks_up_the_slice_of_the_epoch_it_resumes_at(tmp_path,
 
     im_files = sorted(p.name for p in (export / "yolo_seg" / "images" / "train").iterdir())
     assert trained == {e: [im_files[i] for i in epoch_slice(9, e, 12, 4)] for e in range(3)}
+
+
+def test_auto_optimizer_counts_the_sampled_iterations(monkeypatch):
+    """Ultralytics' optimizer='auto' picks MuSGD above 10 000 optimizer steps, else AdamW, counting steps from the whole
+    train set; a sampled run's steps are counted from its images per epoch."""
+    pytest.importorskip("ultralytics")
+    from ultralytics.engine.trainer import BaseTrainer
+
+    seen = []
+    monkeypatch.setattr(BaseTrainer, "build_optimizer",
+                        lambda self, model, name="auto", lr=0.001, momentum=0.9, decay=1e-5, iterations=1e5:
+                        seen.append(iterations))
+    cls = sampled_trainer(train_images_per_epoch=7000, seed=0, full_val=None, final_val_path=None)
+    trainer = cls.__new__(cls)
+    sampler = EpochSliceSampler(28000, 7000, 0)
+    trainer.__dict__.update(slice_feed=object(), train_loader=SimpleNamespace(sampler=sampler), batch_size=8,
+                            args=SimpleNamespace(nbs=64), epochs=50)
+    trainer.build_optimizer(None, iterations=math.ceil(28000 / 64) * 50)  # what Ultralytics passes: 21 900
+    assert seen == [math.ceil(7000 / 64) * 50]  # 5 500: AdamW, not MuSGD
+    whole = sampled_trainer(train_images_per_epoch=None, seed=0, full_val="/v", final_val_path=None)
+    trainer = whole.__new__(whole)
+    trainer.__dict__.update(slice_feed=None)
+    trainer.build_optimizer(None, iterations=21900)
+    assert seen[-1] == 21900  # whole epochs: Ultralytics' own count

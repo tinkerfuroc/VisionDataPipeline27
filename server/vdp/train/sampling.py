@@ -24,6 +24,9 @@ import numpy as np
 # Ultralytics' own defaults (cfg/default.yaml), which vdp never overrides; kept here so the server never imports it.
 ULTRALYTICS_WARMUP_EPOCHS = 3.0
 ULTRALYTICS_CLOSE_MOSAIC = 10
+# A scaled warmup never takes more than this share of a run's epochs (but always at least Ultralytics' own 3): short
+# sampled runs would otherwise warm up for almost all of their epochs.
+MAX_WARMUP_SHARE = 0.3
 IMAGE_SUFFIXES = frozenset({".jpg", ".jpeg", ".png"})
 VAL_SUBSET_DIR = "val_subset"  # in the run dir: images/val and labels/val, linked from the export
 
@@ -46,10 +49,12 @@ def epoch_slice(seed: int, epoch: int, size: int, per_epoch: int) -> np.ndarray:
 
 def scaled_schedule(epochs: int, train_images: int, per_epoch: int) -> dict:
     """Ultralytics' warmup_epochs and close_mosaic, scaled to cover the same number of images with epochs of
-    `per_epoch`. Warmup is capped at epochs - 1 (Ultralytics' own cap, so this is what it will do), close_mosaic at the
-    epochs (as with full epochs and a run shorter than 10 epochs, mosaic is then off from the start)."""
+    `per_epoch`. Warmup is capped at MAX_WARMUP_SHARE of the epochs (at least Ultralytics' 3) and at epochs - 1
+    (Ultralytics' own cap, so this is what it will do), close_mosaic at the epochs (as with full epochs and a run
+    shorter than 10 epochs, mosaic is then off from the start)."""
     factor = train_images / per_epoch
-    warmup = min(round(ULTRALYTICS_WARMUP_EPOCHS * factor, 2), max(epochs - 1, 0))
+    cap = max(ULTRALYTICS_WARMUP_EPOCHS, round(MAX_WARMUP_SHARE * epochs, 2))
+    warmup = min(round(ULTRALYTICS_WARMUP_EPOCHS * factor, 2), cap, max(epochs - 1, 0))
     close_mosaic = min(max(1, round(ULTRALYTICS_CLOSE_MOSAIC * factor)), epochs)
     return {"warmup_epochs": float(warmup), "close_mosaic": int(close_mosaic)}
 

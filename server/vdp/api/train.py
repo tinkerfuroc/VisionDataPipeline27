@@ -29,6 +29,7 @@ from ..train.models import (
 )
 from ..train.results import SPEED, read_metrics, tail
 from ..train.runs import best_weights, onnx_weights, read_json
+from ..train.sampling import VAL_SUBSET_DIR
 from ..train.scheduler import (
     Gpu,
     default_gpu,
@@ -59,6 +60,16 @@ def ultralytics_error() -> str | None:
     return None
 
 
+def _sampling_view(run_dir: Path, plan: dict | None) -> dict | None:
+    """A run's sampled-epoch plan (None for whole epochs and older runs) plus, once the worker has linked its val
+    subset, `val_images_chosen`: how many images it holds (more than asked only to cover every class)."""
+    if not plan or not plan.get("val_images_per_epoch"):
+        return plan
+    subset = run_dir / VAL_SUBSET_DIR / "images" / "val"
+    chosen = sum(1 for _ in subset.iterdir()) if subset.is_dir() else None
+    return {**plan, "val_images_chosen": chosen}
+
+
 def _view(state, run: dict, *, detail: bool = False) -> dict:
     run_dir = state.train.runs.dir(run["id"])
     rows = read_metrics(run_dir)
@@ -77,7 +88,7 @@ def _view(state, run: dict, *, detail: bool = False) -> dict:
         source_run=run.get("source_run"),
         start_mode=run.get("start_mode"),
         continued_from_epoch=run.get("continued_from_epoch"),
-        sampling=run.get("sampling"),  # sampled epochs (vdp.train.sampling); None for whole epochs and older runs
+        sampling=_sampling_view(run_dir, run.get("sampling")),
         speed=read_json(run_dir / SPEED),  # the worker's last measured train/val images per second, if any
         # "Train from a previous run" eligibility, mirroring TrainScheduler.submit_from's own checks.
         continuable=resumable,

@@ -408,7 +408,13 @@ def test_sampled_epoch_params_and_the_runs_measured_speed(client, tmp_path):
     view = until(client, rid, "done")
     assert view["params"]["train_images_per_epoch"] == 1 and view["params"]["val_images_per_epoch"] == 1
     assert view["sampling"] == {"train_images": 2, "train_images_per_epoch": 1, "val_images": 2,
-                                "val_images_per_epoch": 1, "warmup_epochs": 1.0, "close_mosaic": 2}
+                                "val_images_per_epoch": 1, "warmup_epochs": 1.0, "close_mosaic": 2,
+                                "val_images_chosen": None}  # the fake worker links no subset
+    subset = tmp_path / "data" / "runs" / rid / "val_subset" / "images" / "val"
+    subset.mkdir(parents=True)
+    for name in ("a.jpg", "b.jpg"):  # one more than asked, to cover every class
+        (subset / name).write_bytes(b"x")
+    assert client.get(f"/api/train/runs/{rid}").json()["sampling"]["val_images_chosen"] == 2
     assert view["speed"] is None
     speed = {"train_images_per_s": 65.0, "val_images_per_s": 80.0, "batch": 1, "imgsz": 640}
     (tmp_path / "data" / "runs" / rid / "speed.json").write_text(json.dumps(speed))

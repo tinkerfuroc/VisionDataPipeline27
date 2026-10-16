@@ -86,7 +86,7 @@ class TrainParams(BaseModel):
     @model_validator(mode="after")
     def _epoch_holds_a_batch(self) -> TrainParams:
         if self.train_images_per_epoch is not None and self.train_images_per_epoch < self.batch:
-            raise ValueError("train_images_per_epoch must be at least the batch size")
+            raise ValueError("Images per epoch must be at least the batch size.")
         return self
 
 

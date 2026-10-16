@@ -21,7 +21,8 @@ optional fields, both absent or `null` for "all images" (training as before): `t
 means all of it. `GET /api/train/status` lists them as `null` in `defaults`. A run stores its plan for its export in
 `run.json` and the run view as `sampling`: `null` without sampling, else `{train_images, train_images_per_epoch,
 val_images, val_images_per_epoch}` (a size is `null` for "all") plus, with a train size, the scaled `warmup_epochs`
-and `close_mosaic` it trains with. A "continue" run keeps the source's params and works the plan out for its new
+and `close_mosaic` it trains with; once the worker has linked the val subset, the run view adds
+`val_images_chosen` (more than asked only when needed to cover every class). A "continue" run keeps the source's params and works the plan out for its new
 export; a resume keeps the run's plan. The run view also carries `speed`: `{train_images_per_s, val_images_per_s,
 batch, imgsz}` as the worker last measured them (training images per second over an epoch, validation excluded;
 images per second while validating), or `null` before its first epoch. For a run validated on a subset, `best`'s

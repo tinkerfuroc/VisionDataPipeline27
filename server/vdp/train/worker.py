@@ -22,7 +22,14 @@ from .models import train_overrides
 from .results import FINAL_VAL, SPEED, run_summary
 from .runs import atomic_write_json, best_weights, last_weights, onnx_weights, read_json
 from .sampled_trainer import sampled_trainer
-from .sampling import IMAGE_SUFFIXES, VAL_SUBSET_DIR, choose_val_subset, read_image_classes, write_val_subset
+from .sampling import (
+    IMAGE_SUFFIXES,
+    ULTRALYTICS_CLOSE_MOSAIC,
+    VAL_SUBSET_DIR,
+    choose_val_subset,
+    read_image_classes,
+    write_val_subset,
+)
 from .warm_cache import drop_unloadable_caches
 
 # Set before any `from ultralytics import ...` below: Ultralytics imports albumentations itself (for its
@@ -79,19 +86,25 @@ def prepare_data(run_dir: Path, run: dict, *, rewrite: bool) -> tuple[Path, str 
 def _sampling_args(run: dict, run_dir: Path, full_val: str | None, *, resume: bool) -> dict:
     """Extra `model.train` arguments for sampled epochs: the trainer, and the scaled schedule (on a resume only
     close_mosaic, the one Ultralytics lets a resume change; warmup comes back from the checkpoint). None of them for
-    a run without sampling, which trains exactly as before."""
+    a run without sampling, which trains exactly as before.
+
+    A resume or Continue of a run that asked for sampled epochs always passes close_mosaic: its own plan's, or
+    Ultralytics' 10 when that plan has whole train epochs (e.g. continued onto an export no bigger than the asked
+    size) -- the checkpoint's own value may be one scaled for the source's export."""
     plan = run.get("sampling") or {}
     per_epoch = plan.get("train_images_per_epoch")
-    if not per_epoch and full_val is None:
-        return {}
-    args: dict = {"trainer": sampled_trainer(
-        train_images_per_epoch=per_epoch, seed=run["params"].get("seed", 0), full_val=full_val,
-        final_val_path=run_dir / FINAL_VAL,
-    )}
+    args: dict = {}
+    if per_epoch or full_val is not None:
+        args["trainer"] = sampled_trainer(
+            train_images_per_epoch=per_epoch, seed=run["params"].get("seed", 0), full_val=full_val,
+            final_val_path=run_dir / FINAL_VAL,
+        )
     if per_epoch:
         args["close_mosaic"] = plan["close_mosaic"]
         if not resume:
             args["warmup_epochs"] = plan["warmup_epochs"]
+    elif resume and run["params"].get("train_images_per_epoch"):
+        args["close_mosaic"] = plan.get("close_mosaic", ULTRALYTICS_CLOSE_MOSAIC)
     return args
 
 
@@ -365,7 +378,11 @@ def train(run_dir: Path) -> int:
                 stage = "predict"  # an out-of-memory error here is not the training batch's fault either
                 _final_full_val(run_dir, run)
         elif run.get("resume") and best_weights(run_dir).is_file() and _resume_already_finished(run_dir):
-            pass  # training already ran to completion (cancelled/interrupted mid-prediction); just predict
+            # training already ran to completion (cancelled/interrupted mid-prediction); just predict -- after the
+            # final full-val evaluation, if a run validated on a subset was stopped before that finished
+            if (run.get("sampling") or {}).get("val_images_per_epoch") and not (run_dir / FINAL_VAL).is_file():
+                stage = "predict"  # an out-of-memory error here is not the training batch's fault
+                _final_full_val(run_dir, run)
         elif run.get("resume") or run.get("start_mode") == "continue":
             # Resume from this run's own last.pt, always pinning `save_dir` and `data` to this run. A
             # "Continue on new data" run starts from a last.pt copied from its source, whose embedded
