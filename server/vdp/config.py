@@ -70,7 +70,7 @@ class AugmentCfg(_Cfg):
 
 
 class TrainCfg(_Cfg):
-    warm_label_cache: bool = True  # scan a new export's YOLO labels in the background so training starts sooner
+    warm_label_cache: bool = True  # scan a new export's yolo_seg labels in the background so training starts sooner
 
 
 class Settings(_Cfg):

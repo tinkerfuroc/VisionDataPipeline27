@@ -28,7 +28,7 @@ import yaml
 
 log = logging.getLogger(__name__)
 
-FORMATS = (("yolo_seg", "segment"), ("yolo_det", "detect"))  # export format dir -> Ultralytics task
+FORMATS = (("yolo_seg", "segment"),)  # export format dir -> Ultralytics task (training only reads yolo_seg)
 SPLITS = ("train", "val")
 NICE = 10
 LOG_NAME = "warm_cache.log"
@@ -53,9 +53,29 @@ def atomic_cache_saver(save: Callable) -> Callable:
     return save_atomically
 
 
+def drop_unloadable_caches(yolo_dir: Path) -> list[Path]:
+    """Delete `labels/{train,val}.cache` under a YOLO dir when it cannot be loaded (e.g. truncated by a run killed
+    mid-save): Ultralytics only rescans on a missing or stale cache and crashes on a corrupt one. Returns what was
+    deleted; a missing dir or cache is fine."""
+    import numpy as np
+
+    dropped = []
+    for split in SPLITS:
+        cache = Path(yolo_dir) / "labels" / f"{split}.cache"
+        if not cache.is_file():
+            continue
+        try:
+            np.load(str(cache), allow_pickle=True).item()
+        except Exception:  # noqa: BLE001 -- anything unloadable is rebuilt by the next scan
+            log.warning("deleting unloadable label cache %s", cache)
+            cache.unlink(missing_ok=True)
+            dropped.append(cache)
+    return dropped
+
+
 def warm(export_dir: Path) -> list[Path]:
-    """Scan (or check) the train and val labels of every YOLO format the export has, exactly as a training run
-    would, leaving their `.cache` files behind. Returns the cache files that exist afterwards."""
+    """Scan (or check) the export's yolo_seg train and val labels exactly as a training run would, leaving their
+    `.cache` files behind (an unloadable one is deleted and rebuilt). Returns the cache files that exist afterwards."""
     os.environ.setdefault("NO_ALBUMENTATIONS_UPDATE", "1")  # never phone home for a version check
     from ultralytics.data import dataset as ul_dataset
     from ultralytics.data.utils import check_class_names
@@ -76,6 +96,7 @@ def _warm_formats(export_dir: Path, dataset_cls, check_class_names) -> list[Path
             continue
         for stale in yolo_dir.glob("labels/*.cache.*.tmp"):  # left by a warm-up killed mid-save
             stale.unlink(missing_ok=True)
+        drop_unloadable_caches(yolo_dir)
         data = yaml.safe_load((yolo_dir / "data.yaml").read_text())
         # As training sees it: the worker pins `path` to the resolved yolo dir (write_data_yaml), and Ultralytics
         # resolves each split against it; the hash covers these exact path strings.

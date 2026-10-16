@@ -350,12 +350,15 @@ def test_fail_on_oom_callback_uses_up_ultralytics_retries():
     assert trainer._oom_retries >= 3
 
 
-@pytest.mark.parametrize("extra", [{}, {"resume": True}])
+@pytest.mark.parametrize(
+    "extra", [{}, {"resume": True}, {"start_mode": "continue"}, {"start_mode": "finetune"}],
+)
 def test_new_and_resumed_runs_both_disable_oom_auto_reduce(tmp_path, monkeypatch, extra):
     run_dir = _run_json(tmp_path, **extra)
     weights = run_dir / "train" / "weights"
     weights.mkdir(parents=True)
     (weights / "last.pt").write_bytes(b"last")
+    (run_dir / "init.pt").write_bytes(b"best")
     seen = []
 
     def train(callbacks):
@@ -429,3 +432,37 @@ def test_oom_message_maps_invalid_argument_only_right_after_an_oom():
 def test_oom_message_without_a_known_gpu():
     msg = worker.oom_message(RuntimeError("out of memory"), gpu=None, batch=8, imgsz=640)
     assert msg.startswith("Out of GPU memory at batch 8 (image size 640).")
+
+
+def test_an_oom_while_predicting_after_training_does_not_blame_the_batch(tmp_path, monkeypatch):
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1")
+    run_dir = _run_json(tmp_path)
+    _install_fake_yolo(monkeypatch, lambda callbacks: _first_epoch(callbacks, _trainer()))
+
+    def predict(rd, r, p):
+        raise RuntimeError("CUDA out of memory. Tried to allocate 1.00 GiB")
+
+    monkeypatch.setattr(worker, "_predict", predict)
+    assert worker.train(run_dir) == 1
+    error = json.loads((run_dir / "result.json").read_text())["error"]
+    assert error.startswith("Out of GPU memory on cuda:1 while predicting on the val images after training.")
+    assert "batch" not in error
+
+
+@pytest.mark.parametrize("extra", [{}, {"resume": True}])
+def test_worker_deletes_an_unloadable_label_cache_before_training(tmp_path, monkeypatch, extra):
+    """A cache truncated by a run stopped mid-save would crash Ultralytics' np.load; deleted, it just rescans."""
+    run_dir = _run_json(tmp_path, **extra)
+    weights = run_dir / "train" / "weights"
+    weights.mkdir(parents=True)
+    (weights / "last.pt").write_bytes(b"last")
+    labels = Path(json.loads((run_dir / "run.json").read_text())["export_dir"]) / "yolo_seg" / "labels"
+    (labels / "train.cache").write_bytes(b"\x93NUMPY truncated")
+    with open(labels / "val.cache", "wb") as f:
+        np.save(f, {"labels": [], "version": "1"})
+    present = []
+    _install_fake_yolo(monkeypatch, lambda callbacks: present.extend(sorted(p.name for p in labels.glob("*.cache"))))
+    monkeypatch.setattr(worker, "_predict", lambda rd, r, p: None)
+
+    assert worker.train(run_dir) == 0
+    assert present == ["val.cache"]
