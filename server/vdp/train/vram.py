@@ -102,7 +102,8 @@ def run_probe(
             log_file.close()
             events.put(None)
 
-    threading.Thread(target=read, name="vram-probe-reader", daemon=True).start()
+    reader = threading.Thread(target=read, name="vram-probe-reader", daemon=True)
+    reader.start()
     start: dict = {}
     try:
         while True:
@@ -129,6 +130,7 @@ def run_probe(
         if proc.poll() is None:
             _signal_group(proc.pid, signal.SIGKILL)
         proc.wait()
+        reader.join(timeout=5)  # so the log is complete (and closed) once this returns
 
 
 def default_runner(weights_dir: Path) -> ProbeRunner:
