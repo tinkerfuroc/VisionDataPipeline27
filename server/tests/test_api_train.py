@@ -178,7 +178,9 @@ def test_run_lifecycle_metrics_predictions_weights(client):
     assert client.get(f"/api/train/runs/{rid}/weights/best.onnx").status_code == 404
     assert client.get(f"/api/train/runs/{rid}/weights/args.yaml").status_code == 404
     assert client.post(f"/api/train/runs/{rid}/onnx").status_code == 200
-    wait_for(lambda: client.get(f"/api/train/runs/{rid}").json()["has_onnx"])
+    # best.onnx appears before the export job has finished; deleting the run needs the job done too
+    wait_for(lambda: (v := client.get(f"/api/train/runs/{rid}").json())["has_onnx"]
+             and v["onnx"] not in ("queued", "running"))
     assert client.get(f"/api/train/runs/{rid}/weights/best.onnx").content == b"onnx"
     assert "fake worker" in client.get(f"/api/train/runs/{rid}/log").text
 
