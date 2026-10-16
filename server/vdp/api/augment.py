@@ -77,6 +77,7 @@ def augment(export_id: str, state: State, body: AugmentBody | None = None) -> di
                 data_root, export_id, opts,
                 progress=lambda done, total: job.emit({"type": "progress", "done": done, "total": total}),
                 cancel=job.cancel_requested,
+                workers=state.settings.augment.workers,
             )
         except ExportCancelled:
             return {"cancelled": True}

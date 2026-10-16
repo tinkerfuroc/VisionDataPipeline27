@@ -64,6 +64,10 @@ class ExportCfg(_Cfg):
     min_area_px: int = 64
 
 
+class AugmentCfg(_Cfg):
+    workers: int | None = Field(default=None, ge=1)  # None: cpu_count - 4 (min 1); 1 = in-process
+
+
 class Settings(_Cfg):
     server: ServerCfg = Field(default_factory=ServerCfg)
     project: ProjectCfg = Field(default_factory=ProjectCfg)
@@ -71,6 +75,7 @@ class Settings(_Cfg):
     sam3: Sam3Cfg = Field(default_factory=Sam3Cfg)
     propagate: PropagateCfg = Field(default_factory=PropagateCfg)
     export: ExportCfg = Field(default_factory=ExportCfg)
+    augment: AugmentCfg = Field(default_factory=AugmentCfg)
 
     @classmethod
     def load(cls, path: str | Path | None = None) -> Settings:
