@@ -19,8 +19,10 @@ from pathlib import Path
 import yaml
 
 from .models import train_overrides
-from .results import read_metrics, summarize
+from .results import FINAL_VAL, run_summary
 from .runs import atomic_write_json, best_weights, last_weights, onnx_weights, read_json
+from .sampled_trainer import sampled_trainer
+from .sampling import IMAGE_SUFFIXES, VAL_SUBSET_DIR, choose_val_subset, read_image_classes, write_val_subset
 from .warm_cache import drop_unloadable_caches
 
 # Set before any `from ultralytics import ...` below: Ultralytics imports albumentations itself (for its
@@ -34,7 +36,8 @@ from .lighting_aug import Lighting
 
 CANCELLED_EXIT = 2
 PREDICT_CONF = 0.25
-_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png"}
+_IMAGE_SUFFIXES = IMAGE_SUFFIXES
+SPEED = "speed.json"  # in the run dir: the last epoch's measured train and val throughput (images per second)
 
 
 def write_data_yaml(yolo_dir: Path, out: Path) -> Path:
@@ -44,6 +47,72 @@ def write_data_yaml(yolo_dir: Path, out: Path) -> Path:
     data["path"] = str(Path(yolo_dir).resolve())
     out.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True))
     return out
+
+
+def full_val_dir(data_yaml: Path) -> Path:
+    """The whole val split of the export a run's data.yaml trains on (its `path`), resolved as Ultralytics resolves
+    it -- the same path strings as the export's own label cache, so that cache is reused."""
+    root = Path(yaml.safe_load(Path(data_yaml).read_text())["path"])
+    return (root / yaml.safe_load((root / "data.yaml").read_text())["val"]).resolve()
+
+
+def prepare_data(run_dir: Path, run: dict, *, rewrite: bool) -> tuple[Path, str | None]:
+    """The run's data.yaml (written from its export when `rewrite` or missing) and, for a run validated per epoch on
+    a subset (`sampling.val_images_per_epoch`), the subset: chosen from the export's val labels with the run's seed,
+    linked into the run dir, and set as data.yaml's `val`. Returns (data.yaml, the export's whole val images dir for
+    the final evaluation, or None without a subset). Deterministic, so a resume finds the same subset (kept as is)."""
+    data = run_dir / "data.yaml"
+    if rewrite or not data.is_file():
+        write_data_yaml(Path(run["export_dir"]) / "yolo_seg", data)
+    size = (run.get("sampling") or {}).get("val_images_per_epoch")
+    if not size:
+        return data, None
+    full_val = full_val_dir(data)
+    names = choose_val_subset(read_image_classes(full_val), size, run["params"].get("seed", 0))
+    subset = write_val_subset(full_val, names, run_dir / VAL_SUBSET_DIR)
+    content = yaml.safe_load(data.read_text())
+    if content["val"] != str(subset):
+        content["val"] = str(subset)
+        data.write_text(yaml.safe_dump(content, sort_keys=False, allow_unicode=True))
+    return data, str(full_val)
+
+
+def _sampling_args(run: dict, run_dir: Path, full_val: str | None, *, resume: bool) -> dict:
+    """Extra `model.train` arguments for sampled epochs: the trainer, and the scaled schedule (on a resume only
+    close_mosaic, the one Ultralytics lets a resume change; warmup comes back from the checkpoint). None of them for
+    a run without sampling, which trains exactly as before."""
+    plan = run.get("sampling") or {}
+    per_epoch = plan.get("train_images_per_epoch")
+    if not per_epoch and full_val is None:
+        return {}
+    args: dict = {"trainer": sampled_trainer(
+        train_images_per_epoch=per_epoch, seed=run["params"].get("seed", 0), full_val=full_val,
+        final_val_path=run_dir / FINAL_VAL,
+    )}
+    if per_epoch:
+        args["close_mosaic"] = plan["close_mosaic"]
+        if not resume:
+            args["warmup_epochs"] = plan["warmup_epochs"]
+    return args
+
+
+def _final_full_val(run_dir: Path, run: dict) -> None:
+    """"Mark complete" of a run validated on a subset: evaluate best.pt on the export's whole val split, as a
+    finished run's final evaluation does, so its reported metrics are the full-val ones."""
+    from ultralytics import YOLO
+
+    data, full_val = prepare_data(run_dir, run, rewrite=False)
+    if full_val is None:
+        return
+    full_data = write_data_yaml(Path(yaml.safe_load(data.read_text())["path"]), run_dir / "data_full.yaml")
+    p = run["params"]
+    metrics = YOLO(str(best_weights(run_dir))).val(
+        data=str(full_data), split="val", imgsz=p["imgsz"], batch=p["batch"] * 2, device=0, plots=False,
+        project=str(run_dir / "train"), name="final_val", exist_ok=True, verbose=False,
+    )
+    values = {k: float(v) for k, v in metrics.results_dict.items() if k != "fitness"}
+    images = sum(1 for f in Path(full_val).iterdir() if f.suffix.lower() in _IMAGE_SUFFIXES)
+    atomic_write_json(run_dir / FINAL_VAL, {"images": images, "metrics": values})
 
 
 class ProgressWriter:
@@ -159,6 +228,42 @@ def _attach_progress(model, progress: ProgressWriter) -> None:
     model.add_callback("on_val_start", val_start)
 
 
+def _attach_speed(model, path: Path, clock=time.monotonic) -> None:
+    """Measure each epoch's training (images / seconds from epoch start to end, validation excluded) and each
+    validation pass, and keep the latest figures in `path` (the Train page's epoch-time estimate reads them)."""
+    started: dict = {}
+    speed: dict = {}
+
+    def write() -> None:
+        atomic_write_json(path, speed)
+
+    def epoch_start(trainer) -> None:
+        started["train"] = clock()
+
+    def epoch_end(trainer) -> None:
+        seconds = clock() - started.get("train", clock())
+        images = len(getattr(trainer.train_loader, "sampler", ()) or ())
+        if seconds > 0 and images:
+            speed.update(train_images_per_s=round(images / seconds, 2), batch=trainer.batch_size,
+                         imgsz=trainer.args.imgsz)
+            write()
+
+    def val_start(validator) -> None:
+        started["val"] = clock()
+
+    def val_end(validator) -> None:
+        seconds = clock() - started.get("val", clock())
+        images = len(getattr(getattr(validator, "dataloader", None), "dataset", ()) or ())
+        if seconds > 0 and images:
+            speed["val_images_per_s"] = round(images / seconds, 2)
+            write()
+
+    model.add_callback("on_train_epoch_start", epoch_start)
+    model.add_callback("on_train_epoch_end", epoch_end)
+    model.add_callback("on_val_start", val_start)
+    model.add_callback("on_val_end", val_end)
+
+
 # The same tests Ultralytics' trainer uses to decide an exception is a GPU memory error.
 _OOM_MARKERS = ("CUBLAS_STATUS_ALLOC_FAILED", "CUDNN_STATUS_INTERNAL_ERROR", "unable to find an engine")
 
@@ -257,6 +362,9 @@ def train(run_dir: Path) -> int:
             from ultralytics.utils.torch_utils import strip_optimizer
 
             strip_optimizer(str(best_weights(run_dir)))
+            if (run.get("sampling") or {}).get("val_images_per_epoch"):
+                stage = "predict"  # an out-of-memory error here is not the training batch's fault either
+                _final_full_val(run_dir, run)
         elif run.get("resume") and best_weights(run_dir).is_file() and _resume_already_finished(run_dir):
             pass  # training already ran to completion (cancelled/interrupted mid-prediction); just predict
         elif run.get("resume") or run.get("start_mode") == "continue":
@@ -266,19 +374,21 @@ def train(run_dir: Path) -> int:
             # own -- unpinned, its first launch (or a Resume after a crash before that first save) would
             # train on the source's data and write into the source run's directory, which must never
             # happen. For every other run the pins equal what its own checkpoint already says.
-            data = run_dir / "data.yaml"
-            if (run.get("start_mode") == "continue" and not run.get("resume")) or not data.is_file():
-                write_data_yaml(Path(run["export_dir"]) / "yolo_seg", data)
+            data, full_val = prepare_data(
+                run_dir, run, rewrite=run.get("start_mode") == "continue" and not run.get("resume"),
+            )
             model = YOLO(str(last_weights(run_dir)))
             _attach_progress(model, progress)
             _attach_fail_on_oom(model, seen)
+            _attach_speed(model, run_dir / SPEED)
             drop_unloadable_caches(Path(yaml.safe_load(data.read_text())["path"]))  # the export it trains on
+            drop_unloadable_caches(run_dir / VAL_SUBSET_DIR)  # the subset's own label cache, if it has one
+            (run_dir / FINAL_VAL).unlink(missing_ok=True)
             stage = "train"
-            model.train(resume=True, data=str(data), save_dir=str(run_dir / "train"))
+            model.train(resume=True, data=str(data), save_dir=str(run_dir / "train"),
+                        **_sampling_args(run, run_dir, full_val, resume=True))
         else:
-            data = write_data_yaml(
-                Path(run["export_dir"]) / "yolo_seg", run_dir / "data.yaml"
-            )
+            data, full_val = prepare_data(run_dir, run, rewrite=True)
             p = run["params"]
             # "Fine-tune on new data" starts from the source run's best.pt (copied into this run's
             # dir as init.pt) instead of the pretrained checkpoint; otherwise identical.
@@ -286,11 +396,15 @@ def train(run_dir: Path) -> int:
             model = YOLO(weights)
             _attach_progress(model, progress)
             _attach_fail_on_oom(model, seen)
+            _attach_speed(model, run_dir / SPEED)
             overrides, photometric, lighting = train_overrides(p)
             transforms = augmentation_transforms(photometric=photometric, lighting=lighting)
             if transforms is not None:
                 overrides["augmentations"] = transforms
             drop_unloadable_caches(Path(run["export_dir"]) / "yolo_seg")
+            drop_unloadable_caches(run_dir / VAL_SUBSET_DIR)
+            (run_dir / FINAL_VAL).unlink(missing_ok=True)
+            overrides.update(_sampling_args(run, run_dir, full_val, resume=False))
             stage = "train"
             model.train(
                 data=str(data),
@@ -321,7 +435,7 @@ def train(run_dir: Path) -> int:
             message = _predict_oom_message(gpu)  # not the training batch's fault
         atomic_write_json(run_dir / "result.json", {"error": message or f"{type(e).__name__}: {e}"})
         return 1
-    atomic_write_json(run_dir / "result.json", {"best": summarize(read_metrics(run_dir))})
+    atomic_write_json(run_dir / "result.json", {"best": run_summary(run_dir)})
     return 0
 
 

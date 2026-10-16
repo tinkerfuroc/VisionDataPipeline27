@@ -12,6 +12,7 @@ import pytest
 import yaml
 from train_fixtures import make_export
 from vdp.train import worker
+from vdp.train.sampling import epoch_plan
 from vdp.train.worker import (
     ProgressWriter,
     augmentation_transforms,
@@ -466,3 +467,165 @@ def test_worker_deletes_an_unloadable_label_cache_before_training(tmp_path, monk
 
     assert worker.train(run_dir) == 0
     assert present == ["val.cache"]
+
+
+def _sampled_run(tmp_path, **extra) -> Path:
+    """A run (export of 12 train / 6 val images) asking for 4 train and 3 val images per epoch, with the `sampling`
+    plan RunStore.create would store for it."""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    params = {"epochs": 10, "imgsz": 640, "batch": 2, "patience": 30, "workers": 0, "seed": 5, "augment": "default",
+              "train_images_per_epoch": 4, "val_images_per_epoch": 3}
+    run = {
+        "export_dir": str(make_export(tmp_path, n_train=12, n_val=6)), "model": "yolo26s-seg", "resume": False,
+        "finish": False, "params": params, "sampling": epoch_plan(params, 12, 6), **extra,
+    }
+    (run_dir / "run.json").write_text(json.dumps(run))
+    return run_dir
+
+
+def _fake_sampled_trainer(monkeypatch) -> list[dict]:
+    made: list[dict] = []
+
+    def fake(**kwargs):
+        made.append(kwargs)
+        return "SampledTrainer"
+
+    monkeypatch.setattr(worker, "sampled_trainer", fake)
+    return made
+
+
+def test_new_sampled_run_scales_the_schedule_and_validates_on_a_fixed_subset(tmp_path, monkeypatch):
+    run_dir = _sampled_run(tmp_path)
+    made = _fake_sampled_trainer(monkeypatch)
+    calls = _install_fake_yolo(monkeypatch)
+    monkeypatch.setattr(worker, "_predict", lambda rd, r, p: None)
+
+    assert worker.train(run_dir) == 0
+
+    kw = calls["train_kwargs"]
+    assert kw["trainer"] == "SampledTrainer"
+    assert (kw["warmup_epochs"], kw["close_mosaic"]) == (9.0, 10)  # x3: warmup 9 (capped at epochs - 1), mosaic 30
+    data = yaml.safe_load((run_dir / "data.yaml").read_text())
+    subset = run_dir / "val_subset" / "images" / "val"
+    assert data["val"] == str(subset) and data["train"] == "images/train"
+    assert len(list(subset.iterdir())) == 3
+    full_val = str((Path(data["path"]) / "images" / "val").resolve())
+    assert made == [{"train_images_per_epoch": 4, "seed": 5, "full_val": full_val,
+                     "final_val_path": run_dir / "final_val.json"}]
+
+
+def test_resumed_sampled_run_keeps_its_subset_and_trainer(tmp_path, monkeypatch):
+    run_dir = _sampled_run(tmp_path, resume=True)
+    weights = run_dir / "train" / "weights"
+    weights.mkdir(parents=True)
+    (weights / "last.pt").write_bytes(b"last")
+    made = _fake_sampled_trainer(monkeypatch)
+    calls = _install_fake_yolo(monkeypatch)
+    monkeypatch.setattr(worker, "_predict", lambda rd, r, p: None)
+    assert worker.train(run_dir) == 0  # its first launch never happened: data.yaml and the subset are made now
+    first = sorted(p.name for p in (run_dir / "val_subset" / "images" / "val").iterdir())
+
+    assert worker.train(run_dir) == 0
+
+    assert sorted(p.name for p in (run_dir / "val_subset" / "images" / "val").iterdir()) == first
+    assert calls["train_kwargs"] == {
+        "resume": True, "data": str(run_dir / "data.yaml"), "save_dir": str(run_dir / "train"),
+        "trainer": "SampledTrainer", "close_mosaic": 10,
+    }
+    assert len(made) == 2 and made[1]["train_images_per_epoch"] == 4
+
+
+def test_val_only_sampling_keeps_whole_train_epochs(tmp_path, monkeypatch):
+    run_dir = _sampled_run(tmp_path)
+    run = json.loads((run_dir / "run.json").read_text())
+    run["params"]["train_images_per_epoch"] = None
+    run["sampling"] = epoch_plan(run["params"], 12, 6)
+    (run_dir / "run.json").write_text(json.dumps(run))
+    made = _fake_sampled_trainer(monkeypatch)
+    calls = _install_fake_yolo(monkeypatch)
+    monkeypatch.setattr(worker, "_predict", lambda rd, r, p: None)
+
+    assert worker.train(run_dir) == 0
+
+    assert "warmup_epochs" not in calls["train_kwargs"] and "close_mosaic" not in calls["train_kwargs"]
+    assert made[0]["train_images_per_epoch"] is None and made[0]["full_val"] is not None
+
+
+def test_a_run_without_sampling_uses_ultralytics_own_trainer(tmp_path, monkeypatch):
+    run_dir = _run_json(tmp_path)
+    made = _fake_sampled_trainer(monkeypatch)
+    calls = _install_fake_yolo(monkeypatch)
+    monkeypatch.setattr(worker, "_predict", lambda rd, r, p: None)
+    assert worker.train(run_dir) == 0
+    assert made == [] and "trainer" not in calls["train_kwargs"]
+    assert "val_subset" not in [p.name for p in run_dir.iterdir()]
+
+
+def test_result_reports_the_final_full_validation(tmp_path, monkeypatch):
+    run_dir = _sampled_run(tmp_path)
+    _fake_sampled_trainer(monkeypatch)
+    (run_dir / "final_val.json").write_text('{"images": 1, "metrics": {}}')  # stale, from an earlier attempt
+
+    def train(callbacks):  # what Ultralytics leaves behind: results.csv rows on the subset, then final_val.json
+        assert not (run_dir / "final_val.json").exists()
+        (run_dir / "train").mkdir(parents=True, exist_ok=True)
+        (run_dir / "train" / "results.csv").write_text("epoch,time,metrics/mAP50-95(M)\n1,5.0,0.9\n")
+        (run_dir / "final_val.json").write_text(json.dumps({"images": 6, "metrics": {"metrics/mAP50-95(M)": 0.4}}))
+
+    _install_fake_yolo(monkeypatch, train)
+    monkeypatch.setattr(worker, "_predict", lambda rd, r, p: None)
+    assert worker.train(run_dir) == 0
+    best = json.loads((run_dir / "result.json").read_text())["best"]
+    assert best["mask_map50_95"] == 0.4 and best["val_images"] == 6 and best["epoch"] == 1
+
+
+def test_mark_complete_of_a_subset_run_validates_best_on_the_full_val_split(tmp_path, monkeypatch):
+    run_dir = _sampled_run(tmp_path, finish=True)
+    weights = run_dir / "train" / "weights"
+    weights.mkdir(parents=True)
+    (weights / "best.pt").write_bytes(b"best")
+    (run_dir / "train" / "results.csv").write_text("epoch,time,metrics/mAP50-95(M)\n1,5.0,0.9\n")
+    _install_fake_ultralytics(monkeypatch, strip_optimizer=lambda path: None)
+    validated = []
+
+    class FakeModel:
+        def __init__(self, path):
+            self.path = path
+
+        def val(self, **kwargs):
+            validated.append((self.path, kwargs))
+            return SimpleNamespace(results_dict={"metrics/mAP50-95(M)": 0.3, "fitness": 0.3})
+
+    sys.modules["ultralytics"].YOLO = FakeModel
+    monkeypatch.setattr(worker, "_predict", lambda rd, r, p: None)
+
+    assert worker.train(run_dir) == 0
+
+    (path, kwargs), = validated
+    assert path == str(weights / "best.pt")
+    full = yaml.safe_load(Path(kwargs["data"]).read_text())
+    assert full["val"] == "images/val" and Path(full["path"]).is_absolute()
+    assert kwargs["split"] == "val" and kwargs["imgsz"] == 640
+    assert json.loads((run_dir / "final_val.json").read_text()) == {
+        "images": 6, "metrics": {"metrics/mAP50-95(M)": 0.3},
+    }
+    assert json.loads((run_dir / "result.json").read_text())["best"]["mask_map50_95"] == 0.3
+
+
+def test_speed_callbacks_measure_train_and_val_images_per_second(tmp_path):
+    calls: dict = {}
+    model = SimpleNamespace(add_callback=lambda event, fn: calls.setdefault(event, []).append(fn))
+    t = [100.0]
+    worker._attach_speed(model, tmp_path / "speed.json", clock=lambda: t[0])
+    trainer = SimpleNamespace(train_loader=SimpleNamespace(sampler=list(range(40))), batch_size=8,
+                              args=SimpleNamespace(imgsz=640))
+    validator = SimpleNamespace(dataloader=SimpleNamespace(dataset=list(range(10))))
+    for event, obj, advance in (("on_train_epoch_start", trainer, 0), ("on_train_epoch_end", trainer, 4.0),
+                                ("on_val_start", validator, 1.0), ("on_val_end", validator, 2.0)):
+        t[0] += advance
+        for fn in calls[event]:
+            fn(obj)
+    assert json.loads((tmp_path / "speed.json").read_text()) == {
+        "train_images_per_s": 10.0, "val_images_per_s": 5.0, "batch": 8, "imgsz": 640,
+    }
