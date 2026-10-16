@@ -154,7 +154,17 @@ export type TrainParams = {
   train_images_per_epoch?: number | null;
   /** Validate each epoch on a fixed subset of this many val images (the final metrics still use all); null/absent = all. */
   val_images_per_epoch?: number | null;
+  /** Absent on an older run's stored params: it trained with "auto", 3 warm-up passes, linear LR (`LEGACY_OPTIM`). */
+  optimizer?: Optimizer;
+  /** null/absent = the server's default for the optimizer and class count (`defaultLr0`); ignored for "auto". */
+  lr0?: number | null;
+  /** Warm-up length in full passes over the train set (0 = none). */
+  warmup_passes?: number;
+  cos_lr?: boolean;
 };
+export type Optimizer = "AdamW" | "SGD" | "auto";
+/** What a run trains with (run.json's `optim`): lr0 null for "auto" (Ultralytics picks it), warm-up in its epochs. */
+export type RunOptim = { optimizer: Optimizer; lr0: number | null; warmup_epochs: number; cos_lr: boolean };
 export type GpuQueue = {
   index: number;
   name: string;
@@ -277,6 +287,8 @@ export type Run = {
   continuable?: boolean;
   /** Eligible as a "fine-tune" source (= `has_best`). Absent on an older server. */
   finetunable?: boolean;
+  /** The optimizer settings it trains with. Absent on an older server. */
+  optim?: RunOptim;
   /** Sampled epochs; null for whole epochs (and absent on an older server). */
   sampling?: EpochPlan | null;
   /** The worker's last throughput measurement; null before its first epoch (and for runs from before it measured). */

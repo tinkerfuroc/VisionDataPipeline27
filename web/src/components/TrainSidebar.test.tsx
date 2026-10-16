@@ -30,7 +30,8 @@ const status: TrainStatus = {
     { index: 1, name: "NVIDIA GeForce RTX 2080 Ti", memory_total: 11 * 2 ** 30, memory_free: 5 * 2 ** 30, capability: "7.5", sm_count: 68, tflops: 13.5, running: null, running_kind: null, queue: [] },
   ],
   models: ["yolo11s-seg"], default_models: ["yolo11s-seg"],
-  defaults: { epochs: 100, imgsz: 960, batch: 8, patience: 30, workers: 8, seed: 0, augment: "default", aug: null },
+  defaults: { epochs: 100, imgsz: 960, batch: 8, patience: 30, workers: 8, seed: 0, augment: "default", aug: null,
+    optimizer: "AdamW", lr0: null, warmup_passes: 1, cos_lr: false },
   aug_presets: { default: augDefaults, strong: { ...augDefaults, degrees: 15 } },
 };
 
@@ -387,6 +388,60 @@ describe("TrainSidebar images per epoch", () => {
     expect(screen.getByText("Validation: 400 of 1,643 images per epoch (≈ 5 s)")).toBeTruthy();
     fireEvent.change(screen.getByLabelText("GPU"), { target: { value: "1" } }); // never measured there
     expect(screen.getByText("1 epoch = 7,000 images · 100 epochs ≈ 25 full passes")).toBeTruthy();
+  });
+});
+
+describe("TrainSidebar optimizer", () => {
+  const twelve = exportInfo({ classes: Array.from({ length: 12 }, (_, i) => `c${i}`) });
+
+  function renderForm(onStart: (body: unknown) => Promise<void> = noop, runs: Run[] = [], sourceRunId: string | null = null) {
+    return render(
+      <TrainSidebar status={status} exports={[twelve]} runs={runs} exportId="e1"
+        onExportChange={() => {}} onExportsChanged={() => {}} onStart={onStart as never}
+        onCancel={() => {}} selectedRun={null} onResume={noop} onComplete={noop} sourceRunId={sourceRunId}
+        onSourceRunChange={() => {}} onStartFromCheckpoint={noop} onTrainOnNewData={() => {}} />,
+    );
+  }
+
+  it("defaults to AdamW with the derived learning rate as placeholder, and sends the settings", async () => {
+    const onStart = vi.fn().mockResolvedValue(undefined);
+    renderForm(onStart);
+    const optimizer = screen.getByLabelText("Optimizer") as HTMLSelectElement;
+    const lr = screen.getByLabelText("Learning rate") as HTMLInputElement;
+    expect(optimizer.value).toBe("AdamW");
+    expect(lr.value).toBe("");
+    expect(lr.placeholder).toBe("0.000625"); // Ultralytics' fit for 12 classes
+    expect((screen.getByLabelText("Warm-up (passes)") as HTMLInputElement).value).toBe("1");
+    fireEvent.click(screen.getByRole("button", { name: "Start 1 run" }));
+    await Promise.resolve();
+    const first = onStart.mock.calls[0][0].params;
+    expect(first).toMatchObject({ optimizer: "AdamW", warmup_passes: 1, cos_lr: false });
+    expect(first).not.toHaveProperty("lr0");
+
+    fireEvent.change(optimizer, { target: { value: "SGD" } });
+    expect(lr.placeholder).toBe("0.003");
+    fireEvent.change(lr, { target: { value: "0.005" } });
+    fireEvent.change(screen.getByLabelText("Warm-up (passes)"), { target: { value: "0" } });
+    fireEvent.click(screen.getByLabelText("Cosine LR"));
+    fireEvent.click(screen.getByRole("button", { name: "Start 1 run" }));
+    await Promise.resolve();
+    expect(onStart.mock.calls[1][0].params).toMatchObject({ optimizer: "SGD", lr0: 0.005, warmup_passes: 0, cos_lr: true });
+  });
+
+  it("disables the learning rate for Auto, which picks its own", () => {
+    renderForm();
+    fireEvent.change(screen.getByLabelText("Optimizer"), { target: { value: "auto" } });
+    const lr = screen.getByLabelText("Learning rate") as HTMLInputElement;
+    expect(lr.disabled).toBe(true);
+    expect(lr.placeholder).toBe("auto");
+  });
+
+  it("Continue shows an older source run's settings as what it trained with: Auto, 3 passes", () => {
+    const old = run({ id: "20260924-120000-yolo11s-seg-old1", resumable: true, continuable: true, classes: twelve.classes });
+    renderForm(noop, [old], old.id);
+    expect((screen.getByLabelText("Optimizer") as HTMLSelectElement).value).toBe("auto");
+    expect((screen.getByLabelText("Optimizer") as HTMLSelectElement).disabled).toBe(true);
+    expect((screen.getByLabelText("Warm-up (passes)") as HTMLInputElement).value).toBe("3");
   });
 });
 

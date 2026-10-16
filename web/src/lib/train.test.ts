@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { ExportInfo, GpuQueue, Run, TrainStatus } from "../api/types";
 import {
-  bestMapIds, bestRunIds, checkpointSources, classesCompatible, continueModeLabel, defaultGpu, defaultMode, epochEstimate, finalMetricsNote,
+  bestMapIds, bestRunIds, checkpointSources, classesCompatible, continueModeLabel, defaultGpu, defaultLr0, defaultMode, epochEstimate, finalMetricsNote,
   finetuneModeLabel, formatDuration, modelKind, modelTask, runMap, gpuOptionLabel, measuredSpeed, metricSeries, modeDisabledReason, polygonPoints,
-  samplingNote, sendableParams, sourceRunLabel, startModeHeaderNote, startModeNote, startProblem, statusText, valSubsetNote,
+  lr0Placeholder, optimNote, samplingNote, sendableParams, sourceRunLabel, startModeHeaderNote, startModeNote, startProblem, statusText, valSubsetNote,
   vramBusyReason, vramFit, vramLabel,
 } from "./train";
 
@@ -199,6 +199,36 @@ describe("sampled epochs", () => {
     expect(sendableParams({ ...params, train_images_per_epoch: null, val_images_per_epoch: null })).toEqual(params);
     expect(sendableParams({ ...params, train_images_per_epoch: 7000, val_images_per_epoch: null }))
       .toEqual({ ...params, train_images_per_epoch: 7000 });
+  });
+
+  it("sendableParams leaves out an empty learning rate, and any for Auto (Ultralytics picks it)", () => {
+    expect(sendableParams({ ...params, optimizer: "AdamW", lr0: null })).toEqual({ ...params, optimizer: "AdamW" });
+    expect(sendableParams({ ...params, optimizer: "SGD", lr0: 0.01 })).toEqual({ ...params, optimizer: "SGD", lr0: 0.01 });
+    expect(sendableParams({ ...params, optimizer: "auto", lr0: 0.01 })).toEqual({ ...params, optimizer: "auto" });
+  });
+
+  it("defaultLr0 and lr0Placeholder: the server's default learning rate for the optimizer and class count", () => {
+    expect(defaultLr0("AdamW", 12)).toBe(0.000625);
+    expect(defaultLr0("AdamW", 1)).toBe(0.001); // clamped
+    expect(defaultLr0("AdamW", 40)).toBe(0.0003); // clamped
+    expect(defaultLr0("SGD", 12)).toBe(0.003);
+    expect(defaultLr0("auto", 12)).toBeNull();
+    expect(lr0Placeholder("AdamW", 12)).toBe("0.000625");
+    expect(lr0Placeholder("SGD", null)).toBe("0.003");
+    expect(lr0Placeholder("AdamW", null)).toBe("default");
+    expect(lr0Placeholder("auto", 12)).toBe("auto");
+  });
+
+  it("optimNote names the optimizer, learning rate, warm-up and LR decay a run trains with", () => {
+    expect(optimNote(run("a"))).toBeNull(); // an older server
+    expect(optimNote(run("b", { optim: { optimizer: "AdamW", lr0: 0.000625, warmup_epochs: 1, cos_lr: false } })))
+      .toBe("Optimizer AdamW, lr0 0.000625, warm-up 1 epoch, linear LR decay.");
+    expect(optimNote(run("c", { optim: { optimizer: "SGD", lr0: 0.003, warmup_epochs: 4.5, cos_lr: true } })))
+      .toBe("Optimizer SGD, lr0 0.003, warm-up 4.5 epochs, cosine LR decay.");
+    expect(optimNote(run("d", { optim: { optimizer: "auto", lr0: null, warmup_epochs: 3, cos_lr: false } })))
+      .toBe("Optimizer auto (Ultralytics picks it and lr0), warm-up 3 epochs, linear LR decay.");
+    expect(optimNote(run("e", { optim: { optimizer: "AdamW", lr0: 0.001, warmup_epochs: 0, cos_lr: false } })))
+      .toBe("Optimizer AdamW, lr0 0.001, no warm-up, linear LR decay.");
   });
 
   it("measuredSpeed takes the newest run measured with the same model, image size and GPU", () => {

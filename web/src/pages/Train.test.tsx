@@ -214,6 +214,14 @@ describe("Train page", () => {
     expect(m.getRun).toHaveBeenCalledWith("r1");
   });
 
+  it("names the optimizer settings the selected run trains with", async () => {
+    const run = { ...r1, optim: { optimizer: "AdamW" as const, lr0: 0.000625, warmup_epochs: 1, cos_lr: false } };
+    m.listRuns.mockResolvedValue([run, r2]);
+    m.getRun.mockResolvedValue({ ...run, metrics: [] } as RunDetail);
+    renderPage();
+    expect(await screen.findByText("Optimizer AdamW, lr0 0.000625, warm-up 1 epoch, linear LR decay.")).toBeTruthy();
+  });
+
   it("describes a run's sampled epochs and labels its per-epoch curves as on the val subset", async () => {
     const sampled = { ...r1, sampling: {
       train_images: 798, train_images_per_epoch: 200, val_images: 252, val_images_per_epoch: 50,

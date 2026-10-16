@@ -11,7 +11,7 @@ import { TrainSidebar } from "../components/TrainSidebar";
 import { HealthContext } from "../hooks/useHealth";
 import { usePoll } from "../hooks/usePoll";
 import { exportLabel } from "../lib/exportName";
-import { finalMetricsNote, samplingNote, startModeHeaderNote, statusText } from "../lib/train";
+import { finalMetricsNote, optimNote, samplingNote, startModeHeaderNote, statusText } from "../lib/train";
 
 const POLL_MS = 2000;
 const MAX_COMPARE = 4;
@@ -187,6 +187,7 @@ export function Train() {
                   </button>
                 )}
               </h2>
+              {optimNote(selected) !== null && <p className="note">{optimNote(selected)}</p>}
               {samplingNote(selected) !== null && <p className="note">{samplingNote(selected)}</p>}
               {finalMetricsNote(selected) !== null && <p className="text-sm">{finalMetricsNote(selected)}</p>}
               {selected.error !== null && (

@@ -1,5 +1,6 @@
 import type {
-  EpochPlan, ExportInfo, GpuQueue, MetricRow, ModelTask, Run, RunBest, RunSpeed, StartMode, TrainParams, TrainStatus,
+  EpochPlan, ExportInfo, GpuQueue, MetricRow, ModelTask, Optimizer, Run, RunBest, RunSpeed, StartMode, TrainParams,
+  TrainStatus,
 } from "../api/types";
 import { exportLabel } from "./exportName";
 import type { Pt } from "./chart";
@@ -203,7 +204,34 @@ export function sendableParams(params: TrainParams): TrainParams {
   const out = { ...params };
   if (out.train_images_per_epoch == null) delete out.train_images_per_epoch;
   if (out.val_images_per_epoch == null) delete out.val_images_per_epoch;
+  if (out.lr0 == null || out.optimizer === "auto") delete out.lr0;
   return out;
+}
+
+/** The optimizer settings of params stored before they existed: what those runs trained with. */
+export const LEGACY_OPTIM = { optimizer: "auto", lr0: null, warmup_passes: 3, cos_lr: false } as const;
+
+/** The server's learning rate for an empty lr0 (vdp.train.models.default_lr0): for AdamW Ultralytics' own fit for `nc`
+ * classes, kept within [0.0003, 0.001]; 0.003 for SGD; null for "auto" (Ultralytics picks it). */
+export function defaultLr0(optimizer: Optimizer, nc: number): number | null {
+  if (optimizer === "AdamW") return Math.min(Math.max(Math.round((0.002 * 5 / (4 + nc)) * 1e6) / 1e6, 0.0003), 0.001);
+  return optimizer === "SGD" ? 0.003 : null;
+}
+
+/** The Learning rate field's placeholder: the default it stands for ("default" while the class count is unknown). */
+export function lr0Placeholder(optimizer: Optimizer, nc: number | null): string {
+  if (optimizer === "auto") return "auto";
+  if (optimizer === "AdamW" && nc === null) return "default";
+  return String(defaultLr0(optimizer, nc ?? 0));
+}
+
+/** The run detail's "Optimizer AdamW, lr0 0.000625, warm-up 1 epoch, linear LR decay."; null on an older server. */
+export function optimNote(run: Run): string | null {
+  const o = run.optim;
+  if (o == null) return null;
+  const optimizer = o.optimizer === "auto" ? "auto (Ultralytics picks it and lr0)" : `${o.optimizer}, lr0 ${o.lr0}`;
+  const warmup = o.warmup_epochs === 0 ? "no warm-up" : `warm-up ${o.warmup_epochs} epoch${o.warmup_epochs === 1 ? "" : "s"}`;
+  return `Optimizer ${optimizer}, ${warmup}, ${o.cos_lr ? "cosine" : "linear"} LR decay.`;
 }
 
 /** The newest measured throughput (`runs` come newest first) of a run with this model and image size on this GPU. */

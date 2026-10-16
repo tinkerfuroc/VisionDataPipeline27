@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api/rest";
 import type {
-  AugmentMode, AugParams, ExportInfo, FromCheckpointRequest, GpuQueue, Run, StartMode, StartRunsRequest, TrainParams,
-  TrainStatus,
+  AugmentMode, AugParams, ExportInfo, FromCheckpointRequest, GpuQueue, Optimizer, Run, StartMode, StartRunsRequest,
+  TrainParams, TrainStatus,
 } from "../api/types";
 import { exportLabel } from "../lib/exportName";
 import {
   checkpointSources, classesCompatible, continueModeLabel, defaultGpu, defaultMode, epochEstimate, finetuneModeLabel,
-  gpuOptionLabel, measuredSpeed, modeDisabledReason, modelKind, paramsProblem, sendableParams, sourceRunLabel, startProblem, statusText,
+  gpuOptionLabel, LEGACY_OPTIM, lr0Placeholder, measuredSpeed, modeDisabledReason, modelKind, paramsProblem, sendableParams,
+  sourceRunLabel, startProblem, statusText,
 } from "../lib/train";
 import { AugmentPanel } from "./AugmentPanel";
 import { VramEstimatePanel } from "./VramEstimate";
@@ -269,6 +270,8 @@ export function TrainSidebar({
   // ordinary Pretrained-weights flow) edits `params` as normal.
   const paramsLocked = sourceRun !== null && mode === "continue";
   const displayParams = paramsLocked && sourceRun !== null ? sourceRun.params : params;
+  // a Continue source from before the optimizer settings shows what it trained with (and its checkpoint resumes)
+  const optim = { ...LEGACY_OPTIM, ...displayParams };
   const exportMismatch = sourceRun !== null && selectedExport !== null && !classesCompatible(selectedExport, sourceRun);
   const fromCheckpointProblem: string | null =
     !status.available ? (status.error ?? "Training is not available on this server.")
@@ -480,6 +483,34 @@ export function TrainSidebar({
           </label>
         ))}
         {estimate !== null && estimate.map((line) => <p key={line} className="note">{line}</p>)}
+        <label className="flex flex-col gap-1 text-sm text-dim">
+          Optimizer
+          <select aria-label="Optimizer" className="field" value={optim.optimizer} disabled={paramsLocked}
+            onChange={(e) => setParams({ ...params, optimizer: e.target.value as Optimizer })}>
+            <option value="AdamW">AdamW (recommended for fine-tuning)</option>
+            <option value="SGD">SGD</option>
+            <option value="auto">Auto (Ultralytics picks)</option>
+          </select>
+        </label>
+        <label className="flex items-center justify-between gap-2 text-sm text-dim">
+          Learning rate
+          <input aria-label="Learning rate" type="number" className="field w-24" min={0.000001} max={0.1} step="any"
+            placeholder={lr0Placeholder(optim.optimizer, selectedExport?.classes.length ?? null)}
+            disabled={paramsLocked || optim.optimizer === "auto"}
+            value={optim.optimizer === "auto" ? "" : (optim.lr0 ?? "")}
+            onChange={(e) => setParams({ ...params, lr0: e.target.value === "" ? null : Number(e.target.value) })} />
+        </label>
+        <label className="flex items-center justify-between gap-2 text-sm text-dim">
+          Warm-up (passes)
+          <input aria-label="Warm-up (passes)" type="number" className="field w-24" min={0} max={10} step={0.5}
+            disabled={paramsLocked} value={optim.warmup_passes}
+            onChange={(e) => setParams({ ...params, warmup_passes: Math.max(0, Number(e.target.value) || 0) })} />
+        </label>
+        <label className="flex items-center gap-2 text-sm text-dim">
+          <input type="checkbox" aria-label="Cosine LR" checked={optim.cos_lr} disabled={paramsLocked}
+            onChange={(e) => setParams({ ...params, cos_lr: e.target.checked })} />
+          Cosine LR
+        </label>
         <label className="flex flex-col gap-1 text-sm text-dim">
           Augmentation
           <select aria-label="Augmentation" className="field" value={displayParams.augment ?? "default"} disabled={paramsLocked}
