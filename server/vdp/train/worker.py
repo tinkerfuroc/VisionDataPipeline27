@@ -21,6 +21,7 @@ import yaml
 from .models import train_overrides
 from .results import read_metrics, summarize
 from .runs import atomic_write_json, best_weights, last_weights, onnx_weights, read_json
+from .warm_cache import drop_unloadable_caches
 
 # Set before any `from ultralytics import ...` below: Ultralytics imports albumentations itself (for its
 # own built-in transforms) as a side effect, so this must be set at worker import time, not only inside
@@ -185,6 +186,14 @@ def oom_message(e: BaseException, *, gpu: str | None, batch, imgsz) -> str | Non
     )
 
 
+def _predict_oom_message(gpu: str | None) -> str:
+    where = f" on cuda:{gpu}" if gpu else ""
+    return (
+        f"Out of GPU memory{where} while predicting on the val images after training. Free some memory on that "
+        "GPU and Resume the run to retry the predictions."
+    )
+
+
 def _attach_fail_on_oom(model, seen: dict) -> None:
     """Make an out-of-memory error end the run instead of letting Ultralytics silently halve the batch:
     in the first epoch on one GPU it retries with half the batch while `trainer._oom_retries < 3`, and it
@@ -236,6 +245,7 @@ def train(run_dir: Path) -> int:
     (run_dir / "result.json").unlink(missing_ok=True)
     params = run.get("params", {})
     seen = {"batch": params.get("batch"), "imgsz": params.get("imgsz")}  # updated from the live trainer
+    stage = "setup"  # "train" inside model.train(), "predict" after it: picks the out-of-memory message
     try:
         from ultralytics import YOLO
 
@@ -262,6 +272,8 @@ def train(run_dir: Path) -> int:
             model = YOLO(str(last_weights(run_dir)))
             _attach_progress(model, progress)
             _attach_fail_on_oom(model, seen)
+            drop_unloadable_caches(Path(yaml.safe_load(data.read_text())["path"]))  # the export it trains on
+            stage = "train"
             model.train(resume=True, data=str(data), save_dir=str(run_dir / "train"))
         else:
             data = write_data_yaml(
@@ -278,6 +290,8 @@ def train(run_dir: Path) -> int:
             transforms = augmentation_transforms(photometric=photometric, lighting=lighting)
             if transforms is not None:
                 overrides["augmentations"] = transforms
+            drop_unloadable_caches(Path(run["export_dir"]) / "yolo_seg")
+            stage = "train"
             model.train(
                 data=str(data),
                 epochs=p["epochs"],
@@ -293,6 +307,7 @@ def train(run_dir: Path) -> int:
                 plots=True,
                 **overrides,
             )
+        stage = "predict"
         _predict(run_dir, run, progress)
     except KeyboardInterrupt:
         atomic_write_json(run_dir / "result.json", {"cancelled": True})
@@ -300,7 +315,10 @@ def train(run_dir: Path) -> int:
     except Exception as e:  # noqa: BLE001
         traceback.print_exc()
         # CUDA_VISIBLE_DEVICES is the one physical GPU the scheduler gave this worker (it trains as device 0)
-        message = oom_message(e, gpu=os.environ.get("CUDA_VISIBLE_DEVICES"), **seen)
+        gpu = os.environ.get("CUDA_VISIBLE_DEVICES")
+        message = oom_message(e, gpu=gpu, **seen) if stage in ("train", "predict") else None
+        if message is not None and stage == "predict":
+            message = _predict_oom_message(gpu)  # not the training batch's fault
         atomic_write_json(run_dir / "result.json", {"error": message or f"{type(e).__name__}: {e}"})
         return 1
     atomic_write_json(run_dir / "result.json", {"best": summarize(read_metrics(run_dir))})

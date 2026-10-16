@@ -5,6 +5,7 @@ import subprocess
 import threading
 from pathlib import Path
 
+import numpy as np
 import pytest
 from train_fixtures import make_export, wait_for
 from vdp.train import warm_cache
@@ -46,18 +47,33 @@ def test_warm_writes_the_caches_a_training_run_then_loads_without_rescanning(tmp
 
     caches = warm_cache.warm(export_dir)
 
-    expected = {export_dir.resolve() / fmt / "labels" / f"{split}.cache"
-                for fmt in ("yolo_seg", "yolo_det") for split in ("train", "val")}
+    expected = {export_dir.resolve() / "yolo_seg" / "labels" / f"{split}.cache" for split in ("train", "val")}
     assert set(caches) == expected and all(c.is_file() for c in expected)
+    assert not list((export_dir / "yolo_det").rglob("*.cache"))  # training never reads yolo_det
     assert not list(export_dir.rglob("*.tmp"))
     for split in ("train", "val"):
         assert len(_training_dataset(export_dir, tmp_path, split, monkeypatch).labels) == {"train": 4, "val": 2}[split]
 
 
-def test_warm_skips_formats_the_export_lacks(tmp_path):
+def test_warm_replaces_an_unloadable_cache(tmp_path, monkeypatch):
     pytest.importorskip("ultralytics")
-    export_dir = make_export(tmp_path / "data", n_train=2, n_val=2)
-    assert {c.parent.parent.name for c in warm_cache.warm(export_dir)} == {"yolo_seg"}
+    export_dir = make_export(tmp_path / "data", n_train=4, n_val=2)
+    garbage = export_dir / "yolo_seg" / "labels" / "train.cache"
+    garbage.write_bytes(b"\x93NUMPY truncated")  # e.g. a run cancelled while saving it
+
+    assert garbage.resolve() in warm_cache.warm(export_dir)
+    assert len(_training_dataset(export_dir, tmp_path, "train", monkeypatch).labels) == 4
+
+
+def test_drop_unloadable_caches_deletes_only_broken_ones(tmp_path):
+    labels = tmp_path / "yolo_seg" / "labels"
+    labels.mkdir(parents=True)
+    (labels / "train.cache").write_bytes(b"garbage")
+    with open(labels / "val.cache", "wb") as f:  # how Ultralytics writes one
+        np.save(f, {"labels": [], "version": "1"})
+    assert warm_cache.drop_unloadable_caches(tmp_path / "yolo_seg") == [labels / "train.cache"]
+    assert sorted(p.name for p in labels.iterdir()) == ["val.cache"]
+    assert warm_cache.drop_unloadable_caches(tmp_path / "missing") == []
 
 
 def test_atomic_cache_saver_writes_a_temp_file_then_renames_it(tmp_path):
@@ -214,7 +230,10 @@ def test_real_warmup_subprocess_writes_the_caches(tmp_path):
     pytest.importorskip("ultralytics")
     export_dir = make_export(tmp_path / "data", n_train=3, n_val=2)
     w = LabelCacheWarmer(enabled=True, spawn=warm_cache.popen_warmup)  # the real one, not the suite's no-op
-    assert w.request(export_dir)
-    caches = [export_dir / "yolo_seg" / "labels" / f"{s}.cache" for s in ("train", "val")]
-    wait_for(lambda: w._current is None and all(c.is_file() for c in caches), timeout=120, interval=0.2)
-    assert "warm:" in (export_dir / "warm_cache.log").read_text()
+    try:
+        assert w.request(export_dir)
+        caches = [export_dir / "yolo_seg" / "labels" / f"{s}.cache" for s in ("train", "val")]
+        wait_for(lambda: w._current is None and all(c.is_file() for c in caches), timeout=120, interval=0.2)
+        assert "warm:" in (export_dir / "warm_cache.log").read_text()
+    finally:
+        w.shutdown()  # never leave the child running after a failure
