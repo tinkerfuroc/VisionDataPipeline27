@@ -29,7 +29,15 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..labeling.errors import BadRequest, Conflict
-from .models import ExportInfo, TrainParams, check_model, model_task, run_classes
+from .models import (
+    ExportInfo,
+    TrainParams,
+    check_model,
+    model_task,
+    run_classes,
+    run_optim,
+    with_legacy_optim,
+)
 from .results import read_metrics, run_summary, tail
 from .runs import TERMINAL, RunStore, best_weights, last_weights, now_iso, read_json
 from .worker import CANCELLED_EXIT
@@ -390,7 +398,9 @@ class TrainScheduler:
                 f"export {export.id}'s classes ({', '.join(export.classes)}) do not match "
                 f"run {source_id}'s classes ({', '.join(source_classes)})"
             )
-        run_params = TrainParams(**source["params"]) if mode == "continue" else (params or TrainParams())
+        # an older source's params lack the optimizer settings: it trained (and its checkpoint resumes) with "auto"
+        run_params = (TrainParams(**with_legacy_optim(source["params"])) if mode == "continue"
+                      else (params or TrainParams()))
         with self._cv:
             if before_queue is not None:
                 before_queue()
@@ -398,6 +408,8 @@ class TrainScheduler:
             run_dir = self.runs.dir(run["id"])
             extra: dict = {"source_run": source_id, "start_mode": mode}
             if mode == "continue":
+                # Ultralytics resumes the checkpoint's own optimizer, lr0, warm-up and LR decay: record the source's
+                extra["optim"] = run_optim(source)
                 (run_dir / "train" / "weights").mkdir(parents=True, exist_ok=True)
                 shutil.copy2(last_weights(source_dir), last_weights(run_dir))
                 source_results = source_dir / "train" / "results.csv"

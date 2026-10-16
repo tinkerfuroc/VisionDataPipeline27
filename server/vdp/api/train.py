@@ -28,6 +28,7 @@ from ..train.models import (
     rename_export,
     run_classes,
     run_data_dir,
+    run_optim,
 )
 from ..train.results import SPEED, read_metrics, tail
 from ..train.runs import best_weights, onnx_weights, read_json
@@ -91,6 +92,7 @@ def _view(state, run: dict, *, detail: bool = False) -> dict:
         start_mode=run.get("start_mode"),
         continued_from_epoch=run.get("continued_from_epoch"),
         sampling=_sampling_view(run_dir, run.get("sampling")),
+        optim=run_optim(run),  # the optimizer, lr0, warm-up epochs and LR decay it trains with
         speed=read_json(run_dir / SPEED),
         task=model_task(run["model"]),  # "segment" (masks) or "detect" (boxes)
         data_format=run.get("data_format", "yolo_seg"),  # the export dataset it trains on  # the worker's last measured train/val images per second, if any

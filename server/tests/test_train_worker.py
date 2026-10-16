@@ -290,6 +290,40 @@ def test_worker_plain_new_run_still_loads_the_pretrained_checkpoint(tmp_path, mo
     assert calls["init_path"] == "yolo26s-seg.pt"
 
 
+@pytest.mark.parametrize("mode", [None, "finetune"])
+def test_worker_passes_the_runs_resolved_optimizer_settings(tmp_path, monkeypatch, mode):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir(parents=True)
+    (run_dir / "init.pt").write_bytes(b"best")
+    run = {
+        "export_dir": str(make_export(tmp_path)), "model": "yolo26s-seg", "resume": False, "finish": False,
+        "start_mode": mode,
+        "params": {"epochs": 7, "imgsz": 640, "batch": 4, "patience": 30, "workers": 0, "seed": 0,
+                   "optimizer": "SGD", "lr0": None, "warmup_passes": 1.0, "cos_lr": True},
+        "optim": {"optimizer": "SGD", "lr0": 0.003, "warmup_epochs": 1.0, "cos_lr": True},
+    }
+    (run_dir / "run.json").write_text(json.dumps(run))
+    calls = _install_fake_yolo(monkeypatch)
+    monkeypatch.setattr(worker, "_predict", lambda rd, r, p: None)
+
+    assert worker.train(run_dir) == 0
+
+    kw = calls["train_kwargs"]
+    assert (kw["optimizer"], kw["lr0"], kw["warmup_epochs"], kw["cos_lr"]) == ("SGD", 0.003, 1.0, True)
+
+
+def test_worker_trains_a_run_from_before_the_optimizer_settings_as_before(tmp_path, monkeypatch):
+    run_dir = _run_json(tmp_path)  # no optimizer params, no `optim`
+    calls = _install_fake_yolo(monkeypatch)
+    monkeypatch.setattr(worker, "_predict", lambda rd, r, p: None)
+
+    assert worker.train(run_dir) == 0
+
+    kw = calls["train_kwargs"]
+    assert (kw["optimizer"], kw["warmup_epochs"], kw["cos_lr"]) == ("auto", 3.0, False)  # Ultralytics' own defaults
+    assert "lr0" not in kw and "warmup_bias_lr" not in kw
+
+
 def test_train_finish_branch_cancel_reports_cancelled(tmp_path, monkeypatch):
     """A cancel (SIGTERM, here simulated by the predict step raising KeyboardInterrupt) during a
     "finish" job is reported exactly like cancelling any other run."""
@@ -548,7 +582,7 @@ def test_val_only_sampling_keeps_whole_train_epochs(tmp_path, monkeypatch):
 
     assert worker.train(run_dir) == 0
 
-    assert "warmup_epochs" not in calls["train_kwargs"] and "close_mosaic" not in calls["train_kwargs"]
+    assert calls["train_kwargs"]["warmup_epochs"] == 3.0 and "close_mosaic" not in calls["train_kwargs"]  # not scaled
     assert made[0]["train_images_per_epoch"] is None and made[0]["full_val"] is not None
 
 

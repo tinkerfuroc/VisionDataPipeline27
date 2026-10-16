@@ -16,6 +16,7 @@ from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validat
 from ..export.naming import clean_name
 from ..labeling.errors import BadRequest
 from ..store import NotFound
+from .sampling import ULTRALYTICS_WARMUP_EPOCHS
 
 FAMILIES = ("yolo26", "yolo11")
 SIZES = ("n", "s", "m", "l", "x")
@@ -25,6 +26,11 @@ MODELS = SEGMENT_MODELS + DETECT_MODELS
 DEFAULT_MODELS = ("yolo26s-seg", "yolo26m-seg", "yolo11s-seg", "yolo11m-seg")
 _EXPORT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 Task = Literal["segment", "detect"]
+Optimizer = Literal["AdamW", "SGD", "auto"]
+# What runs from before the optimizer params trained with: Ultralytics' auto pick, its 3 warm-up epochs, linear LR.
+LEGACY_OPTIM_PARAMS = {"optimizer": "auto", "lr0": None, "warmup_passes": ULTRALYTICS_WARMUP_EPOCHS, "cos_lr": False}
+ADAMW_LR0_RANGE = (0.0003, 0.001)
+SGD_LR0 = 0.003
 
 
 def model_task(model: str) -> Task:
@@ -91,6 +97,13 @@ class TrainParams(BaseModel):
     # error: it means all of it (the run's `sampling` plan, worked out at creation, clamps it to the export).
     train_images_per_epoch: int | None = Field(default=None, ge=1)
     val_images_per_epoch: int | None = Field(default=None, ge=1)
+    # Optimizer (Ultralytics' own spellings; "auto" = its pick by step count, MuSGD 0.01 or AdamW, as before these
+    # settings), learning rate (None: `default_lr0`; ignored for "auto"), warm-up in full passes over the train set
+    # (`resolve_optim` turns it into Ultralytics' warmup_epochs) and a cosine instead of a linear LR decay.
+    optimizer: Optimizer = "AdamW"
+    lr0: float | None = Field(default=None, ge=1e-6, le=0.1)
+    warmup_passes: float = Field(default=1.0, ge=0, le=10)
+    cos_lr: bool = False
 
     @model_validator(mode="after")
     def _custom_needs_values(self) -> TrainParams:
@@ -241,3 +254,47 @@ def train_overrides(params: dict) -> tuple[dict, bool, bool]:
     photometric = values.pop("photometric")
     lighting = values.pop("lighting")
     return {**values, "copy_paste_mode": "flip"}, photometric, lighting
+
+
+def with_legacy_optim(params: dict) -> dict:
+    """A run's stored params with the optimizer params an older run lacks filled in as what it trained with."""
+    return {**LEGACY_OPTIM_PARAMS, **params}
+
+
+def default_lr0(optimizer: str, nc: int) -> float | None:
+    """The learning rate used when a run leaves lr0 empty: for AdamW Ultralytics' own fine-tune fit for `nc` classes
+    (what its auto pick uses), kept within ADAMW_LR0_RANGE; SGD_LR0 for SGD; None for "auto" (Ultralytics picks)."""
+    if optimizer == "AdamW":
+        low, high = ADAMW_LR0_RANGE
+        return min(max(round(0.002 * 5 / (4 + nc), 6), low), high)
+    return SGD_LR0 if optimizer == "SGD" else None
+
+
+def resolve_optim(params: dict, nc: int, sampling: dict | None) -> dict:
+    """The optimizer settings a new run trains with (run.json's `optim`): optimizer, lr0 (None for "auto"),
+    warmup_epochs and cos_lr. Warm-up: the sampled-epoch plan's scaled warmup_epochs, else `warmup_passes` epochs up to
+    epochs - 1 (Ultralytics never warms up through the last epoch)."""
+    p = with_legacy_optim(params)
+    optimizer = p["optimizer"]
+    lr0 = None if optimizer == "auto" else (p["lr0"] if p["lr0"] is not None else default_lr0(optimizer, nc))
+    if sampling and sampling.get("train_images_per_epoch"):
+        warmup = sampling["warmup_epochs"]
+    else:
+        warmup = min(p["warmup_passes"], max(p["epochs"] - 1, 0))
+    return {"optimizer": optimizer, "lr0": lr0, "warmup_epochs": float(warmup), "cos_lr": p["cos_lr"]}
+
+
+def run_optim(run: dict) -> dict:
+    """A run's optimizer settings: run.json's `optim`, or for a run from before it, what that run trained with."""
+    return run.get("optim") or resolve_optim(run.get("params", {}), 0, run.get("sampling"))
+
+
+def optim_train_args(optim: dict) -> dict:
+    """`model.train` keyword arguments for a run's `optim`. For AdamW the warm-up's bias LR starts at 0 instead of
+    Ultralytics' 0.1 (an SGD value), as Ultralytics' own auto pick does for AdamW."""
+    args = {"optimizer": optim["optimizer"], "warmup_epochs": optim["warmup_epochs"], "cos_lr": optim["cos_lr"]}
+    if optim["lr0"] is not None:
+        args["lr0"] = optim["lr0"]
+    if optim["optimizer"] == "AdamW":
+        args["warmup_bias_lr"] = 0.0
+    return args

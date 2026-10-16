@@ -88,6 +88,7 @@ def test_status_and_exports(client):
     assert isinstance(g0["tflops"], (int, float))
     assert "yolo11m-seg" in st["models"] and st["default_models"][0] == "yolo26s-seg"
     assert st["defaults"]["imgsz"] == 960
+    assert (st["defaults"]["optimizer"], st["defaults"]["lr0"], st["defaults"]["warmup_passes"]) == ("AdamW", None, 1.0)
     assert st["aug_presets"]["strong"]["degrees"] == 15
     assert st["defaults"]["augment"] == "default"
     exports = client.get("/api/exports").json()
@@ -397,6 +398,28 @@ def test_predictions_filters_and_counts(client):
     assert item["index"] == 0 and 0.0 < item["iou"] <= 1.0
     assert client.get(f"/api/train/runs/{rid}/predictions?filter=missed").json()["total"] == 0
     assert client.get(f"/api/train/runs/{rid}/predictions?filter=nope").status_code == 422
+
+
+def test_run_view_shows_the_optimizer_settings_it_trains_with(client, tmp_path):
+    r = client.post("/api/train/runs", json={"export_id": EXPORT_ID, "runs": [{"model": "yolo26s-seg", "gpu": 0}],
+                                             "params": {"epochs": 2, "imgsz": 640, "optimizer": "SGD", "cos_lr": True}})
+    assert r.status_code == 201, r.text
+    rid = r.json()["run_ids"][0]
+    view = until(client, rid, "done")
+    assert view["params"]["optimizer"] == "SGD"
+    assert view["optim"] == {"optimizer": "SGD", "lr0": 0.003, "warmup_epochs": 1.0, "cos_lr": True}
+    # a run from before these settings: no `optim`, no optimizer params -- Ultralytics' auto pick and 3 warm-up epochs
+    path = tmp_path / "data" / "runs" / rid / "run.json"
+    run = json.loads(path.read_text())
+    del run["optim"]
+    for k in ("optimizer", "lr0", "warmup_passes", "cos_lr"):
+        del run["params"][k]
+    run["params"]["epochs"] = 50
+    path.write_text(json.dumps(run))
+    assert client.get(f"/api/train/runs/{rid}").json()["optim"] == {
+        "optimizer": "auto", "lr0": None, "warmup_epochs": 3.0, "cos_lr": False}
+    assert client.post("/api/train/runs", json={"export_id": EXPORT_ID, "runs": [{"model": "yolo26s-seg", "gpu": 0}],
+                                                "params": {"lr0": 0.5}}).status_code == 422
 
 
 def test_sampled_epoch_params_and_the_runs_measured_speed(client, tmp_path):

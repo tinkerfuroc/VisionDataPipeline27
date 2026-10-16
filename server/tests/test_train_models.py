@@ -14,13 +14,18 @@ from vdp.train.models import (
     AugParams,
     TrainParams,
     check_model,
+    default_lr0,
     find_export,
     list_exports,
     model_task,
+    optim_train_args,
     rename_export,
+    resolve_optim,
     run_classes,
     run_data_dir,
+    run_optim,
     train_overrides,
+    with_legacy_optim,
 )
 
 
@@ -64,6 +69,80 @@ def test_params_defaults_and_bounds():
     for bad in ({"imgsz": 1000}, {"imgsz": 288}, {"epochs": 0}, {"batch": 65}, {"workers": 17}, {"x": 1}):
         with pytest.raises(ValidationError):
             TrainParams(**bad)
+
+
+def test_optimizer_params_defaults_and_bounds():
+    p = TrainParams()
+    assert (p.optimizer, p.lr0, p.warmup_passes, p.cos_lr) == ("AdamW", None, 1.0, False)
+    assert TrainParams(optimizer="SGD", lr0=0.1, warmup_passes=0, cos_lr=True).lr0 == 0.1
+    assert TrainParams(lr0=1e-6, warmup_passes=10).warmup_passes == 10
+    for bad in ({"optimizer": "MuSGD"}, {"optimizer": "adamw"}, {"lr0": 0}, {"lr0": 0.2}, {"lr0": 1e-7},
+                {"warmup_passes": -1}, {"warmup_passes": 11}):
+        with pytest.raises(ValidationError):
+            TrainParams(**bad)
+
+
+def test_default_lr0_per_optimizer_and_class_count():
+    assert default_lr0("AdamW", 12) == 0.000625  # Ultralytics' own fit, round(0.002 * 5 / (4 + nc), 6)
+    assert default_lr0("AdamW", 1) == 0.001  # 0.002 clamped down
+    assert default_lr0("AdamW", 40) == 0.0003  # 0.000227 clamped up
+    assert default_lr0("SGD", 12) == 0.003
+    assert default_lr0("auto", 12) is None  # Ultralytics picks it
+
+
+def test_older_params_read_as_the_settings_they_trained_with():
+    old = {"epochs": 50, "batch": 4}
+    assert with_legacy_optim(old) == {"epochs": 50, "batch": 4, "optimizer": "auto", "lr0": None,
+                                      "warmup_passes": 3.0, "cos_lr": False}
+    assert with_legacy_optim({"optimizer": "SGD", "warmup_passes": 1.0})["optimizer"] == "SGD"  # kept when present
+
+
+def test_resolve_optim_for_whole_epochs():
+    p = TrainParams(epochs=50).model_dump()
+    assert resolve_optim(p, 12, None) == {"optimizer": "AdamW", "lr0": 0.000625, "warmup_epochs": 1.0, "cos_lr": False}
+    p = TrainParams(epochs=50, optimizer="SGD", lr0=0.01, warmup_passes=2.5, cos_lr=True).model_dump()
+    assert resolve_optim(p, 12, None) == {"optimizer": "SGD", "lr0": 0.01, "warmup_epochs": 2.5, "cos_lr": True}
+    p = TrainParams(epochs=50, optimizer="auto", lr0=0.01).model_dump()
+    assert resolve_optim(p, 12, None)["lr0"] is None  # ignored: Ultralytics picks optimizer and lr0
+    p = TrainParams(epochs=3, warmup_passes=5).model_dump()
+    assert resolve_optim(p, 12, None)["warmup_epochs"] == 2.0  # Ultralytics never warms up through the last epoch
+
+
+def test_resolve_optim_takes_a_sampled_runs_warmup_from_its_plan():
+    plan = {"train_images": 40, "train_images_per_epoch": 10, "warmup_epochs": 4.0, "close_mosaic": 40}
+    assert resolve_optim(TrainParams().model_dump(), 12, plan)["warmup_epochs"] == 4.0
+    val_only = {"train_images": 40, "train_images_per_epoch": None, "val_images_per_epoch": 4}
+    assert resolve_optim(TrainParams(epochs=50).model_dump(), 12, val_only)["warmup_epochs"] == 1.0
+
+
+def test_run_optim_of_an_older_run_is_what_ultralytics_did():
+    assert run_optim({"params": {"epochs": 50}, "sampling": None}) == {
+        "optimizer": "auto", "lr0": None, "warmup_epochs": 3.0, "cos_lr": False}
+    sampled = {"params": {"epochs": 50}, "sampling": {"train_images_per_epoch": 10, "warmup_epochs": 12.0}}
+    assert run_optim(sampled)["warmup_epochs"] == 12.0
+    stored = {"optimizer": "SGD", "lr0": 0.003, "warmup_epochs": 1.0, "cos_lr": False}
+    assert run_optim({"params": {}, "optim": stored}) == stored
+
+
+def test_optim_train_args():
+    adamw = {"optimizer": "AdamW", "lr0": 0.000625, "warmup_epochs": 1.0, "cos_lr": False}
+    # no 0.1 bias lr at the start of the warm-up for AdamW -- what Ultralytics' own auto pick does for it
+    assert optim_train_args(adamw) == {"optimizer": "AdamW", "lr0": 0.000625, "warmup_epochs": 1.0, "cos_lr": False,
+                                       "warmup_bias_lr": 0.0}
+    sgd = {"optimizer": "SGD", "lr0": 0.003, "warmup_epochs": 0.0, "cos_lr": True}
+    assert optim_train_args(sgd) == {"optimizer": "SGD", "lr0": 0.003, "warmup_epochs": 0.0, "cos_lr": True}
+    auto = {"optimizer": "auto", "lr0": None, "warmup_epochs": 3.0, "cos_lr": False}
+    assert optim_train_args(auto) == {"optimizer": "auto", "warmup_epochs": 3.0, "cos_lr": False}
+
+
+def test_optimizer_names_are_ultralytics_own():
+    pytest.importorskip("ultralytics")
+    import inspect
+
+    from ultralytics.engine.trainer import BaseTrainer
+
+    source = inspect.getsource(BaseTrainer.build_optimizer)
+    assert '"AdamW"' in source and '"SGD"' in source and '"auto"' in source
 
 
 def test_find_export(tmp_path):

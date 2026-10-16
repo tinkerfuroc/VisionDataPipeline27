@@ -503,6 +503,10 @@ def test_submit_from_continue_happy_path(env):
     sched.cancel(rid)
     until(sched, rid, "cancelled")
     (sched.runs.dir(rid) / "train" / "results.csv").write_text(HEADER + "\n" + row(1) + "\n")
+    # as if the source were from before the optimizer settings: its checkpoint trained with Ultralytics' auto pick
+    source = sched.runs.read(rid)
+    sched.runs.update(rid, params={k: v for k, v in source["params"].items()
+                                   if k not in ("optimizer", "lr0", "warmup_passes", "cos_lr")}, optim=None)
 
     new_export = find_export(sched.data_root, make_export(sched.data_root, "20260201-000000-newexp").name)
     new_id = sched.submit_from(rid, new_export, "continue", 0)
@@ -513,6 +517,9 @@ def test_submit_from_continue_happy_path(env):
     assert new["export_id"] == new_export.id and new["source_run"] == rid
     assert new["start_mode"] == "continue" and new["continued_from_epoch"] == 1
     assert new["params"]["batch"] == 4 and new["params"]["epochs"] == 99  # the source's own params, verbatim
+    # ... and its optimizer settings, which the resumed checkpoint brings back anyway (not today's AdamW default)
+    assert (new["params"]["optimizer"], new["params"]["warmup_passes"]) == ("auto", 3.0)
+    assert new["optim"] == {"optimizer": "auto", "lr0": None, "warmup_epochs": 3.0, "cos_lr": False}
     new_dir = sched.runs.dir(new_id)
     assert (new_dir / "train" / "weights" / "last.pt").read_bytes() == b"last"
     assert (new_dir / "train" / "results.csv").read_text() == (sched.runs.dir(rid) / "train" / "results.csv").read_text()

@@ -88,7 +88,7 @@ def test_create_records_the_epoch_plan_for_the_export(tmp_path):
     run = store.create(export, "yolo26s-seg", 0, params, owner_pid=os.getpid())
     assert run["sampling"] == {
         "train_images": 40, "train_images_per_epoch": 10, "val_images": 10, "val_images_per_epoch": 4,
-        "warmup_epochs": 12.0, "close_mosaic": 40,
+        "warmup_epochs": 4.0, "close_mosaic": 40,  # one pass (the default) = 4 epochs of 10
     }
     assert run["params"]["train_images_per_epoch"] == 10  # what was asked, as asked
     plain = store.create(export, "yolo26s-seg", 0, TrainParams(), owner_pid=os.getpid())
@@ -105,3 +105,17 @@ def test_create_records_the_task_and_the_dataset_it_trains_on(tmp_path):
     assert (det["task"], det["data_format"]) == ("detect", "yolo_det")
     fallback = store.create(seg_only, "yolo26n", 0, TrainParams(), owner_pid=os.getpid())
     assert (fallback["task"], fallback["data_format"]) == ("detect", "yolo_seg")
+
+
+def test_create_records_the_resolved_optimizer_settings(tmp_path):
+    classes = tuple(f"c{i}" for i in range(12))
+    export = find_export(tmp_path, make_export(tmp_path, n_train=40, n_val=10, classes=classes).name)
+    store = RunStore(tmp_path / "runs")
+    run = store.create(export, "yolo26s-seg", 0, TrainParams(epochs=50), owner_pid=os.getpid())
+    assert run["optim"] == {"optimizer": "AdamW", "lr0": 0.000625, "warmup_epochs": 1.0, "cos_lr": False}
+    sampled = store.create(export, "yolo26s-seg", 0, TrainParams(epochs=50, batch=4, train_images_per_epoch=10),
+                           owner_pid=os.getpid())
+    assert sampled["optim"]["warmup_epochs"] == sampled["sampling"]["warmup_epochs"] == 4.0  # 1 pass = 4 epochs of 10
+    sgd = store.create(export, "yolo26s-seg", 0, TrainParams(optimizer="SGD", lr0=0.005, cos_lr=True),
+                       owner_pid=os.getpid())
+    assert sgd["optim"] == {"optimizer": "SGD", "lr0": 0.005, "warmup_epochs": 1.0, "cos_lr": True}

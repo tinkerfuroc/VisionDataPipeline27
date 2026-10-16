@@ -13,7 +13,7 @@ from pathlib import Path
 
 from ..store import NotFound
 from ..store.project import now_iso
-from .models import ExportInfo, TrainParams, model_task
+from .models import ExportInfo, TrainParams, model_task, resolve_optim
 from .sampling import epoch_plan
 
 TERMINAL = frozenset({"done", "error", "cancelled", "interrupted"})
@@ -85,7 +85,9 @@ class RunStore:
             # what it trains (masks or boxes) and on which of the export's datasets (worker.prepare_data reads it)
             "task": model_task(model), "data_format": export.train_format(model_task(model)),
             # sampled epochs for this export (None: whole epochs); a resume keeps it, a new run works it out anew
-            "sampling": epoch_plan(params.model_dump(), export.train_images, export.val_images),
+            "sampling": (plan := epoch_plan(params.model_dump(), export.train_images, export.val_images)),
+            # the optimizer, lr0, warm-up epochs and LR decay it trains with (the worker passes these to Ultralytics)
+            "optim": resolve_optim(params.model_dump(), len(export.classes), plan),
             "status": "queued", "error": None, "pid": None, "owner_pid": owner_pid,
             "resume": False, "onnx": None, "best": None,
         }

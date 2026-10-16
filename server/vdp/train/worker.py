@@ -18,7 +18,7 @@ from pathlib import Path
 
 import yaml
 
-from .models import model_task, run_data_dir, train_overrides
+from .models import model_task, optim_train_args, run_data_dir, run_optim, train_overrides
 from .results import FINAL_VAL, SPEED, run_summary
 from .runs import atomic_write_json, best_weights, last_weights, onnx_weights, read_json
 from .sampled_trainer import sampled_trainer
@@ -84,8 +84,8 @@ def prepare_data(run_dir: Path, run: dict, *, rewrite: bool) -> tuple[Path, str 
 
 
 def _sampling_args(run: dict, run_dir: Path, full_val: str | None, *, resume: bool) -> dict:
-    """Extra `model.train` arguments for sampled epochs: the trainer, and the scaled schedule (on a resume only
-    close_mosaic, the one Ultralytics lets a resume change; warmup comes back from the checkpoint). None of them for
+    """Extra `model.train` arguments for sampled epochs: the trainer, and the scaled close_mosaic (the one Ultralytics
+    lets a resume change; the scaled warmup is the run's `optim` warmup_epochs, passed by `train`). None of them for
     a run without sampling, which trains exactly as before.
 
     A resume or Continue of a run that asked for sampled epochs always passes close_mosaic: its own plan's, or
@@ -101,8 +101,6 @@ def _sampling_args(run: dict, run_dir: Path, full_val: str | None, *, resume: bo
         )
     if per_epoch:
         args["close_mosaic"] = plan["close_mosaic"]
-        if not resume:
-            args["warmup_epochs"] = plan["warmup_epochs"]
     elif resume and run["params"].get("train_images_per_epoch"):
         args["close_mosaic"] = plan.get("close_mosaic", ULTRALYTICS_CLOSE_MOSAIC)
     return args
@@ -430,6 +428,7 @@ def train(run_dir: Path) -> int:
             drop_unloadable_caches(run_data_dir(run))
             drop_unloadable_caches(run_dir / VAL_SUBSET_DIR)
             (run_dir / FINAL_VAL).unlink(missing_ok=True)
+            overrides.update(optim_train_args(run_optim(run)))  # a resume gets them back from its checkpoint
             overrides.update(_sampling_args(run, run_dir, full_val, resume=False))
             stage = "train"
             model.train(

@@ -68,6 +68,23 @@ def test_scaled_schedule_never_exceeds_the_epochs():
     assert scaled_schedule(epochs=1, train_images=100, per_epoch=50)["warmup_epochs"] == 0
 
 
+def test_scaled_schedule_warms_up_for_the_asked_full_passes():
+    s = scaled_schedule(epochs=100, train_images=28000, per_epoch=7000, warmup_passes=1.0)
+    assert s["warmup_epochs"] == 4.0  # one pass = 4 sampled epochs
+    assert scaled_schedule(epochs=100, train_images=28000, per_epoch=7000, warmup_passes=0)["warmup_epochs"] == 0
+    # capped at 30 % of the epochs, but never below the asked passes counted in (short) epochs, nor the last epoch
+    assert scaled_schedule(epochs=20, train_images=28000, per_epoch=2000, warmup_passes=1.0)["warmup_epochs"] == 6
+    assert scaled_schedule(epochs=5, train_images=100, per_epoch=10, warmup_passes=1.0)["warmup_epochs"] == 1.5
+    assert scaled_schedule(epochs=5, train_images=100, per_epoch=10, warmup_passes=2.0)["warmup_epochs"] == 2.0
+    assert scaled_schedule(epochs=2, train_images=100, per_epoch=10, warmup_passes=2.0)["warmup_epochs"] == 1
+
+
+def test_epoch_plan_uses_the_runs_warmup_passes_and_three_for_older_runs():
+    p = {"epochs": 100, "train_images_per_epoch": 7000}
+    assert epoch_plan({**p, "warmup_passes": 1.0}, 28000, 2000)["warmup_epochs"] == 4.0
+    assert epoch_plan(p, 28000, 2000)["warmup_epochs"] == 12.0  # no warmup_passes: an older run's 3 passes
+
+
 def test_scaled_schedule_rounds_close_mosaic_to_at_least_one():
     s = scaled_schedule(epochs=100, train_images=1000, per_epoch=999)
     assert s["close_mosaic"] == 10 and s["warmup_epochs"] == 3.0

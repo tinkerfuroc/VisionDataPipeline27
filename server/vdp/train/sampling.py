@@ -8,7 +8,8 @@ Shorter epochs make validation, best-checkpoint selection and early stopping hap
   every image is seen once per cycle before any repeats. Epoch e's slice is images [e*N, (e+1)*N) of the endless
   stream of cycle permutations: a pure function of (seed, epoch, dataset size, N).
 - The epoch-denominated settings that measure "how much data" (warmup, close_mosaic) are scaled by (train size / N)
-  so they cover as many images as with full epochs; patience stays in (short) epochs, which is the point.
+  so they cover as many images as with full epochs (warmup: the run's `warmup_passes` full passes); patience stays in
+  (short) epochs, which is the point.
 - Val: one fixed, seeded subset, proportional per clip and with every class of the val split in at least one image,
   so per-epoch scores stay comparable. The final evaluation of best.pt still uses the whole val split.
 """
@@ -21,11 +22,12 @@ from pathlib import Path
 
 import numpy as np
 
-# Ultralytics' own defaults (cfg/default.yaml), which vdp never overrides; kept here so the server never imports it.
+# Ultralytics' own defaults (cfg/default.yaml); kept here so the server never imports it. Runs from before the
+# `warmup_passes` param warmed up for Ultralytics' 3 epochs (3 full passes, scaled for sampled epochs).
 ULTRALYTICS_WARMUP_EPOCHS = 3.0
 ULTRALYTICS_CLOSE_MOSAIC = 10
-# A scaled warmup never takes more than this share of a run's epochs (but always at least Ultralytics' own 3): short
-# sampled runs would otherwise warm up for almost all of their epochs.
+# A scaled warmup never takes more than this share of a run's epochs (but always at least the asked passes counted in
+# short epochs -- still fewer images than asked): short sampled runs would otherwise warm up for almost all of them.
 MAX_WARMUP_SHARE = 0.3
 IMAGE_SUFFIXES = frozenset({".jpg", ".jpeg", ".png"})
 VAL_SUBSET_DIR = "val_subset"  # in the run dir: images/val and labels/val, linked from the export
@@ -47,14 +49,16 @@ def epoch_slice(seed: int, epoch: int, size: int, per_epoch: int) -> np.ndarray:
     return np.concatenate(parts)
 
 
-def scaled_schedule(epochs: int, train_images: int, per_epoch: int) -> dict:
+def scaled_schedule(epochs: int, train_images: int, per_epoch: int,
+                    warmup_passes: float = ULTRALYTICS_WARMUP_EPOCHS) -> dict:
     """Ultralytics' warmup_epochs and close_mosaic, scaled to cover the same number of images with epochs of
-    `per_epoch`. Warmup is capped at MAX_WARMUP_SHARE of the epochs (at least Ultralytics' 3) and at epochs - 1
-    (Ultralytics' own cap, so this is what it will do), close_mosaic at the epochs (as with full epochs and a run
-    shorter than 10 epochs, mosaic is then off from the start)."""
+    `per_epoch`: warmup `warmup_passes` full passes over the train set, close_mosaic Ultralytics' 10. Warmup is capped
+    at MAX_WARMUP_SHARE of the epochs (but never below `warmup_passes` epochs: with the default 3, an older run's
+    Ultralytics' 3) and at epochs - 1 (Ultralytics' own cap, so this is what it will do), close_mosaic at the epochs
+    (as with full epochs and a run shorter than 10 epochs, mosaic is then off from the start)."""
     factor = train_images / per_epoch
-    cap = max(ULTRALYTICS_WARMUP_EPOCHS, round(MAX_WARMUP_SHARE * epochs, 2))
-    warmup = min(round(ULTRALYTICS_WARMUP_EPOCHS * factor, 2), cap, max(epochs - 1, 0))
+    cap = max(warmup_passes, round(MAX_WARMUP_SHARE * epochs, 2))
+    warmup = min(round(warmup_passes * factor, 2), cap, max(epochs - 1, 0))
     close_mosaic = min(max(1, round(ULTRALYTICS_CLOSE_MOSAIC * factor)), epochs)
     return {"warmup_epochs": float(warmup), "close_mosaic": int(close_mosaic)}
 
@@ -62,7 +66,8 @@ def scaled_schedule(epochs: int, train_images: int, per_epoch: int) -> dict:
 def epoch_plan(params: dict, train_images: int, val_images: int) -> dict | None:
     """What a run's `train_images_per_epoch` / `val_images_per_epoch` params mean for its export: None when neither
     applies (unset, or at least the split's size: all of it, as today), else the effective sizes (None = all) plus,
-    for sampled training, the scaled warmup_epochs and close_mosaic."""
+    for sampled training, the scaled warmup_epochs and close_mosaic (params without `warmup_passes`, from older runs:
+    3 passes)."""
     n = params.get("train_images_per_epoch")
     m = params.get("val_images_per_epoch")
     n = n if n is not None and n < train_images else None
@@ -72,7 +77,8 @@ def epoch_plan(params: dict, train_images: int, val_images: int) -> dict | None:
     plan = {"train_images": train_images, "train_images_per_epoch": n, "val_images": val_images,
             "val_images_per_epoch": m}
     if n is not None:
-        plan.update(scaled_schedule(params["epochs"], train_images, n))
+        plan.update(scaled_schedule(params["epochs"], train_images, n,
+                                    params.get("warmup_passes", ULTRALYTICS_WARMUP_EPOCHS)))
     return plan
 
 
